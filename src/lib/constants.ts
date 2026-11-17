@@ -1,0 +1,123 @@
+/** Shared status values and the plain-language labels shown to the owner. */
+
+export const ROLES = { OWNER: "OWNER", STAFF: "STAFF" } as const;
+export type Role = (typeof ROLES)[keyof typeof ROLES];
+
+export const PERMISSIONS = [
+  "enquiries.view",
+  "enquiries.review",
+  "sourcing.view",
+  "inventory.view",
+  "suppliers.view",
+  "quotations.view",
+] as const;
+export type Permission = (typeof PERMISSIONS)[number];
+
+export const CLASSIFICATIONS = {
+  RFQ: "Customer quotation request",
+  AVAILABILITY: "Product availability question",
+  FOLLOW_UP: "Existing customer follow-up",
+  SUPPLIER: "Supplier communication",
+  BUSINESS_OTHER: "Other business message",
+  PERSONAL: "Family / personal message",
+  UNCLEAR: "Unclear message",
+} as const;
+export type Classification = keyof typeof CLASSIFICATIONS;
+
+export const ENQUIRY_STATUS_LABELS: Record<string, string> = {
+  NEW: "Just received",
+  EXTRACTING: "Reading the request",
+  NEEDS_REVIEW: "Needs your review",
+  READY: "Ready to source",
+  SOURCING: "Finding suppliers",
+  AWAITING_APPROVAL: "Awaiting your approval",
+  APPROVED: "Supplier approved",
+  QUOTED: "Quotation prepared",
+  CLOSED: "Completed",
+  REJECTED: "Rejected",
+  IGNORED: "Not a quotation request",
+};
+
+export const INVENTORY_STATUS_LABELS: Record<string, string> = {
+  UNCHECKED: "Not checked yet",
+  AVAILABLE: "In stock",
+  PARTIAL: "Partly in stock",
+  SHORT: "Not in stock",
+  NONE: "Not in stock",
+  CLARIFY: "Details needed",
+};
+
+export const SOURCING_STATUS_LABELS: Record<string, string> = {
+  NOT_STARTED: "Not started",
+  QUEUED: "Queued",
+  SEARCHING: "Searching suppliers",
+  RESULTS_READY: "Options ready",
+  AWAITING_APPROVAL: "Awaiting approval",
+  APPROVED: "Approved",
+  NO_RESULTS: "No verified supplier found",
+  FAILED: "Search failed",
+  NOT_REQUIRED: "Covered by stock",
+};
+
+export const MATCH_STATUS_LABELS: Record<string, string> = {
+  EXACT: "Exact match",
+  EQUIVALENT: "Approved equivalent",
+  POSSIBLE: "Possible match",
+  INSUFFICIENT: "Not enough information",
+  NO_MATCH: "Does not match",
+};
+
+export const OFFER_STATUS_LABELS: Record<string, string> = {
+  DISCOVERED: "Supplier found",
+  LISTING_FOUND: "Product page found",
+  POSSIBLE_MATCH: "Possible match",
+  VERIFIED: "Specification verified",
+  CONTACTED: "Supplier contacted",
+  QUOTE_RECEIVED: "Quotation received",
+  PRICE_CONFIRMED: "Price confirmed",
+  EXPIRED: "Offer expired",
+  UNAVAILABLE: "Supplier unavailable",
+};
+
+export const CONTACT_KINDS = {
+  CUSTOMER: "Customer",
+  SUPPLIER: "Supplier",
+  FAMILY: "Family",
+  PERSONAL: "Personal",
+  OTHER: "Other",
+  UNKNOWN: "Unknown",
+} as const;
+
+export const EXCLUDED_CATEGORIES = {
+  FAMILY: "Family",
+  PERSONAL: "Personal",
+  TRUSTED_SUPPLIER: "Trusted supplier",
+  CUSTOMER: "Customer",
+  OTHER: "Other",
+} as const;
+
+export const JOB_TYPES = {
+  INGEST_MESSAGE: "INGEST_MESSAGE",
+  EXTRACT_ENQUIRY: "EXTRACT_ENQUIRY",
+  CHECK_INVENTORY: "CHECK_INVENTORY",
+  RUN_SOURCING: "RUN_SOURCING",
+  SEND_SUPPLIER_RFQ: "SEND_SUPPLIER_RFQ",
+  BUILD_QUOTATION: "BUILD_QUOTATION",
+} as const;
+
+export const integrationKeys = [
+  "WHATSAPP",
+  "GMAIL",
+  "MICROSOFT365",
+  "AI_PROVIDER",
+  "WEB_SEARCH",
+  "OCR",
+  "STORAGE",
+  "EXCHANGE_RATE",
+] as const;
+export type IntegrationKey = (typeof integrationKeys)[number];
+
+export function label(map: Record<string, string>, key: string | null | undefined): string {
+  if (!key) return "—";
+  return map[key] ?? key.replaceAll("_", " ").toLowerCase();
+}

@@ -1,0 +1,12 @@
+process.env.DATABASE_URL = "file:./test.db";
+(process.env as Record<string, string>).NODE_ENV = "test";
+process.env.AUTH_SECRET = "test-secret-value-not-for-production";
+process.env.CREDENTIAL_ENCRYPTION_KEY = "test-encryption-key-not-for-production";
+process.env.DEMO_MODE = "false";
+process.env.AI_PROVIDER = "none";
+process.env.WEB_SEARCH_PROVIDER = "none";
+process.env.EMAIL_INTAKE_PROVIDER = "none";
+process.env.EXCHANGE_RATE_PROVIDER = "none";
+process.env.STORAGE_ROOT = "./storage-test";
+process.env.APP_URL = "http://localhost:3000";
+process.env.OCR_PROVIDER = "none";

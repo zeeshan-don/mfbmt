@@ -1,0 +1,68 @@
+{
+  "name": "mfbmt-procurement-intelligence",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MFBMT Procurement Intelligence System - enquiry intake, stock check, supplier discovery, landed-cost comparison and owner approval.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx src/scripts/seed.ts",
+    "db:reset": "prisma migrate reset --force",
+    "worker": "tsx src/worker.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "prisma": {
+    "seed": "tsx src/scripts/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.16.2",
+    "bcryptjs": "3.0.2",
+    "clsx": "2.1.1",
+    "csv-parse": "5.6.0",
+    "date-fns": "4.1.0",
+    "exceljs": "4.4.0",
+    "file-type": "19.6.0",
+    "lucide-react": "0.468.0",
+    "next": "^15.5.29",
+    "pdf-parse": "1.1.1",
+    "pdfkit": "0.15.1",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "server-only": "^0.0.1",
+    "tailwind-merge": "2.5.5",
+    "tesseract.js": "5.1.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "2.4.6",
+    "@types/node": "22.10.2",
+    "@types/pdf-parse": "1.1.4",
+    "@types/pdfkit": "0.13.6",
+    "@types/react": "19.1.8",
+    "@types/react-dom": "19.1.6",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.49",
+    "prisma": "^6.16.2",
+    "tailwindcss": "3.4.17",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  },
+  "allowScripts": {
+    "@prisma/client@6.16.2": true,
+    "@prisma/engines@6.16.2": true,
+    "esbuild@0.23.1": true,
+    "esbuild@0.21.5": true,
+    "prisma@6.16.2": true,
+    "sharp@0.34.5": true,
+    "tesseract.js@5.1.1": true
+  }
+}

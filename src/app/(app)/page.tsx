@@ -1,0 +1,281 @@
+import Link from "next/link";
+import { db } from "@/lib/db";
+import { requireUser } from "@/lib/auth";
+import { parseJson } from "@/lib/json";
+import { timeAgo, truncate } from "@/lib/format";
+import { ENQUIRY_STATUS_LABELS, label } from "@/lib/constants";
+import { Badge, Card, CardHeader, DataTable, EmptyState, PageHeader, Td, Th, statusTone } from "@/components/ui";
+import { AlertTriangle, BadgeCheck, Boxes, Inbox, MessageSquare, Radar } from "lucide-react";
+
+export const dynamic = "force-dynamic";
+
+export default async function OverviewPage() {
+  const user = await requireUser();
+
+  const [needsReview, pendingSourcingApprovals, clarificationItems, quoteResponses, recentEnquiries, recentSessions, pendingQuoteRequests] =
+    await Promise.all([
+      db.enquiry.count({ where: { status: "NEEDS_REVIEW" } }),
+      db.approval.count({ where: { status: "PENDING", type: "SOURCING" } }),
+      db.enquiryItem.count({ where: { reviewStatus: "NEEDS_CLARIFICATION" } }),
+      db.supplierQuote.count({ where: { status: "RESPONDED" } }),
+      db.enquiry.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 6,
+        include: { items: { select: { id: true, inventoryStatus: true, sourcingStatus: true } } },
+      }),
+      db.searchSession.findMany({
+        orderBy: { startedAt: "desc" },
+        take: 5,
+        include: { enquiryItem: { select: { description: true, enquiryId: true } } },
+      }),
+      db.supplierQuote.findMany({
+        where: { status: { in: ["AWAITING_APPROVAL", "SENT"] } },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        include: { supplier: { select: { name: true } }, enquiryItem: { select: { description: true } } },
+      }),
+    ]);
+
+  const attention = [
+    {
+      count: needsReview,
+      title: "enquiries need your review",
+      detail: "The system is not fully sure what was requested.",
+      href: "/enquiries?status=NEEDS_REVIEW",
+      icon: AlertTriangle,
+    },
+    {
+      count: pendingSourcingApprovals,
+      title: "sourcing results await your approval",
+      detail: "Supplier options are ready to compare.",
+      href: "/approvals",
+      icon: BadgeCheck,
+    },
+    {
+      count: clarificationItems,
+      title: "product lines need missing details",
+      detail: "Suppliers cannot be searched reliably yet.",
+      href: "/enquiries?filter=clarify",
+      icon: Inbox,
+    },
+    {
+      count: quoteResponses,
+      title: "supplier quotations have arrived",
+      detail: "Prices submitted by suppliers are ready to compare.",
+      href: "/sourcing?tab=responses",
+      icon: MessageSquare,
+    },
+  ].filter((item) => item.count > 0);
+
+  const enquiryIds = recentEnquiries.map((e) => e.id);
+  const lastMessages = enquiryIds.length
+    ? await db.message.findMany({
+        where: { enquiryId: { in: enquiryIds } },
+        select: { enquiryId: true, receivedAt: true },
+      })
+    : [];
+  const receivedByEnquiry = new Map(lastMessages.map((m) => [m.enquiryId, m.receivedAt]));
+
+  const activeItems = recentEnquiries.reduce(
+    (sum, enquiry) => sum + enquiry.items.filter((item) => item.sourcingStatus !== "NOT_REQUIRED").length,
+    0,
+  );
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow={`${new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}`}
+        title={`Good day, ${user.name.split(" ")[0]}`}
+        description="Here is what needs your attention today. Numbers are live from your enquiries, inventory and sourcing."
+      />
+
+      <section aria-labelledby="attention-heading">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 id="attention-heading" className="text-sm font-semibold text-ink">
+            Needs your attention
+          </h2>
+          <span className="text-[11px] text-muted">Updated just now</span>
+        </div>
+        <Card>
+          {attention.length === 0 ? (
+            <EmptyState
+              icon={<BadgeCheck size={18} aria-hidden />}
+              title="Nothing is waiting for you"
+              description="New enquiries and sourcing results will appear here as they arrive."
+            />
+          ) : (
+            <ul className="divide-y divide-line">
+              {attention.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <li key={item.title}>
+                    <Link
+                      href={item.href}
+                      className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated"
+                    >
+                      <span className="rounded-full border border-warn/30 bg-warn/10 p-1.5 text-warn">
+                        <Icon size={14} aria-hidden />
+                      </span>
+                      <span className="min-w-0 flex-1 text-sm text-ink">
+                        <span className="font-semibold tabular">{item.count}</span> {item.title}
+                        <span className="block text-xs text-muted">{item.detail}</span>
+                      </span>
+                      <span className="text-xs text-accent">Review</span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+      </section>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <Card>
+            <CardHeader
+              title="Recent enquiries"
+              description="The latest customer requests and where each one stands."
+              action={
+                <Link href="/enquiries" className="text-xs font-medium text-accent hover:underline">
+                  All enquiries
+                </Link>
+              }
+            />
+            {recentEnquiries.length === 0 ? (
+              <EmptyState
+                icon={<Inbox size={18} aria-hidden />}
+                title="No enquiries yet"
+                description="Connect WhatsApp or email, or add a request manually. New enquiries will appear here."
+              />
+            ) : (
+              <DataTable minWidth={640}>
+                <thead>
+                  <tr>
+                    <Th>Customer</Th>
+                    <Th>Received</Th>
+                    <Th align="right">Products</Th>
+                    <Th>Stage</Th>
+                    <Th>Action</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentEnquiries.map((enquiry) => {
+                    const requiresReview = enquiry.status === "NEEDS_REVIEW";
+                    const awaiting = enquiry.items.some((item) => item.sourcingStatus === "AWAITING_APPROVAL");
+                    const received = receivedByEnquiry.get(enquiry.id) ?? enquiry.createdAt;
+                    return (
+                      <tr key={enquiry.id} className="hover:bg-elevated/60">
+                        <Td>
+                          <Link href={`/enquiries/${enquiry.id}`} className="font-medium text-ink hover:text-accent">
+                            {enquiry.customerName || enquiry.customerPhone || "Unknown customer"}
+                          </Link>
+                          <span className="mt-0.5 block text-[11px] text-muted">
+                            {enquiry.publicRef}
+                            {enquiry.isDemo ? " · sample" : ""} · {enquiry.channel.toLowerCase()}
+                          </span>
+                        </Td>
+                        <Td>
+                          <span className="text-xs text-soft">{timeAgo(received)}</span>
+                        </Td>
+                        <Td align="right">
+                          <span className="tabular text-sm">{enquiry.items.length}</span>
+                        </Td>
+                        <Td>
+                          <Badge tone={statusTone(enquiry.status)} dot>
+                            {label(ENQUIRY_STATUS_LABELS, enquiry.status)}
+                          </Badge>
+                        </Td>
+                        <Td>
+                          <span className="text-xs text-soft">
+                            {requiresReview ? "Check the request" : awaiting ? "Approve supplier" : "—"}
+                          </span>
+                        </Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </DataTable>
+            )}
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader title="Sourcing activity" description="Recent supplier searches." />
+            {recentSessions.length === 0 ? (
+              <EmptyState
+                icon={<Radar size={18} aria-hidden />}
+                title="No supplier searches yet"
+                description="Searches start automatically for products that are not in stock."
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {recentSessions.map((session) => {
+                  const summary = parseJson<{ suppliers?: number; results?: number; rankableOffers?: number }>(
+                    session.summaryJson,
+                    {},
+                  );
+                  return (
+                    <li key={session.id} className="px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-[13px] font-medium text-ink">
+                          {truncate(session.enquiryItem.description, 60)}
+                        </p>
+                        <Badge tone={statusTone(session.status)}>{session.status.toLowerCase()}</Badge>
+                      </div>
+                      <p className="mt-1 text-[11px] text-muted">
+                        {summary.suppliers ?? 0} supplier{(summary.suppliers ?? 0) === 1 ? "" : "s"} ·{" "}
+                        {summary.results ?? 0} result{(summary.results ?? 0) === 1 ? "" : "s"} ·{" "}
+                        {timeAgo(session.startedAt)}
+                      </p>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+
+          <Card>
+            <CardHeader title="Supplier quotations" description="Requests waiting for a reply." />
+            {pendingQuoteRequests.length === 0 ? (
+              <EmptyState
+                icon={<MessageSquare size={18} aria-hidden />}
+                title="No open supplier requests"
+                description="Ask for supplier quotations from any sourcing result."
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {pendingQuoteRequests.map((quote) => (
+                  <li key={quote.id} className="px-4 py-3">
+                    <p className="text-[13px] font-medium text-ink">{quote.supplier.name}</p>
+                    <p className="text-[11px] text-muted">
+                      {truncate(quote.enquiryItem?.description ?? "Request", 50)} ·{" "}
+                      {quote.status === "SENT" ? `sent ${timeAgo(quote.sentAt)}` : "awaiting your approval to send"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          <Card>
+            <div className="flex items-center justify-between px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-ink">Products being sourced</p>
+                <p className="text-[11px] text-muted">Across recent enquiries</p>
+              </div>
+              <span className="flex items-center gap-1.5 text-2xl font-semibold tabular text-ink">
+                <Boxes size={16} aria-hidden className="text-accent" />
+                {activeItems}
+              </span>
+            </div>
+            <p className="border-t border-line px-4 py-2.5 text-[11px] text-muted">
+              Stock is checked before any supplier is contacted. Products are only bought after you approve a supplier.
+            </p>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,669 @@
+// MFBMT Procurement Intelligence — relational schema.
+// Provider: SQLite (zero-config local + file backups). Migrations live in prisma/migrations.
+// NOTE: SQLite has no enums/JSON columns, so statuses are validated Strings and structured
+// payloads are JSON text, always parsed through zod schemas in src/lib/validation.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String              @id @default(cuid())
+  email          String              @unique
+  name           String
+  passwordHash   String
+  role           String              @default("STAFF") // OWNER | STAFF
+  permissions    String              @default("[]") // JSON array, staff only
+  isActive       Boolean             @default(true)
+  createdAt      DateTime            @default(now())
+  lastLoginAt    DateTime?
+  sessions       Session[]
+  approvals      Approval[]          @relation("ApprovalDecider")
+  approvedQuotes CustomerQuotation[] @relation("QuoteApprover")
+  auditLogs      AuditLog[]
+  notifications  Notification[]
+  movements      InventoryMovement[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  ip        String?
+  userAgent String?
+
+  @@index([userId])
+}
+
+model Organization {
+  id                    String   @id @default("org_mfbmt")
+  name                  String
+  legalName             String?
+  trn                   String?
+  email                 String?
+  phone                 String?
+  address               String?
+  website               String?
+  defaultCurrency       String   @default("AED")
+  quotationValidityDays Int      @default(14)
+  taxEnabled            Boolean  @default(false)
+  taxRatePct            Float    @default(5)
+  taxLabel              String   @default("VAT")
+  quotationTerms        String?
+  updatedAt             DateTime @updatedAt
+}
+
+model Contact {
+  id            String         @id @default(cuid())
+  name          String?
+  companyName   String?
+  phone         String?
+  email         String?
+  kind          String         @default("UNKNOWN") // CUSTOMER | SUPPLIER | PERSONAL | FAMILY | OTHER | UNKNOWN
+  supplierId    String?
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  conversations Conversation[]
+  enquiries     Enquiry[]
+
+  @@index([phone])
+  @@index([email])
+}
+
+model ExcludedContact {
+  id         String   @id @default(cuid())
+  identifier String   @unique // normalized phone or email
+  label      String?
+  category   String   @default("PERSONAL") // FAMILY | PERSONAL | TRUSTED_SUPPLIER | CUSTOMER | OTHER
+  reason     String?
+  createdAt  DateTime @default(now())
+}
+
+model Conversation {
+  id            String    @id @default(cuid())
+  channel       String // WHATSAPP | EMAIL | MANUAL
+  externalId    String?
+  contactId     String?
+  contact       Contact?  @relation(fields: [contactId], references: [id])
+  subject       String?
+  lastMessageAt DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  messages      Message[]
+
+  @@unique([channel, externalId])
+  @@index([contactId])
+}
+
+model Message {
+  id                       String       @id @default(cuid())
+  conversationId           String
+  conversation             Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  channel                  String // WHATSAPP | EMAIL | MANUAL
+  externalMessageId        String       @unique // provider id (wa message id / email Message-ID); dedupe key
+  direction                String       @default("INBOUND")
+  fromAddress              String
+  fromName                 String?
+  toAddress                String?
+  subject                  String?
+  body                     String?
+  bodyRetained             Boolean      @default(true) // false for family/personal contacts
+  mediaType                String?
+  receivedAt               DateTime     @default(now())
+  rawMeta                  String? // JSON, provider metadata (ids only)
+  processingStatus         String       @default("RECEIVED") // RECEIVED | IGNORED | QUEUED | PROCESSING | PROCESSED | FAILED | NEEDS_REVIEW
+  classification           String? // RFQ | AVAILABILITY | FOLLOW_UP | SUPPLIER | BUSINESS_OTHER | PERSONAL | UNCLEAR
+  classificationConfidence Float?
+  classificationReason     String?
+  enquiryId                String?      @unique
+  enquiry                  Enquiry?     @relation(fields: [enquiryId], references: [id])
+  attachments              Attachment[]
+  createdAt                DateTime     @default(now())
+
+  @@index([conversationId, receivedAt])
+  @@index([processingStatus])
+}
+
+model Attachment {
+  id               String   @id @default(cuid())
+  messageId        String?
+  message          Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  enquiryId        String?
+  enquiry          Enquiry? @relation(fields: [enquiryId], references: [id])
+  filename         String // sanitized display name
+  storedName       String   @unique // random name on disk
+  mimeType         String
+  detectedMime     String?
+  sizeBytes        Int
+  sha256           String
+  storagePath      String
+  pageCount        Int?
+  textExtract      String? // extracted plain text (untrusted content)
+  extractionStatus String   @default("PENDING") // PENDING | TEXT_OK | OCR_USED | NEEDS_REVIEW | FAILED
+  extractionNote   String?
+  createdAt        DateTime @default(now())
+
+  @@unique([messageId, sha256])
+  @@index([enquiryId])
+}
+
+model Enquiry {
+  id                       String              @id @default(cuid())
+  publicRef                String              @unique // ENQ-2026-0001
+  channel                  String // WHATSAPP | EMAIL | MANUAL | DEMO
+  contactId                String?
+  contact                  Contact?            @relation(fields: [contactId], references: [id])
+  conversationId           String?
+  customerName             String?
+  customerPhone            String?
+  customerEmail            String?
+  rawText                  String
+  extractedJson            String? // original extraction snapshot; owner corrections are stored separately
+  deliveryLocation         String?
+  deliveryDate             DateTime?
+  currency                 String?
+  status                   String              @default("NEW")
+  // NEW | EXTRACTING | NEEDS_REVIEW | READY | SOURCING | AWAITING_APPROVAL | APPROVED | QUOTED | CLOSED | REJECTED | IGNORED
+  classification           String              @default("RFQ")
+  classificationConfidence Float               @default(0)
+  extractionConfidence     Float?
+  requiresReview           Boolean             @default(false)
+  reviewReason             String?
+  isDemo                   Boolean             @default(false)
+  createdById              String?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+  items                    EnquiryItem[]
+  attachments              Attachment[]
+  approvals                Approval[]
+  quotations               CustomerQuotation[]
+  Message                  Message?
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model EnquiryItem {
+  id                    String                  @id @default(cuid())
+  enquiryId             String
+  enquiry               Enquiry                 @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  lineNo                Int                     @default(1)
+  description           String
+  rawText               String?
+  category              String?
+  brand                 String?
+  size                  String?
+  material              String?
+  grade                 String?
+  pressureRating        String?
+  schedule              String?
+  standard              String?
+  unit                  String                  @default("pcs")
+  quantity              Float
+  missingFields         String                  @default("[]") // JSON string[]
+  confidence            String                  @default("{}") // JSON record<field, 0..1>
+  sourceRef             String? // page 2 / sheet "Sheet1" row 14 / message
+  reviewStatus          String                  @default("PENDING") // PENDING | CONFIRMED | NEEDS_CLARIFICATION | REJECTED
+  clarificationQuestion String?
+  inventoryStatus       String                  @default("UNCHECKED") // UNCHECKED | AVAILABLE | PARTIAL | SHORT | NONE | CLARIFY
+  quantityFromStock     Float                   @default(0)
+  quantityToSource      Float                   @default(0)
+  inventoryCheckedAt    DateTime?
+  stockIsStale          Boolean                 @default(false)
+  sourcingStatus        String                  @default("NOT_STARTED") // NOT_STARTED | QUEUED | SEARCHING | RESULTS_READY | AWAITING_APPROVAL | APPROVED | NO_RESULTS | FAILED | NOT_REQUIRED
+  matchedProductId      String?
+  matchedStockJson      String? // JSON snapshot of stock rows used for the decision
+  extractedJson         String? // original extracted values for this line
+  approvedOfferId       String? // supplier offer approved by the owner
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  offers                SupplierOffer[]
+  searchSessions        SearchSession[]
+  supplierQuotes        SupplierQuote[]
+  quotationItems        CustomerQuotationItem[]
+
+  @@index([enquiryId])
+  @@index([sourcingStatus])
+}
+
+model Product {
+  id               String                 @id @default(cuid())
+  sku              String                 @unique
+  name             String
+  category         String
+  brand            String?
+  material         String?
+  grade            String?
+  size             String?
+  pressureRating   String?
+  schedule         String?
+  standard         String?
+  unit             String                 @default("pcs")
+  specs            String                 @default("{}") // JSON free-form extra attributes
+  notes            String?
+  isDemo           Boolean                @default(false)
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  specifications   ProductSpecification[]
+  stocks           InventoryStock[]
+  movements        InventoryMovement[]
+  supplierProducts SupplierProduct[]
+
+  @@index([category])
+}
+
+model ProductSpecification {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  key       String
+  value     String
+
+  @@unique([productId, key])
+}
+
+model InventoryLocation {
+  id        String              @id @default(cuid())
+  code      String              @unique
+  name      String
+  isDemo    Boolean             @default(false)
+  stocks    InventoryStock[]
+  movements InventoryMovement[]
+}
+
+model InventoryStock {
+  id               String            @id @default(cuid())
+  productId        String
+  product          Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  locationId       String
+  location         InventoryLocation @relation(fields: [locationId], references: [id])
+  quantityOnHand   Float             @default(0)
+  quantityReserved Float             @default(0)
+  source           String            @default("MANUAL") // IMPORT | MANUAL | DEMO | ADJUSTMENT
+  lastUpdatedAt    DateTime          @default(now())
+
+  @@unique([productId, locationId])
+  @@index([productId])
+}
+
+model InventoryMovement {
+  id         String             @id @default(cuid())
+  productId  String
+  product    Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  locationId String?
+  location   InventoryLocation? @relation(fields: [locationId], references: [id])
+  delta      Float
+  reason     String
+  refType    String?
+  refId      String?
+  userId     String?
+  user       User?              @relation(fields: [userId], references: [id])
+  createdAt  DateTime           @default(now())
+
+  @@index([productId, createdAt])
+}
+
+model Supplier {
+  id             String            @id @default(cuid())
+  name           String
+  website        String?
+  country        String?
+  city           String?
+  address        String?
+  contactPerson  String?
+  email          String?
+  phone          String?
+  whatsapp       String?
+  categories     String            @default("[]") // JSON string[]
+  brands         String            @default("[]") // JSON string[]
+  status         String            @default("ACTIVE") // ACTIVE | PAUSED | BLOCKED | UNVERIFIED
+  notes          String?
+  lastVerifiedAt DateTime?
+  isDemo         Boolean           @default(false)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  contacts       SupplierContact[]
+  products       SupplierProduct[]
+  offers         SupplierOffer[]
+  quotes         SupplierQuote[]
+
+  @@index([name])
+}
+
+model SupplierContact {
+  id         String   @id @default(cuid())
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  name       String
+  role       String?
+  email      String?
+  phone      String?
+  whatsapp   String?
+  isPrimary  Boolean  @default(false)
+
+  @@index([supplierId])
+}
+
+model SupplierProduct {
+  id           String   @id @default(cuid())
+  supplierId   String
+  supplier     Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  productId    String?
+  product      Product? @relation(fields: [productId], references: [id])
+  title        String
+  description  String?
+  sku          String?
+  specs        String   @default("{}")
+  unitPrice    Float?
+  currency     String?
+  moq          Float?
+  availability String?
+  sourceUrl    String?
+  lastSeenAt   DateTime @default(now())
+  isDemo       Boolean  @default(false)
+
+  @@index([supplierId])
+}
+
+model SearchSession {
+  id            String         @id @default(cuid())
+  enquiryItemId String
+  enquiryItem   EnquiryItem    @relation(fields: [enquiryItemId], references: [id], onDelete: Cascade)
+  status        String         @default("QUEUED") // QUEUED | RUNNING | COMPLETED | PARTIAL | FAILED | CANCELLED
+  sourcesJson   String         @default("[]") // adapter coverage report
+  summaryJson   String         @default("{}") // counts + notes
+  error         String?
+  startedAt     DateTime       @default(now())
+  completedAt   DateTime?
+  queries       SearchQuery[]
+  results       SearchResult[]
+
+  @@index([enquiryItemId])
+}
+
+model SearchQuery {
+  id          String        @id @default(cuid())
+  sessionId   String
+  session     SearchSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  adapter     String
+  query       String
+  status      String        @default("QUEUED") // OK | FAILED | SKIPPED | RATE_LIMITED | NOT_CONFIGURED
+  resultCount Int           @default(0)
+  error       String?
+  createdAt   DateTime      @default(now())
+
+  @@index([sessionId])
+}
+
+model SearchResult {
+  id           String         @id @default(cuid())
+  sessionId    String
+  session      SearchSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  adapter      String
+  sourceUrl    String?
+  supplierId   String?
+  supplierName String?
+  title        String
+  snippet      String?
+  priceText    String?
+  currency     String?
+  moq          Float?
+  availability String?
+  evidenceJson String         @default("{}") // specifications found + extraction notes
+  matchStatus  String         @default("INSUFFICIENT") // EXACT | EQUIVALENT | POSSIBLE | INSUFFICIENT | NO_MATCH
+  confidence   Float          @default(0)
+  retrievedAt  DateTime       @default(now())
+  isDemo       Boolean        @default(false)
+  offer        SupplierOffer?
+
+  @@index([sessionId])
+}
+
+model SupplierOffer {
+  id                  String                  @id @default(cuid())
+  enquiryItemId       String
+  enquiryItem         EnquiryItem             @relation(fields: [enquiryItemId], references: [id], onDelete: Cascade)
+  supplierId          String?
+  supplier            Supplier?               @relation(fields: [supplierId], references: [id])
+  supplierName        String
+  searchResultId      String?                 @unique
+  searchResult        SearchResult?           @relation(fields: [searchResultId], references: [id])
+  productTitle        String
+  matchStatus         String                  @default("POSSIBLE") // EXACT | EQUIVALENT | POSSIBLE | INSUFFICIENT | NO_MATCH
+  unitPrice           Float?
+  currency            String?
+  quantityAvailable   Float?
+  moq                 Float?
+  shippingCost        Float?
+  otherCharges        Float?
+  taxes               Float?
+  leadTimeDays        Int?
+  deliveryLocation    String?
+  validityDate        DateTime?
+  paymentTerms        String?
+  status              String                  @default("DISCOVERED")
+  // DISCOVERED | LISTING_FOUND | POSSIBLE_MATCH | VERIFIED | CONTACTED | QUOTE_RECEIVED | PRICE_CONFIRMED | EXPIRED | UNAVAILABLE
+  sourceType          String                  @default("PUBLIC_WEB") // PUBLIC_WEB | INTERNAL_DB | SUPPLIER_QUOTE | MANUAL | MARKETPLACE
+  sourceUrl           String?
+  quotedAt            DateTime?
+  quoteRef            String?
+  verificationStatus  String                  @default("UNVERIFIED") // UNVERIFIED | VERIFIED | PARTIAL | EXPIRED
+  landedCostJson      String                  @default("{}")
+  isEligible          Boolean                 @default(false)
+  ineligibilityReason String?
+  evidenceJson        String                  @default("{}")
+  isDemo              Boolean                 @default(false)
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  quoteItemId         String?                 @unique
+  quoteItem           SupplierQuoteItem?      @relation(fields: [quoteItemId], references: [id])
+  quotationItems      CustomerQuotationItem[]
+
+  @@index([enquiryItemId])
+}
+
+model SupplierQuote {
+  id            String              @id @default(cuid())
+  supplierId    String
+  supplier      Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  enquiryItemId String?
+  enquiryItem   EnquiryItem?        @relation(fields: [enquiryItemId], references: [id])
+  token         String              @unique
+  status        String              @default("REQUESTED") // REQUESTED | AWAITING_APPROVAL | SENT | RESPONDED | DECLINED | EXPIRED
+  subject       String?
+  messageBody   String?
+  sentAt        DateTime?
+  respondedAt   DateTime?
+  expiresAt     DateTime
+  responseNote  String?
+  createdAt     DateTime            @default(now())
+  items         SupplierQuoteItem[]
+
+  @@index([supplierId])
+}
+
+model SupplierQuoteItem {
+  id           String         @id @default(cuid())
+  quoteId      String
+  quote        SupplierQuote  @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  description  String
+  quantity     Float
+  unit         String         @default("pcs")
+  unitPrice    Float?
+  currency     String?
+  moq          Float?
+  leadTimeDays Int?
+  shippingCost Float?
+  validityDate DateTime?
+  notes        String?
+  offer        SupplierOffer?
+}
+
+model Approval {
+  id          String    @id @default(cuid())
+  type        String // SOURCING | SUPPLIER_QUOTE_SEND | CUSTOMER_QUOTATION | PRICING_OVERRIDE
+  entityType  String
+  entityId    String
+  enquiryId   String?
+  enquiry     Enquiry?  @relation(fields: [enquiryId], references: [id])
+  requestedBy String    @default("SYSTEM")
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED | CHANGES_REQUESTED | CANCELLED
+  decidedById String?
+  decidedBy   User?     @relation("ApprovalDecider", fields: [decidedById], references: [id])
+  reason      String?
+  riskNotes   String?
+  payloadJson String    @default("{}")
+  createdAt   DateTime  @default(now())
+  decidedAt   DateTime?
+
+  @@index([status, createdAt])
+  @@index([enquiryId])
+}
+
+model CustomerQuotation {
+  id                String                  @id @default(cuid())
+  enquiryId         String
+  enquiry           Enquiry                 @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  quoteNumber       String                  @unique
+  version           Int                     @default(1)
+  customerName      String
+  customerPhone     String?
+  customerEmail     String?
+  currency          String
+  subtotal          Float                   @default(0)
+  taxAmount         Float                   @default(0)
+  total             Float                   @default(0)
+  internalCostTotal Float?
+  terms             String?
+  notes             String?
+  validityDate      DateTime?
+  status            String                  @default("DRAFT") // DRAFT | AWAITING_APPROVAL | APPROVED | SENT | VOID
+  approvedById      String?
+  approvedBy        User?                   @relation("QuoteApprover", fields: [approvedById], references: [id])
+  approvedAt        DateTime?
+  sentAt            DateTime?
+  pdfPath           String?
+  pdfGeneratedAt    DateTime?
+  isDemo            Boolean                 @default(false)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  items             CustomerQuotationItem[]
+
+  @@index([enquiryId])
+}
+
+model CustomerQuotationItem {
+  id              String            @id @default(cuid())
+  quotationId     String
+  quotation       CustomerQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  description     String
+  specs           String?
+  quantity        Float
+  unit            String            @default("pcs")
+  costPrice       Float?
+  unitPrice       Float
+  lineTotal       Float
+  supplierOfferId String?
+  supplierOffer   SupplierOffer?    @relation(fields: [supplierOfferId], references: [id])
+  enquiryItemId   String?
+  enquiryItem     EnquiryItem?      @relation(fields: [enquiryItemId], references: [id])
+}
+
+model PricingRule {
+  id        String   @id @default(cuid())
+  scope     String   @default("GLOBAL") // GLOBAL | CATEGORY
+  category  String?
+  type      String   @default("PERCENT_MARKUP") // PERCENT_MARKUP | FIXED_MARKUP | MANUAL
+  value     Float    @default(0)
+  priority  Int      @default(100)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Integration {
+  id            String    @id @default(cuid())
+  key           String    @unique
+  name          String
+  status        String    @default("NOT_CONFIGURED")
+  configJson    String    @default("{}")
+  secretsJson   String    @default("{}")
+  accountLabel  String?
+  lastCheckedAt DateTime?
+  lastError     String?
+  updatedAt     DateTime  @updatedAt
+}
+
+model BackgroundJob {
+  id             String    @id @default(cuid())
+  type           String
+  payloadJson    String    @default("{}")
+  status         String    @default("QUEUED")
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  idempotencyKey String    @unique
+  progress       String?
+  runAfter       DateTime  @default(now())
+  lockedAt       DateTime?
+  lockedBy       String?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, runAfter])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  actorLabel String   @default("system")
+  action     String
+  entityType String
+  entityId   String?
+  metaJson   String   @default("{}")
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  type      String
+  title     String
+  body      String?
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([isRead])
+}
+
+model ExchangeRate {
+  id        String   @id @default(cuid())
+  base      String
+  quote     String
+  rate      Float
+  source    String
+  fetchedAt DateTime @default(now())
+
+  @@unique([base, quote, fetchedAt])
+}
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
