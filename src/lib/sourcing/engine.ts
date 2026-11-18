@@ -215,6 +215,11 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
     return true;
   });
 
+  const equivalences = await db.materialEquivalence.findMany({
+    where: { isActive: true },
+    select: { requestedMaterial: true, offeredMaterial: true, requestedGrade: true, offeredGrade: true, reason: true },
+  });
+
   const requestSpec = {
     description: item.description,
     category: item.category,
@@ -234,7 +239,7 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
 
   for (const candidate of uniqueCandidates) {
     const specs = candidateSpecs(candidate);
-    const match = matchProduct(requestSpec, specs, { strictStandard: Boolean(item.standard) });
+    const match = matchProduct(requestSpec, specs, { strictStandard: Boolean(item.standard), equivalences });
     supplierNames.add(candidate.supplierName);
 
     const result = await db.searchResult.create({

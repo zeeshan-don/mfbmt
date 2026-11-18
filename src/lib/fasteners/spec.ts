@@ -510,8 +510,44 @@ export type FastenerComparison = {
   reasons: string[];
   mismatches: string[];
   missing: string[];
+  /** True only when an owner-approved material equivalence was applied. */
+  usedEquivalence: boolean;
   fieldResults: Array<{ field: string; requested: string | null; offered: string | null; result: "MATCH" | "MISSING" | "MISMATCH" }>;
 };
+
+export type FastenerEquivalenceRule = {
+  requestedMaterial: string;
+  offeredMaterial: string;
+  requestedGrade?: string | null;
+  offeredGrade?: string | null;
+  reason?: string | null;
+};
+
+function approvedMaterialEquivalence(
+  requestedMaterial: string,
+  offeredMaterial: string,
+  requestedGrade: string | null,
+  offeredGrade: string | null,
+  rules: FastenerEquivalenceRule[],
+): FastenerEquivalenceRule | null {
+  const a = normalizeMaterial(requestedMaterial);
+  const b = normalizeMaterial(offeredMaterial);
+  const gradeA = normalizeGrade(requestedGrade) ?? "";
+  const gradeB = normalizeGrade(offeredGrade) ?? "";
+  const candidates = rules.filter(
+    (rule) =>
+      normalizeMaterial(rule.requestedMaterial) === a && normalizeMaterial(rule.offeredMaterial) === b,
+  );
+  return (
+    candidates.find(
+      (rule) =>
+        (normalizeGrade(rule.requestedGrade ?? null) ?? "") === gradeA &&
+        (normalizeGrade(rule.offeredGrade ?? null) ?? "") === gradeB,
+    ) ??
+    candidates.find((rule) => !rule.requestedGrade && !rule.offeredGrade) ??
+    null
+  );
+}
 
 function fieldResult(
   field: string,
@@ -553,12 +589,17 @@ function sameStandard(a: string | null, b: string | null): boolean {
  * Substitutions are never accepted here; an owner-approved equivalence is applied
  * by the caller, not by this function.
  */
-export function compareFastenerSpecs(requested: FastenerSpec, offered: FastenerSpec): FastenerComparison {
+export function compareFastenerSpecs(
+  requested: FastenerSpec,
+  offered: FastenerSpec,
+  options: { equivalences?: FastenerEquivalenceRule[] } = {},
+): FastenerComparison {
   const out: FastenerComparison = {
     status: "EXACT",
     reasons: [],
     mismatches: [],
     missing: [],
+    usedEquivalence: false,
     fieldResults: [],
   };
 
@@ -605,8 +646,35 @@ export function compareFastenerSpecs(requested: FastenerSpec, offered: FastenerS
     );
   }
 
-  const normMat = (v: string | null) => (v ? normalizeMaterial(v) : null);
-  fieldResult("Material", requested.material, offered.material, normMat(requested.material) === normMat(offered.material), out);
+  if (!requested.material) {
+    out.fieldResults.push({ field: "Material", requested: null, offered: offered.material, result: offered.material ? "MATCH" : "MISSING" });
+  } else if (!offered.material) {
+    out.missing.push("Material");
+    out.fieldResults.push({ field: "Material", requested: requested.material, offered: null, result: "MISSING" });
+  } else if (normalizeMaterial(requested.material) === normalizeMaterial(offered.material)) {
+    out.reasons.push(`Material matches (${offered.material}).`);
+    out.fieldResults.push({ field: "Material", requested: requested.material, offered: offered.material, result: "MATCH" });
+  } else {
+    const approved = approvedMaterialEquivalence(
+      requested.material,
+      offered.material,
+      requested.propertyClass,
+      offered.propertyClass,
+      options.equivalences ?? [],
+    );
+    if (approved) {
+      out.usedEquivalence = true;
+      out.reasons.push(
+        approved.reason
+          ? `Material: approved substitution ${requested.material} → ${offered.material}: ${approved.reason}`
+          : `Material: approved substitution ${requested.material} → ${offered.material}.`,
+      );
+      out.fieldResults.push({ field: "Material", requested: requested.material, offered: offered.material, result: "MATCH" });
+    } else {
+      out.mismatches.push(`Material differs: requested ${requested.material}, offered ${offered.material}.`);
+      out.fieldResults.push({ field: "Material", requested: requested.material, offered: offered.material, result: "MISMATCH" });
+    }
+  }
 
   fieldResult(
     "Property class",
@@ -652,17 +720,16 @@ export function compareFastenerSpecs(requested: FastenerSpec, offered: FastenerS
     );
   }
 
-  // Requested specification incomplete: a verification cannot be claimed.
+  // A hard conflict always wins: no equivalence may hide a wrong pitch, grade,
+  // finish, length, thread or standard. Missing data is never assumed.
   const requestMissing = missingFastenerFields(requested);
-  if (requestMissing.length > 0) {
+  if (out.mismatches.length > 0) {
+    out.status = "NO_MATCH";
+  } else if (requestMissing.length > 0 || out.missing.length > 0) {
     out.missing.push(...requestMissing.filter((field) => !out.missing.includes(field)));
     out.status = "INSUFFICIENT";
-  } else if (out.mismatches.length > 0) {
-    out.status = "NO_MATCH";
-  } else if (out.missing.length > 0) {
-    out.status = "INSUFFICIENT";
   } else {
-    out.status = "EXACT";
+    out.status = out.usedEquivalence ? "EQUIVALENT" : "EXACT";
   }
 
   return out;

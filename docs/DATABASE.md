@@ -101,9 +101,11 @@ npx prisma migrate status
 Migrations are additive. Never run `prisma migrate reset`, `db push --force-reset`, `DROP TABLE` or
 `TRUNCATE` against a database containing demo or production data.
 
-The most recent migration (`20261118120000_fastener_specs_and_worker_heartbeat`) only adds nullable
-columns, two indexes and the `WorkerHeartbeat` table, so existing IDs, quantities and relationships are
-preserved.
+The latest migrations are additive: `20261118120000_fastener_specs_and_worker_heartbeat` adds nullable
+fastener columns, indexes and the `WorkerHeartbeat` table; `20261118130000_approval_pending_only_unique`
+replaces the old `(type, entityId, status)` approval uniqueness with a partial unique index on `PENDING`
+rows only, so decided approvals remain as history and re-approval no longer crashes. Existing IDs,
+quantities and relationships are preserved.
 
 ## Tests
 

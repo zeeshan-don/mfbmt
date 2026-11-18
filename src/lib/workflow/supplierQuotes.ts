@@ -297,6 +297,11 @@ export async function recordSupplierResponse(
   if (input.propertyClass) offeredSpec.propertyClass = input.propertyClass;
   if (input.finish) offeredSpec.finish = input.finish as typeof offeredSpec.finish;
 
+  const equivalences = await db.materialEquivalence.findMany({
+    where: { isActive: true },
+    select: { requestedMaterial: true, offeredMaterial: true, requestedGrade: true, offeredGrade: true, reason: true },
+  });
+
   const match = matchProduct(
     {
       description: requested.description,
@@ -319,7 +324,7 @@ export async function recordSupplierResponse(
       standard: input.standard ?? null,
       fastenerSpec: offeredSpec,
     },
-    { strictStandard: Boolean(requested.standard) },
+    { strictStandard: Boolean(requested.standard), equivalences },
   );
 
   const validityDate =

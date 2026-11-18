@@ -146,8 +146,8 @@ OCR_PROVIDER=auto    # auto | tesseract | none
 ```
 
 - Images (JPEG/PNG/WebP) are read with Tesseract.js. Language data is downloaded on first use; if that fails the image is kept for manual entry and the enquiry is flagged.
-- HEIC/HEIF photos are not decoded on this server; re-send as JPEG or type the items.
-- A scanned PDF with no embedded text is marked **needs review** with an explicit note. It is never silently skipped and nothing is invented.
+- HEIC/HEIF photos are converted with `sharp` when the native build supports the format; if conversion fails the image is kept and the note asks for a JPEG or manual entry.
+- A scanned PDF with no embedded text is rendered page-by-page and read with Tesseract OCR when enabled. If OCR is disabled or language data is unavailable, it is marked **needs review** with an explicit note. It is never silently skipped and nothing is invented.
 
 ---
 

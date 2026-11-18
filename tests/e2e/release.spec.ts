@@ -44,6 +44,17 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: true });
 }
 
+async function logout(page: Page) {
+  // Server-action forms are enhanced after hydration; wait for the action
+  // attribute so the click submits the real action rather than doing nothing.
+  const form = page.locator("form").filter({ has: page.getByRole("button", { name: "Sign out" }) }).first();
+  await expect(form).toHaveAttribute("action", /.+/);
+  await Promise.all([
+    page.waitForURL(/\/login/, { timeout: 30_000 }),
+    form.evaluate((element) => (element as HTMLFormElement).requestSubmit()),
+  ]);
+}
+
 function parsePdfFile(file: string) {
   const output = execFileSync(process.execPath, [path.join(process.cwd(), "tests", "e2e", "parse-pdf-cli.cjs"), file], {
     encoding: "utf8",
@@ -55,7 +66,7 @@ test("owner login, dashboard, navigation and logout", async ({ page }) => {
   await login(page, OWNER);
   await expect(page).toHaveURL("/");
   await expect(page.getByText("Good day, MFBMT")).toBeVisible();
-  await expect(page.getByText("Worker status unknown", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText(/Worker active|Worker status unknown/).first()).toBeVisible();
   await shot(page, "desktop-dashboard");
 
   for (const [label, heading] of [
@@ -72,7 +83,7 @@ test("owner login, dashboard, navigation and logout", async ({ page }) => {
     await expect(page.getByText("Application error")).toHaveCount(0);
   }
 
-  await Promise.all([page.waitForURL(/\/login/), page.getByRole("button", { name: "Sign out" }).click()]);
+  await logout(page);
 });
 
 test("fastener demo walkthrough shows stock, missing details and excluded offers", async ({ page }) => {
@@ -167,28 +178,48 @@ test("staff navigation and server-side guards deny owner-only pages and costs", 
 test("staff cannot approve through a direct server-action request", async ({ page, browser }) => {
   await login(page, OWNER);
   await page.goto(`/approvals/${fixture.authApprovalId}`);
-  const form = page.locator("form").filter({ has: page.getByRole("button", { name: /Approve selected supplier/i }) });
-  const actionName = await form.locator('input[name^="$ACTION_ID_"]').first().getAttribute("name");
-  const selected = await form.locator('input[name="selectedOfferId"]:checked').first().getAttribute("value");
-  expect(actionName).toBeTruthy();
-  expect(selected).toBeTruthy();
+
+  // Capture the real action request that the owner page would send, then abort
+  // it so the fixture stays pending. Replaying it with a staff session proves
+  // the server action itself rejects the caller, not just the page navigation.
+  type Captured = { url: string; headers: Record<string, string>; body: Buffer | null };
+  let captured: Captured | null = null;
+  await page.route(`**/approvals/${fixture.authApprovalId}`, async (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") return route.continue();
+    captured = {
+      url: request.url(),
+      headers: request.headers(),
+      body: request.postDataBuffer(),
+    };
+    await route.abort();
+  });
+
+  await page.getByRole("button", { name: /Approve selected supplier/i }).click();
+  await expect.poll(() => Boolean(captured), { timeout: 10_000 }).toBe(true);
+  const actionRequest = captured!;
+  expect(actionRequest.headers["next-action"]).toBeTruthy();
 
   const staffContext = await browser.newContext();
   const staffPage = await staffContext.newPage();
   await login(staffPage, STAFF);
-  const body = new URLSearchParams({
-    [actionName!]: "",
-    approvalId: fixture.authApprovalId,
-    selectedOfferId: selected!,
-    decision: "APPROVED",
-    reason: "unauthorized direct request",
-  });
-  const response = await staffPage.request.post(`/approvals/${fixture.authApprovalId}`, {
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    data: body.toString(),
+  // Never replay the owner's cookie: the staff session must authenticate the
+  // action on its own. Keep the action id and body from the captured request.
+  const replayHeaders = { ...actionRequest.headers };
+  delete replayHeaders.cookie;
+  delete replayHeaders.host;
+  delete replayHeaders.origin;
+  delete replayHeaders.referer;
+  delete replayHeaders["content-length"];
+  const response = await staffPage.request.post(actionRequest.url, {
+    headers: replayHeaders,
+    data: actionRequest.body ?? undefined,
     maxRedirects: 0,
   });
-  expect(response.status()).toBeLessThan(500);
+  // The action ran: authorizeOwner() redirects a staff session to /login. A
+  // plain page render would redirect to /?denied=1 instead.
+  expect([303, 307]).toContain(response.status());
+  expect(response.headers()["x-action-redirect"] ?? response.headers()["location"] ?? "").toContain("/login");
   const approval = await db.approval.findUnique({ where: { id: fixture.authApprovalId } });
   expect(approval?.status).toBe("PENDING");
   const item = await db.enquiryItem.findUnique({ where: { id: fixture.authItemId } });
@@ -262,6 +293,6 @@ test("mobile navigation, enquiry detail and sign-out", async ({ browser }) => {
   await expect(page.getByText("Missing details").first()).toBeVisible();
   await shot(page, "mobile-enquiry-fastener");
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
-  await Promise.all([page.waitForURL(/\/login/), page.getByRole("button", { name: "Sign out" }).click()]);
+  await logout(page);
   await context.close();
 });

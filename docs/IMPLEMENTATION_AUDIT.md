@@ -48,7 +48,23 @@ PostgreSQL 14+ instance, not against README claims. It is kept as a record of wh
 
 - No live Meta/WhatsApp, Gmail/Microsoft 365, AI provider, web-search or FX credentials were available.
   Those paths are exercised only through their unconfigured/error handlers and mocks.
-- Browser-driven screenshots/end-to-end UI runs were not performed; route integrity is checked
-  statically and by server-rendered tests where possible.
+- Browser-driven screenshots/end-to-end UI runs were not performed **during the original audit**; route
+  integrity was checked statically and by server-rendered tests at that time. See the current update below.
 - Only local PostgreSQL was used. Production-like managed PostgreSQL (with connection pooling) was not
   available.
+
+## Update — 2026-11-19 final demo-readiness pass
+
+- Chromium Playwright E2E is now implemented and passing: **7 tests** covering owner login/navigation/
+  logout, the fastener walkthrough, PDF leakage, staff page and cost redaction, a real replayed Server Action
+  denial, the isolated approval/quotation/PDF flow, and mobile navigation/sign-out.
+- Fastener equivalence was corrected: the fastener matcher no longer returns before the owner-approved
+  `MaterialEquivalence` policy. Active equivalences are loaded by inventory checks, sourcing, manual offers
+  and supplier responses. AI/parser suggestions never create an equivalence row, and a hard pitch, class,
+  thread, length, finish or standard conflict still returns `NO_MATCH`.
+- The authorization test captures the action POST from the owner page, aborts it, removes the owner cookie,
+  and replays the same action/body with a staff session. The action redirects to `/login` and the approval
+  remains `PENDING`; this is an action-level check, not a navigation-visibility check.
+- Current automated result: **14 Vitest files / 142 tests pass**, `tsc` 0 errors, lint 0 errors, and
+  `npx next build` succeeds. `npm run build` on this Windows host is blocked at `prisma generate` by a file
+  lock on the Prisma engine DLL; the generated client still builds successfully.

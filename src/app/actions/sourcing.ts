@@ -64,6 +64,11 @@ export async function recordManualOfferAction(formData: FormData) {
   if (num(formData.get("offeredPitch")) != null) offeredSpec.pitchMm = num(formData.get("offeredPitch"));
   if (num(formData.get("offeredLength")) != null) offeredSpec.lengthMm = num(formData.get("offeredLength"));
 
+  const equivalences = await db.materialEquivalence.findMany({
+    where: { isActive: true },
+    select: { requestedMaterial: true, offeredMaterial: true, requestedGrade: true, offeredGrade: true, reason: true },
+  });
+
   const match = matchProduct(
     {
       description: item.description,
@@ -87,7 +92,7 @@ export async function recordManualOfferAction(formData: FormData) {
       brand: str(formData.get("offeredBrand")),
       fastenerSpec: offeredSpec,
     },
-    { strictStandard: Boolean(item.standard) },
+    { strictStandard: Boolean(item.standard), equivalences },
   );
 
   const validityRaw = str(formData.get("validityDate"));

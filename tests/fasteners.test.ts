@@ -151,6 +151,78 @@ describe("deterministic fastener matching", () => {
   });
 });
 
+describe("owner-approved fastener equivalences", () => {
+  const rule = {
+    requestedMaterial: "SS316",
+    offeredMaterial: "SS316L",
+    requestedGrade: "",
+    offeredGrade: "",
+    reason: "Owner approved 316L as an equivalent where the customer accepts it.",
+  };
+  const requested = bolt({ material: "SS316" });
+  const offered = bolt({ material: "SS316L" });
+
+  it("rejects an unapproved material substitution", () => {
+    const result = compareFastenerSpecs(requested, offered);
+    expect(result.status).toBe("NO_MATCH");
+    expect(result.usedEquivalence).toBe(false);
+    expect(result.mismatches.join(" ")).toMatch(/material/i);
+  });
+
+  it("accepts only an explicitly approved material substitution", () => {
+    const result = compareFastenerSpecs(requested, offered, { equivalences: [rule] });
+    expect(result.status).toBe("EQUIVALENT");
+    expect(result.usedEquivalence).toBe(true);
+    expect(result.reasons.join(" ")).toMatch(/approved substitution/i);
+    expect(result.mismatches).toHaveLength(0);
+  });
+
+  it("does not let an approved material hide a pitch conflict", () => {
+    const result = compareFastenerSpecs(requested, bolt({ material: "SS316L", pitchMm: 1.25 }), {
+      equivalences: [rule],
+    });
+    expect(result.status).toBe("NO_MATCH");
+    expect(result.mismatches.join(" ")).toMatch(/pitch|thread/i);
+  });
+
+  it("does not let an approved material hide a property-class conflict", () => {
+    const result = compareFastenerSpecs(requested, bolt({ material: "SS316L", propertyClass: "10.9" }), {
+      equivalences: [rule],
+    });
+    expect(result.status).toBe("NO_MATCH");
+    expect(result.mismatches.join(" ")).toMatch(/property class/i);
+  });
+
+  it("keeps missing required data as INSUFFICIENT even when material is approved", () => {
+    const result = compareFastenerSpecs(requested, bolt({ material: "SS316L", lengthMm: null }), {
+      equivalences: [rule],
+    });
+    expect(result.status).toBe("INSUFFICIENT");
+    expect(result.missing).toContain("Length");
+  });
+
+  it("applies the same policy through matchProduct's fastener path", () => {
+    const base = {
+      description: "Hex bolt ISO 4017 M10 x 1.5 x 30 mm class 8.8 zinc plated SS316",
+      category: "Industrial Fasteners",
+    };
+    const approved = matchProduct(
+      { ...base, material: "SS316", fastenerSpec: requested },
+      { ...base, material: "SS316L", fastenerSpec: offered },
+      { equivalences: [rule] },
+    );
+    expect(approved.status).toBe("EQUIVALENT");
+    expect(approved.usedEquivalence).toBe(true);
+
+    const unapproved = matchProduct(
+      { ...base, material: "SS316", fastenerSpec: requested },
+      { ...base, material: "SS316L", fastenerSpec: offered },
+    );
+    expect(unapproved.status).toBe("NO_MATCH");
+    expect(unapproved.usedEquivalence).toBe(false);
+  });
+});
+
 describe("fastener matching through the shared matcher", () => {
   const requested = {
     description: BOLT,

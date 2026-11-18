@@ -9,11 +9,11 @@ Everything below is a known, deliberate limit of this build. None of it is disgu
 - **Gmail / Microsoft 365** require OAuth app approval. While a Google OAuth app is in testing mode, refresh tokens may expire after 7 days and only test users can connect. Microsoft needs admin consent for `Mail.Read`/`Mail.Send`.
 - **Email intake** supports polling, Gmail Pub/Sub push and Microsoft Graph change notifications. Push endpoints must be reachable over HTTPS and their shared secrets configured; without credentials only the error paths can be exercised.
 - **Forwarded email** requires a provider that can POST JSON with a shared secret; a plain mail rule that only forwards to an address will not work without that bridge.
-- **Attachments**: PDF, XLSX, CSV, JPEG, PNG, WebP and plain text. `.xls`, `.xlsb`, `.doc`, `.docx` and archives are not parsed. HEIC/HEIF photos from iPhones are not decoded — re-send as JPEG.
+- **Attachments**: PDF, XLSX, CSV, JPEG, PNG, WebP and plain text. `.xls`, `.xlsb`, `.doc`, `.docx` and archives are not parsed. HEIC/HEIF photos are converted when the server's `sharp` build supports them; if conversion fails the app keeps the file and asks for a JPEG.
 
 ## Reading documents
 
-- Scanned PDFs with no embedded text are **not OCR'd** here; they are flagged for manual entry. Image OCR uses Tesseract and needs its language data downloaded on first use (no internet → OCR unavailable).
+- Scanned PDFs with no embedded text are rendered page-by-page and read with Tesseract OCR when `OCR_PROVIDER` is not `none`. Language data is downloaded on first use; without internet or language data the PDF is flagged for manual entry, never silently skipped. Image OCR uses the same Tesseract path.
 - Table extraction is heuristic. Merged cells, multi-row headers and units in a separate column can be misread. The original text and the extraction are always shown so the owner can correct them.
 - The deterministic parser handles common RFQ phrasing (quantities, sizes, materials, grades, units). Unusual layouts fall back to review rather than invention.
 - An AI provider improves messy text, but is optional. Without a key, all AI-dependent paths are marked "read without AI assistance". The app never fabricates AI output.

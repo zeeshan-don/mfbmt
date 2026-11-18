@@ -195,7 +195,7 @@ export function matchProduct(
         grade: candidate.grade,
         standard: candidate.standard,
       });
-    const comparison = compareFastenerSpecs(reqSpec, candSpec);
+    const comparison = compareFastenerSpecs(reqSpec, candSpec, { equivalences: options.equivalences });
     const score = Math.max(0, 1 - comparison.mismatches.length * 0.25 - comparison.missing.length * 0.2);
     return {
       status: comparison.status,
@@ -203,7 +203,7 @@ export function matchProduct(
       reasons: comparison.reasons,
       mismatches: comparison.mismatches,
       missing: comparison.missing,
-      usedEquivalence: false,
+      usedEquivalence: comparison.usedEquivalence,
     };
   }
 
