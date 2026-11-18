@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { encryptSecret, decryptSecret } from "../crypto";
+import { encryptSecret, tryDecryptSecret } from "../crypto";
 import { parseJson, stringifyJson } from "../json";
 import { integrationKeys, type IntegrationKey } from "../constants";
 
@@ -28,19 +28,50 @@ export async function getIntegration(key: IntegrationKey) {
   return db.integration.findUnique({ where: { key } });
 }
 
-export async function readSecrets(key: IntegrationKey): Promise<Record<string, string>> {
+export type SecretsResult = {
+  secrets: Record<string, string>;
+  /** Names of stored values that exist but could not be decrypted. */
+  failed: string[];
+};
+
+/**
+ * Reads and decrypts stored secrets. A decryption failure is reported, never
+ * converted into an empty string that would look like "not configured".
+ */
+export async function readSecretsDetailed(key: IntegrationKey): Promise<SecretsResult> {
   const integration = await getIntegration(key);
-  if (!integration?.secretsJson) return {};
+  if (!integration?.secretsJson) return { secrets: {}, failed: [] };
   const encrypted = parseJson<Record<string, string>>(integration.secretsJson, {});
-  const out: Record<string, string> = {};
+  const secrets: Record<string, string> = {};
+  const failed: string[] = [];
   for (const [name, value] of Object.entries(encrypted)) {
-    try {
-      out[name] = decryptSecret(value);
-    } catch {
-      out[name] = "";
-    }
+    if (!value) continue;
+    const result = tryDecryptSecret(value);
+    if (result.ok) secrets[name] = result.value;
+    else failed.push(name);
   }
-  return out;
+  return { secrets, failed };
+}
+
+export async function readSecrets(key: IntegrationKey): Promise<Record<string, string>> {
+  return (await readSecretsDetailed(key)).secrets;
+}
+
+/**
+ * Marks an integration "NEEDS_ATTENTION" when stored credentials cannot be
+ * decrypted, so the UI never shows a green badge for unusable credentials.
+ */
+export async function assertSecretsUsable(key: IntegrationKey): Promise<SecretsResult> {
+  const result = await readSecretsDetailed(key);
+  if (result.failed.length > 0) {
+    await saveIntegration({
+      key,
+      status: "NEEDS_ATTENTION",
+      lastError:
+        "Stored credentials could not be decrypted. The encryption key may have changed; reconnect this integration.",
+    });
+  }
+  return result;
 }
 
 export async function saveIntegration(input: {
@@ -50,35 +81,51 @@ export async function saveIntegration(input: {
   secrets?: Record<string, string>;
   accountLabel?: string | null;
   lastError?: string | null;
+  markSuccess?: boolean;
+  nextSyncAt?: Date | null;
 }) {
   const encrypted: Record<string, string> = {};
   for (const [name, value] of Object.entries(input.secrets ?? {})) {
+    // An empty string explicitly clears a stored secret.
     if (value) encrypted[name] = encryptSecret(value);
   }
   const existing = await getIntegration(input.key);
   const existingSecrets = parseJson<Record<string, string>>(existing?.secretsJson ?? "{}", {});
-  const mergedSecrets = { ...existingSecrets, ...encrypted };
-  const mergedConfig = { ...parseJson<Record<string, unknown>>(existing?.configJson ?? "{}", {}), ...(input.config ?? {}) };
+  const mergedSecrets = { ...existingSecrets };
+  for (const [name, value] of Object.entries(input.secrets ?? {})) {
+    if (value) mergedSecrets[name] = encrypted[name];
+    else delete mergedSecrets[name];
+  }
+  const mergedConfig = {
+    ...parseJson<Record<string, unknown>>(existing?.configJson ?? "{}", {}),
+    ...(input.config ?? {}),
+  };
+
+  const now = new Date();
+  const status = input.status ?? existing?.status ?? "NOT_CONFIGURED";
+  const data = {
+    status,
+    configJson: stringifyJson(mergedConfig),
+    secretsJson: stringifyJson(mergedSecrets),
+    accountLabel: input.accountLabel === undefined ? (existing?.accountLabel ?? null) : input.accountLabel,
+    lastError: input.lastError === undefined ? (existing?.lastError ?? null) : input.lastError,
+    lastCheckedAt: input.status ? now : (existing?.lastCheckedAt ?? null),
+    lastSuccessAt: input.markSuccess ? now : (existing?.lastSuccessAt ?? null),
+    nextSyncAt: input.nextSyncAt === undefined ? (existing?.nextSyncAt ?? null) : input.nextSyncAt,
+  };
 
   await db.integration.upsert({
     where: { key: input.key },
-    update: {
-      status: input.status ?? existing?.status ?? "NOT_CONFIGURED",
-      configJson: stringifyJson(mergedConfig),
-      secretsJson: stringifyJson(mergedSecrets),
-      accountLabel: input.accountLabel ?? existing?.accountLabel ?? null,
-      lastError: input.lastError ?? null,
-      lastCheckedAt: input.status ? new Date() : existing?.lastCheckedAt ?? null,
-    },
-    create: {
-      key: input.key,
-      name: NAMES[input.key],
-      status: input.status ?? "NOT_CONFIGURED",
-      configJson: stringifyJson(mergedConfig),
-      secretsJson: stringifyJson(mergedSecrets),
-      accountLabel: input.accountLabel ?? null,
-      lastError: input.lastError ?? null,
-      lastCheckedAt: input.status ? new Date() : null,
-    },
+    update: data,
+    create: { key: input.key, name: NAMES[input.key], ...data },
+  });
+}
+
+/** Removes all stored credentials for an integration and marks it disconnected. */
+export async function clearIntegration(key: IntegrationKey, status = "DISCONNECTED") {
+  await db.integration.upsert({
+    where: { key },
+    update: { secretsJson: "{}", status, accountLabel: null, lastError: null, nextSyncAt: null },
+    create: { key, name: NAMES[key], status, secretsJson: "{}" },
   });
 }

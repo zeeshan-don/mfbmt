@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "functions": {
+    "/api/files/[id]": {},
+    "/api/health": {},
+    "/api/integrations/gmail/callback": {},
+    "/api/integrations/gmail/start": {},
+    "/api/integrations/microsoft/callback": {},
+    "/api/integrations/microsoft/start": {},
+    "/api/jobs/tick": {},
+    "/api/quotations/[id]/pdf": {},
+    "/api/integrations/whatsapp": {},
+    "/api/webhooks/inbound-email": {},
+    "/api/webhooks/gmail": {},
+    "/api/webhooks/microsoft": {},
+    "/api/webhooks/whatsapp": {}
+  }
+}

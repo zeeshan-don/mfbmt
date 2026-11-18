@@ -8,6 +8,11 @@ export type ClassifyInput = {
   hasAttachments: boolean;
   senderKind?: string | null;
   excludedCategory?: string | null;
+  /**
+   * Whether an external AI provider may read this message. Unknown senders are
+   * classified locally until the owner confirms they are a business contact.
+   */
+  allowAi?: boolean;
 };
 
 const PERSONAL_WORDS = [
@@ -170,11 +175,15 @@ export async function classifyMessage(input: ClassifyInput): Promise<Classificat
     return { result: rule, source: "rule", needsReview: false };
   }
 
-  if (!aiStatus().configured) {
+  if (!aiStatus().configured || input.allowAi === false) {
     return {
       result: rule,
       source: "rule",
-      needsReview: rule.confidence < 0.65 || rule.classification === "UNCLEAR",
+      aiError:
+        input.allowAi === false
+          ? "First message from an unknown sender: classified locally so personal content is not sent to an AI provider."
+          : undefined,
+      needsReview: input.allowAi === false || rule.confidence < 0.65 || rule.classification === "UNCLEAR",
     };
   }
 

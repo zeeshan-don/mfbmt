@@ -5,6 +5,7 @@ import { parseJson } from "@/lib/json";
 import { formatDateTime, timeAgo, truncate } from "@/lib/format";
 import { Badge, Button, Card, CardHeader, EmptyState, PageHeader, statusTone } from "@/components/ui";
 import { markNotificationsReadAction } from "@/app/actions/approvals";
+import { retryJobAction } from "@/app/actions/settings";
 import { Activity, CheckCircle2, ListChecks } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -127,6 +128,12 @@ export default async function ActivityPage() {
                     </p>
                     {job.status === "FAILED" && job.lastError ? (
                       <p className="mt-0.5 text-[11px] text-warn">{truncate(job.lastError, 120)}</p>
+                    ) : null}
+                    {job.status === "FAILED" || job.status === "DEAD_LETTER" ? (
+                      <form action={retryJobAction} className="mt-1.5">
+                        <input type="hidden" name="jobId" value={job.id} />
+                        <Button size="sm">Retry this job</Button>
+                      </form>
                     ) : null}
                   </li>
                 ))}

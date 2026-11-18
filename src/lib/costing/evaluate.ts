@@ -2,19 +2,21 @@ import { db } from "../db";
 import { stringifyJson } from "../json";
 import { getRate } from "./fx";
 import { computeLandedCost } from "./landed";
-import { evaluateOffer, rankOffers, type RankableOffer } from "./ranking";
+import { rankOffers, summariseRanking, type RankableOffer } from "./ranking";
 
 export type OfferEvaluationSnapshot = {
   rank: number | null;
   eligible: boolean;
+  rankable: boolean;
   blockers: string[];
   reasons: string[];
+  overbuy: { excessQuantity: number; effectiveQuantity: number } | null;
 };
 
 /**
  * Recomputes comparable cost and eligibility for every offer of an item.
- * The snapshot is stored on the offer so the UI, approvals and audit trail all
- * read the same numbers.
+ * The snapshot is stored on the offer so the UI, the approval and the audit trail
+ * all read the same numbers.
  */
 export async function recomputeOffersForItem(enquiryItemId: string) {
   const item = await db.enquiryItem.findUnique({
@@ -34,11 +36,14 @@ export async function recomputeOffersForItem(enquiryItemId: string) {
   const rankables: Array<RankableOffer & { offerId: string }> = [];
 
   for (const offer of item.offers) {
-    const currency = (offer.currency ?? targetCurrency).toUpperCase();
-    if (!rateCache.has(currency)) {
-      rateCache.set(currency, await getRate(currency, targetCurrency));
+    // A missing currency is NOT assumed to be the target currency.
+    const currency = offer.currency ? offer.currency.toUpperCase() : null;
+    let rate: Awaited<ReturnType<typeof getRate>> = null;
+    if (currency && currency !== targetCurrency) {
+      if (!rateCache.has(currency)) rateCache.set(currency, await getRate(currency, targetCurrency));
+      rate = rateCache.get(currency) ?? null;
     }
-    const rate = rateCache.get(currency) ?? null;
+
     const landed = computeLandedCost({
       unitPrice: offer.unitPrice,
       currency,
@@ -51,7 +56,7 @@ export async function recomputeOffersForItem(enquiryItemId: string) {
       fxSource: rate?.source ?? null,
       fxFetchedAt: rate?.fetchedAt ?? null,
       targetCurrency,
-      taxEnabled: org?.taxEnabled ?? false,
+      taxEnabled: org?.taxInLandedCost ?? false,
     });
 
     rankables.push({
@@ -84,8 +89,10 @@ export async function recomputeOffersForItem(enquiryItemId: string) {
       const snapshot: OfferEvaluationSnapshot = {
         rank: entry.rank,
         eligible: entry.evaluation.eligible,
+        rankable: entry.evaluation.rankable,
         blockers: entry.evaluation.blockers,
         reasons: entry.evaluation.reasons,
+        overbuy: entry.evaluation.overbuy,
       };
       await db.supplierOffer.update({
         where: { id: offer.id },
@@ -97,23 +104,26 @@ export async function recomputeOffersForItem(enquiryItemId: string) {
             targetCurrency,
           }),
           isEligible: entry.evaluation.eligible,
+          procurementQuantity: entry.offer.landed.effectiveQuantity,
           ineligibilityReason:
             entry.evaluation.blockers.length > 0
               ? entry.evaluation.blockers.join(" ")
               : entry.evaluation.eligible && !entry.evaluation.rankable
-                ? "Cost information is incomplete."
+                ? `Cost information is incomplete: ${entry.offer.landed.missing.join(", ")}.`
                 : null,
         },
       });
     }),
   );
 
-  const rankableCount = ranked.filter((entry) => entry.evaluation.rankable).length;
+  const summary = summariseRanking(ranked);
+
   return {
     targetCurrency,
     requiredQuantity,
     ranked,
-    hasRankableOffer: rankableCount > 0,
+    summary,
+    hasRankableOffer: summary.comparableCount > 0,
     hasAnyOffer: ranked.length > 0,
   };
 }

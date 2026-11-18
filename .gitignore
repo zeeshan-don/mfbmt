@@ -8,7 +8,9 @@ build
 dev.db
 dev.db-journal
 prisma/dev.db
+prisma/test.db
 storage/
+storage-test/
 coverage
 .DS_Store
 next-env.d.ts

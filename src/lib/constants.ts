@@ -45,6 +45,7 @@ export const INVENTORY_STATUS_LABELS: Record<string, string> = {
   SHORT: "Not in stock",
   NONE: "Not in stock",
   CLARIFY: "Details needed",
+  NOT_CONFIGURED: "Inventory not set up",
 };
 
 export const SOURCING_STATUS_LABELS: Record<string, string> = {
@@ -62,21 +63,28 @@ export const SOURCING_STATUS_LABELS: Record<string, string> = {
 export const MATCH_STATUS_LABELS: Record<string, string> = {
   EXACT: "Exact match",
   EQUIVALENT: "Approved equivalent",
-  POSSIBLE: "Possible match",
+  POSSIBLE: "Possible match — not verified",
   INSUFFICIENT: "Not enough information",
   NO_MATCH: "Does not match",
 };
 
 export const OFFER_STATUS_LABELS: Record<string, string> = {
-  DISCOVERED: "Supplier found",
-  LISTING_FOUND: "Product page found",
-  POSSIBLE_MATCH: "Possible match",
+  DISCOVERED: "Supplier discovered",
+  LISTING_FOUND: "Product listing found",
+  POSSIBLE_MATCH: "Possible match — not verified",
   VERIFIED: "Specification verified",
   CONTACTED: "Supplier contacted",
   QUOTE_RECEIVED: "Quotation received",
   PRICE_CONFIRMED: "Price confirmed",
   EXPIRED: "Offer expired",
   UNAVAILABLE: "Supplier unavailable",
+};
+
+export const OFFER_VERIFICATION_LABELS: Record<string, string> = {
+  UNVERIFIED: "Not verified",
+  PARTIAL: "Partly verified",
+  VERIFIED: "Verified",
+  EXPIRED: "Expired",
 };
 
 export const CONTACT_KINDS = {
@@ -96,6 +104,9 @@ export const EXCLUDED_CATEGORIES = {
   OTHER: "Other",
 } as const;
 
+/** Categories whose messages are never retained, classified by AI or sourced. */
+export const PRIVATE_CATEGORIES = ["FAMILY", "PERSONAL", "OTHER"] as const;
+
 export const JOB_TYPES = {
   INGEST_MESSAGE: "INGEST_MESSAGE",
   EXTRACT_ENQUIRY: "EXTRACT_ENQUIRY",
@@ -103,6 +114,9 @@ export const JOB_TYPES = {
   RUN_SOURCING: "RUN_SOURCING",
   SEND_SUPPLIER_RFQ: "SEND_SUPPLIER_RFQ",
   BUILD_QUOTATION: "BUILD_QUOTATION",
+  SYNC_EMAIL: "SYNC_EMAIL",
+  RENEW_EMAIL_WATCH: "RENEW_EMAIL_WATCH",
+  PURGE_EXPIRED: "PURGE_EXPIRED",
 } as const;
 
 export const integrationKeys = [
@@ -116,6 +130,15 @@ export const integrationKeys = [
   "EXCHANGE_RATE",
 ] as const;
 export type IntegrationKey = (typeof integrationKeys)[number];
+
+/** Integration status values shown in Settings. */
+export const INTEGRATION_STATUS_LABELS: Record<string, string> = {
+  NOT_CONFIGURED: "Not configured",
+  CONNECTING: "Connecting",
+  CONNECTED: "Connected and tested",
+  NEEDS_ATTENTION: "Needs attention",
+  DISCONNECTED: "Disconnected",
+};
 
 export function label(map: Record<string, string>, key: string | null | undefined): string {
   if (!key) return "—";

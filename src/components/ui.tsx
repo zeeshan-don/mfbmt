@@ -99,6 +99,9 @@ export function Button({
   type = "submit",
   name,
   value,
+  disabled,
+  onClick,
+  title,
 }: {
   children: ReactNode;
   variant?: "primary" | "secondary" | "ghost" | "danger";
@@ -107,6 +110,9 @@ export function Button({
   type?: "submit" | "button";
   name?: string;
   value?: string;
+  disabled?: boolean;
+  onClick?: () => void;
+  title?: string;
 }) {
   const styles = {
     primary: "bg-accent text-white hover:opacity-90 border border-transparent",
@@ -119,6 +125,9 @@ export function Button({
       type={type}
       name={name}
       value={value}
+      disabled={disabled}
+      onClick={onClick}
+      title={title}
       className={clsx(
         "inline-flex items-center justify-center gap-2 rounded-control font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
         size === "sm" ? "h-8 px-2.5 text-xs" : "h-9 px-3.5 text-sm",

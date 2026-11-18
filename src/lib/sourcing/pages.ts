@@ -1,31 +1,74 @@
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { env } from "../env";
 
 const USER_AGENT = "MFBMTProcurementBot/1.0 (+official supplier research; respects robots.txt)";
 const MAX_BYTES = 400_000;
+const MAX_REDIRECTS = 3;
 const robotsCache = new Map<string, { disallow: string[]; allowed: boolean }>();
 
-function isPrivateHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return true;
-  if (host === "::1" || host === "[::1]") return true;
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    if (a === 127 || a === 10 || a === 0) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 169 && b === 254) return true;
-  }
+function ipv4IsPrivate(ip: string): boolean {
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b] = parts;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+  if (a === 192 && b === 0) return true;
+  if (a >= 224) return true; // multicast / reserved / broadcast
   return false;
+}
+
+export function ipIsPrivate(ip: string): boolean {
+  const version = isIP(ip);
+  if (version === 4) return ipv4IsPrivate(ip);
+  if (version !== 6) return true;
+  const lower = ip.toLowerCase();
+  if (lower === "::1" || lower === "::") return true;
+  const mapped = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (mapped) return ipv4IsPrivate(mapped[1]);
+  if (/^f[cd]/.test(lower)) return true; // unique local fc00::/7
+  if (/^fe[89ab]/.test(lower)) return true; // link-local fe80::/10
+  if (lower.startsWith("ff")) return true; // multicast
+  return false;
+}
+
+function hostnameIsBlocked(hostname: string): boolean {
+  // URL.hostname keeps the brackets around IPv6 literals ("[::1]").
+  const host = hostname.toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+  if (!host) return true;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".home.arpa")) return true;
+  if (host === "metadata.google.internal") return true;
+  if (isIP(host)) return ipIsPrivate(host);
+  return false;
+}
+
+/**
+ * Resolves a hostname and refuses anything that lands on a private, loopback,
+ * link-local or otherwise non-public address. This closes the DNS-rebinding hole
+ * that a hostname-only check leaves open (e.g. a public name pointing at 10.x).
+ */
+export async function hostResolvesPublic(hostname: string): Promise<boolean> {
+  if (hostnameIsBlocked(hostname)) return false;
+  const host = hostname.replace(/^\[|\]$/g, "");
+  try {
+    const addresses = await lookup(host, { all: true, verbatim: true });
+    if (addresses.length === 0) return false;
+    return addresses.every((entry) => !ipIsPrivate(entry.address));
+  } catch {
+    return false;
+  }
 }
 
 export function isSafePublicUrl(raw: string): boolean {
   try {
     const url = new URL(raw);
     if (!["http:", "https:"].includes(url.protocol)) return false;
-    if (isPrivateHost(url.hostname)) return false;
     if (url.username || url.password) return false;
-    return true;
+    return !hostnameIsBlocked(url.hostname);
   } catch {
     return false;
   }
@@ -38,6 +81,7 @@ export async function robotsAllows(raw: string): Promise<boolean> {
     const cached = robotsCache.get(origin);
     let entry = cached;
     if (!entry) {
+      if (!(await hostResolvesPublic(url.hostname))) return false;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 6000);
       try {
@@ -45,6 +89,7 @@ export async function robotsAllows(raw: string): Promise<boolean> {
           headers: { "User-Agent": USER_AGENT },
           signal: controller.signal,
           cache: "no-store",
+          redirect: "manual",
         });
         if (!response.ok) {
           entry = { disallow: [], allowed: true };
@@ -97,54 +142,84 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-export async function fetchPublicPage(raw: string): Promise<{
-  ok: boolean;
-  text: string;
-  status: "OK" | "ROBOTS_DISALLOWED" | "FAILED" | "TOO_LARGE";
-  note?: string;
-}> {
-  if (!isSafePublicUrl(raw)) return { ok: false, text: "", status: "FAILED", note: "URL is not allowed." };
-  if (!(await robotsAllows(raw))) {
-    return { ok: false, text: "", status: "ROBOTS_DISALLOWED", note: "The site's robots.txt disallows automated reading." };
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), env.SEARCH_REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(raw, {
-      headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
-      signal: controller.signal,
-      redirect: "follow",
-      cache: "no-store",
-    });
-    if (!response.ok) return { ok: false, text: "", status: "FAILED", note: `HTTP ${response.status}` };
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {
-      return { ok: false, text: "", status: "FAILED", note: "Not an HTML page." };
+type FetchFailure = { ok: false; text: ""; status: "ROBOTS_DISALLOWED" | "FAILED" | "TOO_LARGE"; note?: string };
+
+/**
+ * Fetches a public supplier page.
+ *
+ * Every hop is validated: the initial URL and each redirect target must be
+ * http(s), must not embed credentials, and must resolve (via DNS) only to public
+ * addresses. Redirects are followed manually, so an unvalidated Location header
+ * is never followed by the HTTP client itself.
+ */
+export async function fetchPublicPage(raw: string): Promise<
+  | { ok: true; text: string; status: "OK"; finalUrl: string }
+  | FetchFailure
+> {
+  let current = raw;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    if (!isSafePublicUrl(current)) return { ok: false, text: "", status: "FAILED", note: "URL is not allowed." };
+    const url = new URL(current);
+    if (!(await hostResolvesPublic(url.hostname))) {
+      return { ok: false, text: "", status: "FAILED", note: "The address resolves to a non-public network." };
     }
-    const reader = response.body?.getReader();
-    let received = 0;
-    const chunks: Uint8Array[] = [];
-    if (reader) {
-      while (received < MAX_BYTES) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          received += value.length;
+    if (hop === 0 && !(await robotsAllows(current))) {
+      return { ok: false, text: "", status: "ROBOTS_DISALLOWED", note: "The site's robots.txt disallows automated reading." };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), env.SEARCH_REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(current, {
+        headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
+        signal: controller.signal,
+        redirect: "manual",
+        cache: "no-store",
+      });
+
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) return { ok: false, text: "", status: "FAILED", note: `HTTP ${response.status} without a location.` };
+        const next = new URL(location, current).toString();
+        if (!isSafePublicUrl(next)) {
+          return { ok: false, text: "", status: "FAILED", note: "A redirect pointed to a disallowed address." };
         }
+        current = next;
+        continue;
       }
-      await reader.cancel().catch(() => undefined);
+
+      if (!response.ok) return { ok: false, text: "", status: "FAILED", note: `HTTP ${response.status}` };
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {
+        return { ok: false, text: "", status: "FAILED", note: "Not an HTML page." };
+      }
+
+      const reader = response.body?.getReader();
+      let received = 0;
+      const chunks: Uint8Array[] = [];
+      if (reader) {
+        while (received < MAX_BYTES) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.length;
+          }
+        }
+        await reader.cancel().catch(() => undefined);
+      }
+      const html = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+      return { ok: true, text: htmlToText(html).slice(0, 60_000), status: "OK", finalUrl: current };
+    } catch (error) {
+      return {
+        ok: false,
+        text: "",
+        status: "FAILED",
+        note: error instanceof Error ? error.message.slice(0, 120) : "Fetch failed",
+      };
+    } finally {
+      clearTimeout(timer);
     }
-    const html = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
-    return { ok: true, text: htmlToText(html).slice(0, 60_000), status: "OK" };
-  } catch (error) {
-    return {
-      ok: false,
-      text: "",
-      status: "FAILED",
-      note: error instanceof Error ? error.message.slice(0, 120) : "Fetch failed",
-    };
-  } finally {
-    clearTimeout(timer);
   }
+  return { ok: false, text: "", status: "FAILED", note: "Too many redirects." };
 }

@@ -2,23 +2,23 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import fs from "node:fs/promises";
-import path from "node:path";
 import { db } from "@/lib/db";
 import { authorizeOwner, hashPassword } from "@/lib/auth";
 import { writeAudit } from "@/lib/audit";
 import { env, integrationEnv } from "@/lib/env";
-import { testWhatsAppConnection, whatsAppStatus } from "@/lib/intake/whatsapp";
+import { testWhatsAppConnection } from "@/lib/integrations/whatsapp";
 import { testEmailConnection } from "@/lib/email/send";
-import { syncEmailIntake } from "@/lib/email/sync";
+import { syncEmailIntake, renewEmailSubscriptions } from "@/lib/email/sync";
 import { getRate } from "@/lib/costing/fx";
-import { normalizeIdentifier } from "@/lib/workflow/enquiry";
-import { saveIntegration, getIntegration, readSecrets } from "@/lib/integrations/store";
+import { saveIntegration } from "@/lib/integrations/store";
 import { disconnect } from "@/lib/email/oauth";
 import { AIExtractionResponseSchema } from "@/lib/validation/extraction";
 import { completeJson, aiStatus } from "@/lib/ai/provider";
 import { getSearchAdapters } from "@/lib/sourcing/registry";
+import { testStorage, storageDriver } from "@/lib/storage";
 import { PERMISSIONS } from "@/lib/constants";
+import { canonicalPhone, parseEmailAddress } from "@/lib/intake/identity";
+import { retryJob } from "@/lib/workflow/jobs";
 
 function str(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
@@ -35,25 +35,15 @@ export async function testIntegrationAction(formData: FormData) {
   try {
     switch (key) {
       case "WHATSAPP": {
-        if (!whatsAppStatus().configured) {
-          detail = `Missing credentials: ${whatsAppStatus().missing.join(", ")}.`;
-        } else {
-          const result = await testWhatsAppConnection();
-          status = result.ok ? "CONNECTED" : "NEEDS_ATTENTION";
-          detail = result.detail;
-          await saveIntegration({
-            key: "WHATSAPP",
-            status,
-            accountLabel: result.account ?? null,
-            lastError: result.ok ? null : detail,
-            config: { verifiedName: result.account ?? null },
-          });
-        }
+        const result = await testWhatsAppConnection();
+        status = result.ok ? "CONNECTED" : result.needsAttention ? "NEEDS_ATTENTION" : "NOT_CONFIGURED";
+        detail = result.detail;
         break;
       }
       case "AI_PROVIDER": {
         if (!aiStatus().configured) {
           detail = aiStatus().reason ?? "AI provider is not configured.";
+          status = "NOT_CONFIGURED";
         } else {
           const result = await completeJson(
             {
@@ -66,7 +56,7 @@ export async function testIntegrationAction(formData: FormData) {
           );
           status = result.ok ? "CONNECTED" : "NEEDS_ATTENTION";
           detail = result.ok ? `${env.AI_PROVIDER} · ${env.AI_MODEL} answered correctly.` : result.error;
-          await saveIntegration({ key: "AI_PROVIDER", status, lastError: result.ok ? null : detail });
+          await saveIntegration({ key: "AI_PROVIDER", status, lastError: result.ok ? null : detail, markSuccess: result.ok });
         }
         break;
       }
@@ -74,6 +64,7 @@ export async function testIntegrationAction(formData: FormData) {
         const adapter = getSearchAdapters().find((entry) => entry.key === "PUBLIC_WEB");
         if (!adapter?.available()) {
           detail = adapter?.unavailableReason?.() ?? "Web search is not configured.";
+          status = "NOT_CONFIGURED";
         } else {
           const result = await adapter.search(["industrial valve supplier UAE"], {
             request: { description: "industrial valve", quantity: 1, unit: "pcs" },
@@ -83,56 +74,63 @@ export async function testIntegrationAction(formData: FormData) {
           detail =
             result.status === "OK"
               ? `${env.WEB_SEARCH_PROVIDER} returned ${result.candidates.length} result(s) for a test search.`
-              : result.note ?? "Search provider returned an error.";
-          await saveIntegration({ key: "WEB_SEARCH", status, lastError: result.status === "OK" ? null : detail });
+              : (result.note ?? "Search provider returned an error.");
+          await saveIntegration({
+            key: "WEB_SEARCH",
+            status,
+            lastError: result.status === "OK" ? null : detail,
+            markSuccess: result.status === "OK",
+          });
         }
         break;
       }
       case "GMAIL":
       case "MICROSOFT365": {
-        const provider = key === "GMAIL" ? "gmail" : "microsoft365";
-        if (env.EMAIL_INTAKE_PROVIDER !== provider) {
-          detail = `Set EMAIL_INTAKE_PROVIDER="${provider}" and connect the mailbox before testing.`;
-        } else {
-          const result = await testEmailConnection();
-          status = result.ok ? "CONNECTED" : "NEEDS_ATTENTION";
-          detail = result.detail;
-          await saveIntegration({
-            key: key as "GMAIL" | "MICROSOFT365",
-            status,
-            accountLabel: result.account ?? null,
-            lastError: result.ok ? null : detail,
-          });
+        const result = await testEmailConnection();
+        status = result.ok ? "CONNECTED" : "NEEDS_ATTENTION";
+        detail = result.detail;
+        if (result.ok) {
+          const renewed = await renewEmailSubscriptions();
+          detail = `${result.detail} ${renewed.detail}`;
         }
+        await saveIntegration({
+          key: key as "GMAIL" | "MICROSOFT365",
+          status: result.ok ? "CONNECTED" : "NEEDS_ATTENTION",
+          accountLabel: result.account ?? null,
+          lastError: result.ok ? null : detail,
+          markSuccess: result.ok,
+        });
         break;
       }
       case "STORAGE": {
-        const dir = path.resolve(process.cwd(), env.STORAGE_ROOT);
-        await fs.mkdir(dir, { recursive: true });
-        const probe = path.join(dir, ".probe");
-        await fs.writeFile(probe, "ok");
-        await fs.rm(probe, { force: true });
-        status = "CONNECTED";
-        detail = `Files are stored in ${env.STORAGE_ROOT}.`;
-        await saveIntegration({ key: "STORAGE", status, config: { root: env.STORAGE_ROOT } });
+        const result = await testStorage();
+        status = result.ok ? "CONNECTED" : "NEEDS_ATTENTION";
+        detail = result.detail;
+        await saveIntegration({
+          key: "STORAGE",
+          status,
+          config: { driver: storageDriver },
+          lastError: result.ok ? null : detail,
+          markSuccess: result.ok,
+        });
         break;
       }
       case "EXCHANGE_RATE": {
         const rate = await getRate("USD", "AED");
-        status = rate ? "CONNECTED" : "NEEDS_ATTENTION";
+        status = rate ? "CONNECTED" : "NOT_CONFIGURED";
         detail = rate
           ? `1 USD = ${rate.rate} AED (${rate.source}).`
-          : "No exchange-rate source is configured. Cross-currency totals will be marked incomplete.";
-        await saveIntegration({ key: "EXCHANGE_RATE", status, lastError: rate ? null : detail });
+          : "No exchange-rate source is configured. Cross-currency totals are marked incomplete instead of guessed.";
+        await saveIntegration({ key: "EXCHANGE_RATE", status, lastError: rate ? null : detail, markSuccess: Boolean(rate) });
         break;
       }
       case "OCR": {
         status = env.OCR_PROVIDER === "none" ? "NOT_CONFIGURED" : "CONNECTED";
         detail =
           env.OCR_PROVIDER === "none"
-            ? "OCR is turned off; photos are attached for manual reading."
-            : "Built-in OCR is available. It downloads language data on first use.";
-        await saveIntegration({ key: "OCR", status, lastError: null });
+            ? "Photo and scan reading is turned off; images are attached for manual reading."
+            : `OCR is available (languages: ${env.OCR_LANGUAGES}). Scanned PDFs and photos are read with it.`;
+        await saveIntegration({ key: "OCR", status, lastError: null, markSuccess: status === "CONNECTED" });
         break;
       }
       default:
@@ -152,16 +150,16 @@ export async function testIntegrationAction(formData: FormData) {
   });
 
   revalidatePath("/settings");
-  redirect(`/settings?tested=${encodeURIComponent(key)}&result=${encodeURIComponent(`${status}: ${detail}`)}`);
+  redirect(`/settings?tested=${encodeURIComponent(key)}&result=${encodeURIComponent(`${status}: ${detail}`)}#integrations`);
 }
 
 export async function syncEmailNowAction() {
   const user = await authorizeOwner();
   if (!user) redirect("/login");
-  const result = await syncEmailIntake();
+  const result = await syncEmailIntake({ trigger: "manual" });
   revalidatePath("/settings");
   revalidatePath("/enquiries");
-  redirect(`/settings?sync=${encodeURIComponent(result.detail)}`);
+  redirect(`/settings?sync=${encodeURIComponent(result.detail)}#integrations`);
 }
 
 export async function disconnectEmailAction(formData: FormData) {
@@ -174,16 +172,17 @@ export async function disconnectEmailAction(formData: FormData) {
     actorLabel: user.name,
     action: "integration.disconnected",
     entityType: "Integration",
-    entityId: provider,
+    entityId: provider === "gmail" ? "GMAIL" : "MICROSOFT365",
   });
   revalidatePath("/settings");
-  redirect("/settings?disconnected=1");
+  redirect("/settings?disconnected=1#integrations");
 }
 
 export async function saveOrganizationAction(formData: FormData) {
   const user = await authorizeOwner();
   if (!user) redirect("/login");
   const existing = await db.organization.findFirst();
+  const inventoryMode = String(formData.get("inventoryMode") ?? "STOCK_FIRST");
   const data = {
     name: str(formData.get("name")) ?? "Multi Fasteners Building Materials Trading LLC",
     legalName: str(formData.get("legalName")),
@@ -192,12 +191,16 @@ export async function saveOrganizationAction(formData: FormData) {
     phone: str(formData.get("phone")),
     address: str(formData.get("address")),
     website: str(formData.get("website")),
-    defaultCurrency: (str(formData.get("defaultCurrency")) ?? "AED").toUpperCase(),
+    defaultCurrency: (str(formData.get("defaultCurrency")) ?? "AED").toUpperCase().slice(0, 3),
     quotationValidityDays: Number(String(formData.get("quotationValidityDays") ?? "14")) || 14,
     taxEnabled: formData.get("taxEnabled") === "on",
+    taxInLandedCost: formData.get("taxInLandedCost") === "on",
     taxRatePct: Number(String(formData.get("taxRatePct") ?? "5")) || 0,
     taxLabel: str(formData.get("taxLabel")) ?? "VAT",
     quotationTerms: str(formData.get("quotationTerms")),
+    inventoryMode: inventoryMode === "SOURCING_FIRST" ? "SOURCING_FIRST" : "STOCK_FIRST",
+    inventoryConfiguredAt:
+      inventoryMode === "SOURCING_FIRST" ? (existing?.inventoryConfiguredAt ?? new Date()) : existing?.inventoryConfiguredAt ?? null,
   };
   if (existing) {
     await db.organization.update({ where: { id: existing.id }, data });
@@ -210,8 +213,10 @@ export async function saveOrganizationAction(formData: FormData) {
     action: "organization.updated",
     entityType: "Organization",
     entityId: existing?.id ?? "new",
+    meta: { inventoryMode: data.inventoryMode },
   });
   revalidatePath("/settings");
+  revalidatePath("/onboarding");
   redirect("/settings?saved=1#company");
 }
 
@@ -219,9 +224,14 @@ export async function addExcludedContactAction(formData: FormData) {
   const user = await authorizeOwner();
   if (!user) redirect("/login");
   const raw = str(formData.get("identifier"));
-  if (!raw) redirect("/settings?error=Enter+a+phone+number+or+email");
-  const identifier = normalizeIdentifier(raw);
+  if (!raw) redirect("/settings?error=Enter+a+phone+number+or+email#contacts");
+
+  const identifier = raw.includes("@") ? parseEmailAddress(raw) : canonicalPhone(raw);
+  if (!identifier) {
+    redirect(`/settings?error=${encodeURIComponent("That phone number or email address could not be read. Use international format, e.g. +971501234567.")}#contacts`);
+  }
   const category = String(formData.get("category") ?? "PERSONAL");
+
   await db.excludedContact.upsert({
     where: { identifier },
     update: { category, label: str(formData.get("label")), reason: str(formData.get("reason")) },
@@ -232,9 +242,11 @@ export async function addExcludedContactAction(formData: FormData) {
       reason: str(formData.get("reason")),
     },
   });
-  const contact = await db.contact.findFirst({
-    where: { OR: [{ phone: { contains: identifier.replace(/^\+/, "").slice(-9) } }, { email: raw.toLowerCase() }] },
-  });
+
+  const or = [
+    ...(identifier.includes("@") ? [{ email: identifier }] : [{ phone: identifier }]),
+  ];
+  const contact = await db.contact.findFirst({ where: { OR: or } });
   if (contact) await db.contact.update({ where: { id: contact.id }, data: { kind: category } });
 
   await writeAudit({
@@ -254,6 +266,13 @@ export async function removeExcludedContactAction(formData: FormData) {
   if (!user) redirect("/login");
   const id = String(formData.get("id") ?? "");
   await db.excludedContact.deleteMany({ where: { id } });
+  await writeAudit({
+    actorId: user.id,
+    actorLabel: user.name,
+    action: "excluded_contact.removed",
+    entityType: "ExcludedContact",
+    entityId: id,
+  });
   revalidatePath("/settings");
   redirect("/settings?saved=1#contacts");
 }
@@ -265,7 +284,7 @@ export async function savePricingRuleAction(formData: FormData) {
   const type = String(formData.get("type") ?? "PERCENT_MARKUP");
   const value = Number(String(formData.get("value") ?? "0")) || 0;
   const category = scope === "CATEGORY" ? str(formData.get("category")) : null;
-  if (scope === "CATEGORY" && !category) redirect("/settings?error=Choose+a+category+for+this+rule");
+  if (scope === "CATEGORY" && !category) redirect("/settings?error=Choose+a+category+for+this+rule#pricing");
 
   await db.pricingRule.create({
     data: {
@@ -317,7 +336,10 @@ export async function createUserAction(formData: FormData) {
   if (!email || !name || password.length < 10) {
     redirect("/settings?error=Name%2C+email+and+a+password+of+at+least+10+characters+are+required#team");
   }
-  const permissions = formData.getAll("permissions").map(String).filter((p) => (PERMISSIONS as readonly string[]).includes(p));
+  const permissions = formData
+    .getAll("permissions")
+    .map(String)
+    .filter((permission) => (PERMISSIONS as readonly string[]).includes(permission));
   try {
     await db.user.create({
       data: {
@@ -326,6 +348,7 @@ export async function createUserAction(formData: FormData) {
         passwordHash: await hashPassword(password),
         role: "STAFF",
         permissions: JSON.stringify(permissions),
+        mustChangePassword: true,
       },
     });
   } catch {
@@ -356,3 +379,34 @@ export async function toggleUserAction(formData: FormData) {
   redirect("/settings?saved=1#team");
 }
 
+export async function retryJobAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const jobId = String(formData.get("jobId") ?? "");
+  try {
+    await retryJob(jobId, user.name);
+  } catch (error) {
+    redirect(`/activity?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not retry")}#jobs`);
+  }
+  revalidatePath("/activity");
+  redirect("/activity?saved=1#jobs");
+}
+
+/** Marks first-time setup complete once the owner has reviewed every step. */
+export async function completeOnboardingAction() {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const org = await db.organization.findFirst();
+  if (org) {
+    await db.organization.update({ where: { id: org.id }, data: { onboardingCompletedAt: new Date() } });
+  }
+  await writeAudit({
+    actorId: user.id,
+    actorLabel: user.name,
+    action: "onboarding.completed",
+    entityType: "Organization",
+    entityId: org?.id ?? "new",
+  });
+  revalidatePath("/onboarding");
+  redirect("/?onboarded=1");
+}

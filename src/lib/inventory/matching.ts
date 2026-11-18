@@ -22,18 +22,22 @@ export type SpecFields = {
   standard?: string | null;
 };
 
+/** An owner-approved substitution such as SS316 → SS316L. */
+export type EquivalenceRule = {
+  requestedMaterial: string;
+  offeredMaterial: string;
+  requestedGrade: string;
+  offeredGrade: string;
+};
+
 export type MatchResult = {
   status: MatchStatus;
   score: number;
   reasons: string[];
   mismatches: string[];
   missing: string[];
-};
-
-const MATERIAL_EQUIVALENTS: Record<string, string[]> = {
-  SS316: ["SS316L"],
-  SS304: ["SS304L"],
-  MS: ["Carbon Steel"],
+  /** True when the match only holds because an owner-approved equivalence exists. */
+  usedEquivalence: boolean;
 };
 
 function norm(value: string | null | undefined): string {
@@ -47,15 +51,83 @@ function sizeKey(value: string | null | undefined): string | number | null {
   return normalizeSize(value) ?? norm(value);
 }
 
-export function materialsCompatible(requested: string, offered: string): { compatible: boolean; equivalent: boolean } {
+export type MaterialComparison = {
+  compatible: boolean;
+  /** Same material, or an explicitly approved substitution. */
+  equivalent: boolean;
+  reason: string | null;
+};
+
+/**
+ * Materials are only interchangeable when they are the same material or an owner
+ * has approved the substitution. SS316 and SS316L differ in carbon content and
+ * are never silently treated as the same product.
+ */
+export function materialsCompatible(
+  requested: string,
+  offered: string,
+  rules: EquivalenceRule[] = [],
+  requestedGrade?: string | null,
+  offeredGrade?: string | null,
+): MaterialComparison {
   const a = normalizeMaterial(requested);
   const b = normalizeMaterial(offered);
-  if (!a || !b) return { compatible: false, equivalent: false };
-  if (a === b) return { compatible: true, equivalent: false };
-  const family = MATERIAL_EQUIVALENTS[a] ?? [];
-  if (family.includes(b)) return { compatible: true, equivalent: false }; // stricter: listed as possible, not exact
-  if (a.startsWith("SS") && b.startsWith("SS") && a !== b) return { compatible: false, equivalent: false };
-  return { compatible: false, equivalent: false };
+  if (!a || !b) {
+    return { compatible: false, equivalent: false, reason: "A material is missing on one side." };
+  }
+  if (a === b) {
+    const gradeA = normalizeGrade(requestedGrade ?? null);
+    const gradeB = normalizeGrade(offeredGrade ?? null);
+    if (gradeA && gradeB && gradeA !== gradeB) {
+      return {
+        compatible: false,
+        equivalent: false,
+        reason: `Grade differs: requested ${gradeA}, offered ${gradeB}`,
+      };
+    }
+    return { compatible: true, equivalent: false, reason: null };
+  }
+
+  const approved = findEquivalence(a, b, requestedGrade, offeredGrade, rules);
+  if (approved) {
+    return {
+      compatible: true,
+      equivalent: true,
+      reason: approved.reason
+        ? `Approved substitution ${a} → ${b}: ${approved.reason}`
+        : `Approved substitution ${a} → ${b}`,
+    };
+  }
+  return {
+    compatible: false,
+    equivalent: false,
+    reason: `${a} is not ${b}. A substitution must be approved by the owner before it can be used.`,
+  };
+}
+
+export function findEquivalence(
+  requestedMaterial: string,
+  offeredMaterial: string,
+  requestedGrade: string | null | undefined,
+  offeredGrade: string | null | undefined,
+  rules: Array<EquivalenceRule & { reason?: string | null }>,
+): (EquivalenceRule & { reason?: string | null }) | null {
+  const a = normalizeMaterial(requestedMaterial);
+  const b = normalizeMaterial(offeredMaterial);
+  const gradeA = normalizeGrade(requestedGrade ?? null) ?? "";
+  const gradeB = normalizeGrade(offeredGrade ?? null) ?? "";
+  const materialOnly = rules.filter((rule) => {
+    const ruleRequested = normalizeMaterial(rule.requestedMaterial);
+    const ruleOffered = normalizeMaterial(rule.offeredMaterial);
+    return ruleRequested === a && ruleOffered === b;
+  });
+  const exact = materialOnly.find(
+    (rule) =>
+      (rule.requestedGrade || "") === (gradeA || "") && (rule.offeredGrade || "") === (gradeB || ""),
+  );
+  if (exact) return exact;
+  // A rule recorded without grades applies to any grade of those materials.
+  return materialOnly.find((rule) => !rule.requestedGrade && !rule.offeredGrade) ?? null;
 }
 
 /**
@@ -66,12 +138,17 @@ export function materialsCompatible(requested: string, offered: string): { compa
  */
 export function matchProduct(
   requested: SpecFields,
-  candidate: SpecFields & { equivalentApproved?: boolean; categoryRule?: CategoryRule | null },
-  options: { strictStandard?: boolean } = {},
+  candidate: SpecFields & {
+    equivalentApproved?: boolean;
+    categoryRule?: CategoryRule | null;
+  },
+  options: { strictStandard?: boolean; equivalences?: EquivalenceRule[] } = {},
 ): MatchResult {
   const reasons: string[] = [];
   const mismatches: string[] = [];
   const missing: string[] = [];
+  let usedEquivalence = false;
+
   const category =
     candidate.categoryRule ??
     inferCategoryFromDescription(requested.description) ??
@@ -79,7 +156,7 @@ export function matchProduct(
 
   const reqCategory = category?.name ?? requested.category ?? null;
   const candCategory =
-    (candidate.category ? inferCategoryFromDescription(candidate.category)?.name ?? candidate.category : null) ??
+    (candidate.category ? (inferCategoryFromDescription(candidate.category)?.name ?? candidate.category) : null) ??
     inferCategoryFromDescription(candidate.description)?.name ??
     null;
 
@@ -87,85 +164,117 @@ export function matchProduct(
     mismatches.push(`Different product type (${candCategory} instead of ${reqCategory})`);
   }
 
-  const checks: Array<{
-    field: keyof SpecFields;
-    requested: string | null | undefined;
-    candidate: string | null | undefined;
-    label: string;
-    compare: (a: string, b: string) => boolean;
-    required: boolean;
-  }> = [];
-
   const categoryRequired = new Set(category?.required ?? []);
   const sizeCompare = (a: string, b: string) => {
     const ka = sizeKey(a);
     const kb = sizeKey(b);
     return ka != null && kb != null && ka === kb;
   };
-  const materialCompare = (a: string, b: string) => materialsCompatible(a, b).compatible;
   const strictEq = (a: string, b: string) => norm(a) === norm(b);
   const pressureCompare = (a: string, b: string) => normalizePressure(a) === normalizePressure(b);
 
+  type Check = {
+    label: string;
+    requested: string | null | undefined;
+    candidate: string | null | undefined;
+    equal: boolean;
+    required: boolean;
+    note?: string | null;
+  };
+
+  const checks: Check[] = [];
+
   if (requested.size || categoryRequired.has("size")) {
-    checks.push({ field: "size", requested: requested.size, candidate: candidate.size, label: "Size", compare: sizeCompare, required: true });
-  }
-  if (requested.material || categoryRequired.has("material")) {
     checks.push({
-      field: "material",
-      requested: requested.material,
-      candidate: candidate.material,
-      label: "Material",
-      compare: materialCompare,
+      label: "Size",
+      requested: requested.size,
+      candidate: candidate.size,
+      equal: Boolean(requested.size && candidate.size && sizeCompare(requested.size, candidate.size)),
       required: true,
     });
   }
+
+  let materialNote: string | null = null;
+  let materialEqual = false;
+  let materialEquivalent = false;
+  if (requested.material || categoryRequired.has("material")) {
+    if (requested.material && candidate.material) {
+      const comparison = materialsCompatible(
+        requested.material,
+        candidate.material,
+        options.equivalences ?? [],
+        requested.grade,
+        candidate.grade,
+      );
+      materialEqual = comparison.compatible;
+      materialEquivalent = comparison.equivalent;
+      materialNote = comparison.reason;
+      if (comparison.compatible && comparison.equivalent) usedEquivalence = true;
+    }
+    checks.push({
+      label: "Material",
+      requested: requested.material,
+      candidate: candidate.material,
+      equal: materialEqual,
+      required: true,
+      note: materialNote,
+    });
+  }
+
   if (requested.grade || categoryRequired.has("grade")) {
     checks.push({
-      field: "grade",
+      label: "Grade",
       requested: requested.grade,
       candidate: candidate.grade,
-      label: "Grade",
-      compare: (a, b) => normalizeGrade(a) === normalizeGrade(b),
+      equal: Boolean(
+        requested.grade &&
+          candidate.grade &&
+          normalizeGrade(requested.grade) === normalizeGrade(candidate.grade),
+      ),
       required: true,
     });
   }
   if (requested.pressureRating || categoryRequired.has("pressureRating")) {
     checks.push({
-      field: "pressureRating",
+      label: "Pressure rating",
       requested: requested.pressureRating,
       candidate: candidate.pressureRating,
-      label: "Pressure rating",
-      compare: pressureCompare,
+      equal: Boolean(
+        requested.pressureRating &&
+          candidate.pressureRating &&
+          pressureCompare(requested.pressureRating, candidate.pressureRating),
+      ),
       required: true,
     });
   }
   if (requested.schedule) {
     checks.push({
-      field: "schedule",
+      label: "Schedule",
       requested: requested.schedule,
       candidate: candidate.schedule,
-      label: "Schedule",
-      compare: (a, b) => normalizeSchedule(a) === normalizeSchedule(b),
+      equal: Boolean(
+        requested.schedule &&
+          candidate.schedule &&
+          normalizeSchedule(requested.schedule) === normalizeSchedule(candidate.schedule),
+      ),
       required: false,
     });
   }
   if (requested.standard && options.strictStandard) {
     checks.push({
-      field: "standard",
+      label: "Standard",
       requested: requested.standard,
       candidate: candidate.standard,
-      label: "Standard",
-      compare: strictEq,
+      equal: Boolean(requested.standard && candidate.standard && strictEq(requested.standard, candidate.standard)),
       required: true,
     });
   }
   if (requested.brand) {
     checks.push({
-      field: "brand",
+      label: "Brand",
       requested: requested.brand,
       candidate: candidate.brand,
-      label: "Brand",
-      compare: strictEq,
+      equal: Boolean(requested.brand && candidate.brand && strictEq(requested.brand, candidate.brand)),
       required: true,
     });
   }
@@ -173,21 +282,28 @@ export function matchProduct(
   let matched = 0;
   let requiredMissing = 0;
   for (const check of checks) {
-    if (!check.requested) continue; // nothing was requested for this attribute
+    if (!check.requested) continue;
     if (!check.candidate) {
       missing.push(check.label);
       if (check.required) requiredMissing += 1;
       continue;
     }
-    if (check.compare(check.requested, check.candidate)) {
+    if (check.equal) {
       matched += 1;
-      reasons.push(`${check.label} matches (${check.candidate})`);
+      reasons.push(
+        check.note && check.note.length > 0
+          ? `${check.label}: ${check.note}`
+          : `${check.label} matches (${check.candidate})`,
+      );
     } else {
-      mismatches.push(`${check.label} differs: requested ${check.requested}, offered ${check.candidate}`);
+      mismatches.push(
+        check.note && check.note.length > 0
+          ? `${check.label}: ${check.note}`
+          : `${check.label} differs: requested ${check.requested}, offered ${check.candidate}`,
+      );
     }
   }
 
-  // Description similarity gate — avoids matching "hex bolt" to "gate valve".
   const reqTokens = new Set(
     requested.description.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2),
   );
@@ -201,14 +317,14 @@ export function matchProduct(
   );
 
   if (mismatches.length > 0) {
-    return { status: "NO_MATCH", score, reasons, mismatches, missing };
+    return { status: "NO_MATCH", score, reasons, mismatches, missing, usedEquivalence };
   }
   if (requiredMissing > 0) {
     reasons.push("Some requested specifications are missing from this product.");
-    return { status: "INSUFFICIENT", score, reasons, mismatches, missing };
+    return { status: "INSUFFICIENT", score, reasons, mismatches, missing, usedEquivalence };
   }
   if (checks.filter((c) => c.requested).length > 0 && matched === 0) {
-    return { status: "INSUFFICIENT", score, reasons, mismatches, missing };
+    return { status: "INSUFFICIENT", score, reasons, mismatches, missing, usedEquivalence };
   }
   if (similarity < 0.34) {
     return {
@@ -217,15 +333,16 @@ export function matchProduct(
       reasons,
       mismatches: ["The product description does not describe the same item"],
       missing,
+      usedEquivalence,
     };
   }
   if (missing.length > 0) {
-    return { status: "POSSIBLE", score, reasons, mismatches, missing };
+    return { status: "POSSIBLE", score, reasons, mismatches, missing, usedEquivalence };
   }
-  if (candidate.equivalentApproved) {
-    return { status: "EQUIVALENT", score, reasons, mismatches, missing };
+  if (usedEquivalence || (candidate.equivalentApproved && materialEquivalent)) {
+    return { status: "EQUIVALENT", score, reasons, mismatches, missing, usedEquivalence: true };
   }
-  return { status: "EXACT", score, reasons, mismatches, missing };
+  return { status: "EXACT", score, reasons, mismatches, missing, usedEquivalence: false };
 }
 
 /** Available stock = on hand - reserved. Never negative. */
@@ -233,6 +350,7 @@ export function availableQuantity(onHand: number, reserved: number): number {
   return Math.max(0, (Number.isFinite(onHand) ? onHand : 0) - (Number.isFinite(reserved) ? reserved : 0));
 }
 
+/** Splits a requirement: only the genuine shortage is sourced. */
 export function stockSplit(requested: number, available: number): { fromStock: number; toSource: number } {
   const safeRequested = Math.max(0, requested || 0);
   const safeAvailable = Math.max(0, available || 0);

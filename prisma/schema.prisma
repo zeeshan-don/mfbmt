@@ -1,33 +1,42 @@
 // MFBMT Procurement Intelligence — relational schema.
-// Provider: SQLite (zero-config local + file backups). Migrations live in prisma/migrations.
-// NOTE: SQLite has no enums/JSON columns, so statuses are validated Strings and structured
-// payloads are JSON text, always parsed through zod schemas in src/lib/validation.
+// Provider: PostgreSQL (production + isolated test database).
+//
+// Statuses are validated Strings (see src/lib/constants.ts and src/lib/validation)
+// and structured payloads are JSON text parsed through zod schemas, so a status
+// can never be written by a caller that ignored the workflow.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id             String              @id @default(cuid())
-  email          String              @unique
-  name           String
-  passwordHash   String
-  role           String              @default("STAFF") // OWNER | STAFF
-  permissions    String              @default("[]") // JSON array, staff only
-  isActive       Boolean             @default(true)
-  createdAt      DateTime            @default(now())
-  lastLoginAt    DateTime?
-  sessions       Session[]
-  approvals      Approval[]          @relation("ApprovalDecider")
-  approvedQuotes CustomerQuotation[] @relation("QuoteApprover")
-  auditLogs      AuditLog[]
-  notifications  Notification[]
-  movements      InventoryMovement[]
+  id                      String              @id @default(cuid())
+  email                   String              @unique
+  name                    String
+  passwordHash            String
+  role                    String              @default("STAFF") // OWNER | STAFF
+  permissions             String              @default("[]") // JSON array, staff only
+  isActive                Boolean             @default(true)
+  mustChangePassword      Boolean             @default(false)
+  passwordChangedAt       DateTime?
+  passwordResetTokenHash  String?
+  passwordResetExpiresAt  DateTime?
+  createdAt               DateTime            @default(now())
+  lastLoginAt             DateTime?
+  sessions                Session[]
+  approvals               Approval[]          @relation("ApprovalDecider")
+  approvedQuotes          CustomerQuotation[] @relation("QuoteApprover")
+  pricingExceptions       CustomerQuotation[] @relation("PricingExceptionApprover")
+  auditLogs               AuditLog[]
+  notifications           Notification[]
+  movements               InventoryMovement[]
+
+  @@index([role, isActive])
 }
 
 model Session {
@@ -57,6 +66,13 @@ model Organization {
   taxEnabled            Boolean  @default(false)
   taxRatePct            Float    @default(5)
   taxLabel              String   @default("VAT")
+  // Explicit procurement policy: does the company hold stock, or source first?
+  inventoryMode         String   @default("STOCK_FIRST") // STOCK_FIRST | SOURCING_FIRST
+  inventoryConfiguredAt DateTime?
+  // Whether supplier tax is included in the landed-cost comparison.
+  taxInLandedCost       Boolean  @default(false)
+  // Set when the owner has finished the first-time setup checklist.
+  onboardingCompletedAt DateTime?
   quotationTerms        String?
   updatedAt             DateTime @updatedAt
 }
@@ -65,8 +81,8 @@ model Contact {
   id            String         @id @default(cuid())
   name          String?
   companyName   String?
-  phone         String?
-  email         String?
+  phone         String? // canonical E.164 when known
+  email         String? // lower-cased address only, never a display name
   kind          String         @default("UNKNOWN") // CUSTOMER | SUPPLIER | PERSONAL | FAMILY | OTHER | UNKNOWN
   supplierId    String?
   notes         String?
@@ -81,7 +97,7 @@ model Contact {
 
 model ExcludedContact {
   id         String   @id @default(cuid())
-  identifier String   @unique // normalized phone or email
+  identifier String   @unique // canonical E.164 phone or lower-cased email
   label      String?
   category   String   @default("PERSONAL") // FAMILY | PERSONAL | TRUSTED_SUPPLIER | CUSTOMER | OTHER
   reason     String?
@@ -108,19 +124,23 @@ model Message {
   conversationId           String
   conversation             Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   channel                  String // WHATSAPP | EMAIL | MANUAL
-  externalMessageId        String       @unique // provider id (wa message id / email Message-ID); dedupe key
+  externalMessageId        String       @unique // provider id; dedupe key
   direction                String       @default("INBOUND")
   fromAddress              String
   fromName                 String?
   toAddress                String?
+  toPhoneNumberId          String? // WhatsApp receiving number, used for routing
   subject                  String?
   body                     String?
-  bodyRetained             Boolean      @default(true) // false for family/personal contacts
+  bodyRetained             Boolean      @default(true) // false for excluded contacts
+  bodyHash                 String? // SHA-256 of the body, kept as minimal audit
+  skipReason               String? // set when the message was not retained
   mediaType                String?
   receivedAt               DateTime     @default(now())
   rawMeta                  String? // JSON, provider metadata (ids only)
   processingStatus         String       @default("RECEIVED") // RECEIVED | IGNORED | QUEUED | PROCESSING | PROCESSED | FAILED | NEEDS_REVIEW
   classification           String? // RFQ | AVAILABILITY | FOLLOW_UP | SUPPLIER | BUSINESS_OTHER | PERSONAL | UNCLEAR
+  classificationSource     String? // rule | ai | owner
   classificationConfidence Float?
   classificationReason     String?
   enquiryId                String?      @unique
@@ -139,12 +159,12 @@ model Attachment {
   enquiryId        String?
   enquiry          Enquiry? @relation(fields: [enquiryId], references: [id])
   filename         String // sanitized display name
-  storedName       String   @unique // random name on disk
+  storedName       String   @unique // random name in storage
   mimeType         String
   detectedMime     String?
   sizeBytes        Int
   sha256           String
-  storagePath      String
+  storagePath      String // storage-driver key, never a public URL
   pageCount        Int?
   textExtract      String? // extracted plain text (untrusted content)
   extractionStatus String   @default("PENDING") // PENDING | TEXT_OK | OCR_USED | NEEDS_REVIEW | FAILED
@@ -213,12 +233,15 @@ model EnquiryItem {
   sourceRef             String? // page 2 / sheet "Sheet1" row 14 / message
   reviewStatus          String                  @default("PENDING") // PENDING | CONFIRMED | NEEDS_CLARIFICATION | REJECTED
   clarificationQuestion String?
-  inventoryStatus       String                  @default("UNCHECKED") // UNCHECKED | AVAILABLE | PARTIAL | SHORT | NONE | CLARIFY
+  inventoryStatus       String                  @default("UNCHECKED")
+  // UNCHECKED | AVAILABLE | PARTIAL | NONE | CLARIFY | NOT_CONFIGURED
   quantityFromStock     Float                   @default(0)
   quantityToSource      Float                   @default(0)
   inventoryCheckedAt    DateTime?
   stockIsStale          Boolean                 @default(false)
-  sourcingStatus        String                  @default("NOT_STARTED") // NOT_STARTED | QUEUED | SEARCHING | RESULTS_READY | AWAITING_APPROVAL | APPROVED | NO_RESULTS | FAILED | NOT_REQUIRED
+  stockMatchStatus      String? // EXACT | EQUIVALENT | POSSIBLE | INSUFFICIENT | NO_MATCH
+  sourcingStatus        String                  @default("NOT_STARTED")
+  // NOT_STARTED | QUEUED | SEARCHING | RESULTS_READY | AWAITING_APPROVAL | APPROVED | NO_RESULTS | FAILED | NOT_REQUIRED
   matchedProductId      String?
   matchedStockJson      String? // JSON snapshot of stock rows used for the decision
   extractedJson         String? // original extracted values for this line
@@ -325,6 +348,7 @@ model Supplier {
   categories     String            @default("[]") // JSON string[]
   brands         String            @default("[]") // JSON string[]
   status         String            @default("ACTIVE") // ACTIVE | PAUSED | BLOCKED | UNVERIFIED
+  identityStatus String            @default("UNVERIFIED") // UNVERIFIED | DOMAIN_OBSERVED | CONTACT_CONFIRMED | VERIFIED
   notes          String?
   lastVerifiedAt DateTime?
   isDemo         Boolean           @default(false)
@@ -460,6 +484,8 @@ model SupplierOffer {
   isEligible          Boolean                 @default(false)
   ineligibilityReason String?
   evidenceJson        String                  @default("{}")
+  // Actual quantity MFBMT would have to buy (MOQ applied), disclosed to the owner.
+  procurementQuantity Float?
   isDemo              Boolean                 @default(false)
   createdAt           DateTime                @default(now())
   updatedAt           DateTime                @updatedAt
@@ -478,6 +504,9 @@ model SupplierQuote {
   enquiryItem   EnquiryItem?        @relation(fields: [enquiryItemId], references: [id])
   token         String              @unique
   status        String              @default("REQUESTED") // REQUESTED | AWAITING_APPROVAL | SENT | RESPONDED | DECLINED | EXPIRED
+  channel       String? // email | whatsapp | manual
+  sentTo        String?
+  lastError     String?
   subject       String?
   messageBody   String?
   sentAt        DateTime?
@@ -493,8 +522,9 @@ model SupplierQuote {
 model SupplierQuoteItem {
   id           String         @id @default(cuid())
   quoteId      String
-  quote        SupplierQuote  @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  quote        SupplierQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   description  String
+  specs        String?
   quantity     Float
   unit         String         @default("pcs")
   unitPrice    Float?
@@ -502,6 +532,8 @@ model SupplierQuoteItem {
   moq          Float?
   leadTimeDays Int?
   shippingCost Float?
+  otherCharges Float?
+  taxes        Float?
   validityDate DateTime?
   notes        String?
   offer        SupplierOffer?
@@ -524,39 +556,50 @@ model Approval {
   createdAt   DateTime  @default(now())
   decidedAt   DateTime?
 
+  @@unique([type, entityId, status])
   @@index([status, createdAt])
   @@index([enquiryId])
 }
 
 model CustomerQuotation {
-  id                String                  @id @default(cuid())
-  enquiryId         String
-  enquiry           Enquiry                 @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
-  quoteNumber       String                  @unique
-  version           Int                     @default(1)
-  customerName      String
-  customerPhone     String?
-  customerEmail     String?
-  currency          String
-  subtotal          Float                   @default(0)
-  taxAmount         Float                   @default(0)
-  total             Float                   @default(0)
-  internalCostTotal Float?
-  terms             String?
-  notes             String?
-  validityDate      DateTime?
-  status            String                  @default("DRAFT") // DRAFT | AWAITING_APPROVAL | APPROVED | SENT | VOID
-  approvedById      String?
-  approvedBy        User?                   @relation("QuoteApprover", fields: [approvedById], references: [id])
-  approvedAt        DateTime?
-  sentAt            DateTime?
-  pdfPath           String?
-  pdfGeneratedAt    DateTime?
-  isDemo            Boolean                 @default(false)
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
-  items             CustomerQuotationItem[]
+  id                    String                  @id @default(cuid())
+  enquiryId             String
+  enquiry               Enquiry                 @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  quoteNumber           String                  @unique
+  version               Int                     @default(1)
+  customerName          String
+  customerPhone         String?
+  customerEmail         String?
+  currency              String
+  subtotal              Float                   @default(0)
+  taxAmount             Float                   @default(0)
+  total                 Float                   @default(0)
+  internalCostTotal     Float?
+  internalCostComplete  Boolean                 @default(false)
+  terms                 String?
+  notes                 String?
+  validityDate          DateTime?
+  status                String                  @default("DRAFT") // DRAFT | AWAITING_APPROVAL | APPROVED | SENT | VOID
+  approvedById          String?
+  approvedBy            User?                   @relation("QuoteApprover", fields: [approvedById], references: [id])
+  approvedAt            DateTime?
+  // Explicit owner approval to issue a quotation that contains unpriced lines.
+  pricingExceptionById  String?
+  pricingExceptionBy    User?                   @relation("PricingExceptionApprover", fields: [pricingExceptionById], references: [id])
+  pricingExceptionAt    DateTime?
+  pricingExceptionReason String?
+  sentAt                DateTime?
+  sentChannel           String? // EMAIL | WHATSAPP | MANUAL
+  sentTo                String?
+  sendError             String?
+  pdfPath               String?
+  pdfGeneratedAt        DateTime?
+  isDemo                Boolean                 @default(false)
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  items                 CustomerQuotationItem[]
 
+  @@unique([enquiryId, version])
   @@index([enquiryId])
 }
 
@@ -568,9 +611,22 @@ model CustomerQuotationItem {
   specs           String?
   quantity        Float
   unit            String            @default("pcs")
+  // Cost and price are nullable on purpose: an unknown cost stays unknown and an
+  // unpriced line can never become a silent zero.
   costPrice       Float?
-  unitPrice       Float
-  lineTotal       Float
+  unitPrice       Float?
+  lineTotal       Float?
+  priceStatus     String            @default("UNPRICED") // PRICED | UNPRICED
+  costStatus      String            @default("UNKNOWN") // COMPLETE | PARTIAL | UNKNOWN
+  pricingSource   String? // RULE | MANUAL | OWNER_OVERRIDE
+  overrideReason  String?
+  overrideById    String?
+  overrideAt      DateTime?
+  stockQuantity   Float             @default(0)
+  procureQuantity Float             @default(0)
+  stockUnitCost   Float? // unknown when MFBMT has no recorded acquisition cost
+  procureUnitCost Float?
+  costIncomplete  Boolean           @default(true)
   supplierOfferId String?
   supplierOffer   SupplierOffer?    @relation(fields: [supplierOfferId], references: [id])
   enquiryItemId   String?
@@ -589,6 +645,22 @@ model PricingRule {
   updatedAt DateTime @updatedAt
 }
 
+/// Explicitly owner-approved material equivalences (e.g. SS316 ↔ SS316L).
+/// Without a row here, two different materials are never treated as equivalent.
+model MaterialEquivalence {
+  id                String   @id @default(cuid())
+  requestedMaterial String
+  offeredMaterial   String
+  requestedGrade    String   @default("")
+  offeredGrade      String   @default("")
+  reason            String?
+  approvedById      String?
+  approvedAt        DateTime @default(now())
+  isActive          Boolean  @default(true)
+
+  @@unique([requestedMaterial, offeredMaterial, requestedGrade, offeredGrade])
+}
+
 model Integration {
   id            String    @id @default(cuid())
   key           String    @unique
@@ -598,6 +670,8 @@ model Integration {
   secretsJson   String    @default("{}")
   accountLabel  String?
   lastCheckedAt DateTime?
+  lastSuccessAt DateTime?
+  nextSyncAt    DateTime?
   lastError     String?
   updatedAt     DateTime  @updatedAt
 }
@@ -614,11 +688,37 @@ model BackgroundJob {
   runAfter       DateTime  @default(now())
   lockedAt       DateTime?
   lockedBy       String?
+  leaseExpiresAt DateTime?
+  heartbeatAt    DateTime?
+  deadLetteredAt DateTime?
   lastError      String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   @@index([status, runAfter])
+  @@index([status, leaseExpiresAt])
+}
+
+/// Durable webhook receipt. A provider delivery is acknowledged only after its
+/// row exists, and the unique key makes provider retries idempotent.
+model WebhookEvent {
+  id           String    @id @default(cuid())
+  provider     String // WHATSAPP | GMAIL | MICROSOFT365 | INBOUND_EMAIL
+  externalId   String
+  payloadHash  String
+  status       String    @default("RECEIVED") // RECEIVED | QUEUED | PROCESSED | FAILED
+  error        String?
+  receivedAt   DateTime  @default(now())
+  processedAt  DateTime?
+
+  @@unique([provider, externalId])
+  @@index([status, receivedAt])
+}
+
+/// Monotonic counter used for gap-free, race-free document numbering.
+model NumberSequence {
+  scope String @id // e.g. QUOTE-2026 / ENQ-2026
+  value Int    @default(0)
 }
 
 model AuditLog {

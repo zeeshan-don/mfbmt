@@ -1,18 +1,80 @@
 import { env } from "../env";
 import { getAccessToken } from "./oauth";
+import { getIntegration } from "../integrations/store";
 
-function encodeMime(to: string, subject: string, text: string): string {
-  const from = env.COMPANY_EMAIL_FROM || "me";
-  const message = [
-    `From: ${from}`,
-    `To: ${to}`,
-    `Subject: ${subject.replace(/[\r\n]/g, " ")}`,
+export type OutgoingAttachment = { filename: string; content: Buffer; contentType: string };
+
+/** Which mailbox is actually connected, independent of a stale env setting. */
+export async function activeEmailProvider(): Promise<"gmail" | "microsoft365" | "none"> {
+  const [gmail, microsoft] = await Promise.all([
+    getIntegration("GMAIL"),
+    getIntegration("MICROSOFT365"),
+  ]);
+  const gmailReady = gmail?.status === "CONNECTED" && Boolean(env.GMAIL_CLIENT_ID);
+  const microsoftReady = microsoft?.status === "CONNECTED" && Boolean(env.MICROSOFT_CLIENT_ID);
+  if (env.EMAIL_INTAKE_PROVIDER === "gmail" && gmailReady) return "gmail";
+  if (env.EMAIL_INTAKE_PROVIDER === "microsoft365" && microsoftReady) return "microsoft365";
+  if (gmailReady) return "gmail";
+  if (microsoftReady) return "microsoft365";
+  return "none";
+}
+
+function encodeHeader(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").slice(0, 900);
+}
+
+/**
+ * Builds a MIME message. Attachments are base64 encoded; no external dependency
+ * is needed for the text + attachments case this app actually sends.
+ */
+function buildMime(input: {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  attachments: OutgoingAttachment[];
+}): string {
+  const boundary = `mfbmt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const headers = [
+    `From: ${encodeHeader(input.from)}`,
+    `To: ${encodeHeader(input.to)}`,
+    `Subject: ${encodeHeader(input.subject)}`,
     "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
+  ];
+
+  if (input.attachments.length === 0) {
+    return [
+      ...headers,
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from(input.text).toString("base64"),
+    ].join("\r\n");
+  }
+
+  const parts: string[] = [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
     "",
-    text.replace(/\r?\n/g, "\r\n"),
-  ].join("\r\n");
-  return Buffer.from(message).toString("base64url");
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(input.text).toString("base64"),
+  ];
+
+  for (const attachment of input.attachments) {
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: ${attachment.contentType}; name="${encodeHeader(attachment.filename)}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${encodeHeader(attachment.filename)}"`,
+      "",
+      attachment.content.toString("base64"),
+    );
+  }
+  parts.push(`--${boundary}--`, "");
+  return parts.join("\r\n");
 }
 
 /** Sends through the connected company mailbox. Returns a real error, never a fake success. */
@@ -20,19 +82,33 @@ export async function sendEmail(input: {
   to: string;
   subject: string;
   text: string;
+  attachments?: OutgoingAttachment[];
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (env.EMAIL_INTAKE_PROVIDER === "none") {
-    return { ok: false, error: "No company email account is connected." };
+  const provider = await activeEmailProvider();
+  if (provider === "none") {
+    return { ok: false, error: "No company email account is connected. Connect Gmail or Microsoft 365 in Settings." };
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.to)) {
+    return { ok: false, error: "The recipient email address is not valid." };
   }
 
   try {
-    if (env.EMAIL_INTAKE_PROVIDER === "gmail") {
+    if (provider === "gmail") {
       const token = await getAccessToken("gmail");
       if (!token) return { ok: false, error: "Gmail needs to be reconnected in Settings." };
+      const raw = Buffer.from(
+        buildMime({
+          from: env.COMPANY_EMAIL_FROM || "me",
+          to: input.to,
+          subject: input.subject,
+          text: input.text,
+          attachments: input.attachments ?? [],
+        }),
+      ).toString("base64url");
       const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ raw: encodeMime(input.to, input.subject, input.text) }),
+        body: JSON.stringify({ raw }),
       });
       if (!response.ok) {
         const detail = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
@@ -41,45 +117,47 @@ export async function sendEmail(input: {
       return { ok: true };
     }
 
-    if (env.EMAIL_INTAKE_PROVIDER === "microsoft365") {
-      const token = await getAccessToken("microsoft");
-      if (!token) return { ok: false, error: "Microsoft 365 needs to be reconnected in Settings." };
-      const response = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: {
-            subject: input.subject,
-            body: { contentType: "Text", content: input.text },
-            toRecipients: [{ emailAddress: { address: input.to } }],
-          },
-          saveToSentItems: true,
-        }),
-      });
-      if (!response.ok) {
-        const detail = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
-        return { ok: false, error: detail.error?.message ?? `Microsoft Graph returned HTTP ${response.status}.` };
-      }
-      return { ok: true };
+    const token = await getAccessToken("microsoft");
+    if (!token) return { ok: false, error: "Microsoft 365 needs to be reconnected in Settings." };
+    const response = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: {
+          subject: input.subject,
+          body: { contentType: "Text", content: input.text },
+          toRecipients: [{ emailAddress: { address: input.to } }],
+          attachments: (input.attachments ?? []).map((attachment) => ({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            name: attachment.filename,
+            contentType: attachment.contentType,
+            contentBytes: attachment.content.toString("base64"),
+          })),
+        },
+        saveToSentItems: true,
+      }),
+    });
+    if (!response.ok) {
+      const detail = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+      return { ok: false, error: detail.error?.message ?? `Microsoft Graph returned HTTP ${response.status}.` };
     }
-
-    return {
-      ok: false,
-      error: "Only Gmail and Microsoft 365 can send mail from this app. Use the download and send it from your own mailbox.",
-    };
+    return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Email send failed." };
   }
 }
 
 export async function testEmailConnection(): Promise<{ ok: boolean; detail: string; account?: string }> {
-  const provider = env.EMAIL_INTAKE_PROVIDER;
+  const provider = await activeEmailProvider();
   if (provider === "none") {
-    return { ok: false, detail: "No email provider selected. Choose Gmail or Microsoft 365 and connect a mailbox." };
+    return {
+      ok: false,
+      detail: "No mailbox is connected. Connect Gmail or Microsoft 365, or use the forwarding endpoint.",
+    };
   }
   if (provider === "gmail") {
     const token = await getAccessToken("gmail");
-    if (!token) return { ok: false, detail: "Gmail is not connected." };
+    if (!token) return { ok: false, detail: "Gmail is not connected or its authorisation expired." };
     const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -87,15 +165,16 @@ export async function testEmailConnection(): Promise<{ ok: boolean; detail: stri
     const profile = (await response.json()) as { emailAddress?: string };
     return { ok: true, detail: `Connected to ${profile.emailAddress ?? "the mailbox"}.`, account: profile.emailAddress };
   }
-  if (provider === "microsoft365") {
-    const token = await getAccessToken("microsoft");
-    if (!token) return { ok: false, detail: "Microsoft 365 is not connected." };
-    const response = await fetch("https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok) return { ok: false, detail: `Microsoft Graph returned HTTP ${response.status}.` };
-    const profile = (await response.json()) as { mail?: string; userPrincipalName?: string };
-    return { ok: true, detail: `Connected to ${profile.mail ?? profile.userPrincipalName ?? "the mailbox"}.`, account: profile.mail };
-  }
-  return { ok: false, detail: "Forwarding intake uses a shared secret; test it by sending a test email." };
+  const token = await getAccessToken("microsoft");
+  if (!token) return { ok: false, detail: "Microsoft 365 is not connected or its authorisation expired." };
+  const response = await fetch("https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) return { ok: false, detail: `Microsoft Graph returned HTTP ${response.status}.` };
+  const profile = (await response.json()) as { mail?: string; userPrincipalName?: string };
+  return {
+    ok: true,
+    detail: `Connected to ${profile.mail ?? profile.userPrincipalName ?? "the mailbox"}.`,
+    account: profile.mail,
+  };
 }

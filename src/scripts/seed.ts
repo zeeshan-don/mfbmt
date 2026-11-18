@@ -12,8 +12,16 @@ const db = new PrismaClient();
 const DEMO_PASSWORD = "ChangeMe123!";
 
 async function main() {
+  // Hard production guard. Demo data is only allowed in local development and
+  // automated tests, and only when the operator has explicitly opted in.
   if (process.env.NODE_ENV === "production") {
-    throw new Error("Refusing to seed demo data in production. Use a controlled migration instead.");
+    throw new Error("Refusing to seed demo data in production.");
+  }
+  if (process.env.VERCEL_ENV === "production" || process.env.APP_ENV === "production") {
+    throw new Error("Refusing to seed demo data outside local development.");
+  }
+  if (process.env.DEMO_MODE === "false" || process.env.SEED_DEMO_DATA === "false") {
+    throw new Error("DEMO_MODE/SEED_DEMO_DATA is false; demo seeding is disabled. Use npm run provision:owner instead.");
   }
 
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);

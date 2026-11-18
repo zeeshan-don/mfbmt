@@ -1,12 +1,14 @@
 import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
-import { env, integrationEnv } from "@/lib/env";
+import { env, integrationEnv, whatsAppSignupConfig } from "@/lib/env";
 import { aiStatus } from "@/lib/ai/provider";
-import { whatsAppStatus } from "@/lib/intake/whatsapp";
+import { getWhatsAppConnection } from "@/lib/integrations/whatsapp";
+import { emailSyncState } from "@/lib/email/sync";
 import { ensureIntegrations } from "@/lib/integrations/store";
-import { PERMISSIONS, ROLES } from "@/lib/constants";
+import { PERMISSIONS, ROLES, INTEGRATION_STATUS_LABELS } from "@/lib/constants";
 import { formatDateTime, timeAgo } from "@/lib/format";
 import { Badge, Button, Card, CardHeader, Notice, PageHeader, inputClass, statusTone, textareaClass } from "@/components/ui";
+import { WhatsAppConnect } from "@/components/whatsapp-connect";
 import {
   testIntegrationAction,
   syncEmailNowAction,
@@ -21,6 +23,7 @@ import {
   toggleUserAction,
 } from "@/app/actions/settings";
 import { CATEGORIES } from "@/lib/catalog/categories";
+import { storageDriver } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -32,96 +35,79 @@ type IntegrationRow = {
   detail?: string;
   lastCheckedAt?: Date | null;
   lastError?: string | null;
-  action?: "email" | "oauth-gmail" | "oauth-microsoft";
+  action?: "oauth-gmail" | "oauth-microsoft";
   setup: string;
 };
 
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tested?: string; result?: string; saved?: string; error?: string; sync?: string; disconnected?: string }>;
+  searchParams: Promise<{
+    tested?: string;
+    result?: string;
+    saved?: string;
+    error?: string;
+    sync?: string;
+    disconnected?: string;
+    wa?: string;
+  }>;
 }) {
   await requireOwner();
   const flags = await searchParams;
   await ensureIntegrations();
 
-  const [integrations, org, exclusions, rules, users, gmail, microsoft] = await Promise.all([
-    db.integration.findMany(),
-    db.organization.findFirst(),
-    db.excludedContact.findMany({ orderBy: { createdAt: "desc" } }),
-    db.pricingRule.findMany({ orderBy: [{ scope: "asc" }, { priority: "asc" }] }),
-    db.user.findMany({ orderBy: { createdAt: "asc" } }),
-    db.integration.findUnique({ where: { key: "GMAIL" } }),
-    db.integration.findUnique({ where: { key: "MICROSOFT365" } }),
-  ]);
+  const [integrations, org, exclusions, rules, users, gmail, microsoft, whatsapp, storage, aiIntegration, webIntegration] =
+    await Promise.all([
+      db.integration.findMany(),
+      db.organization.findFirst(),
+      db.excludedContact.findMany({ orderBy: { createdAt: "desc" } }),
+      db.pricingRule.findMany({ orderBy: [{ scope: "asc" }, { priority: "asc" }] }),
+      db.user.findMany({ orderBy: { createdAt: "asc" } }),
+      db.integration.findUnique({ where: { key: "GMAIL" } }),
+      db.integration.findUnique({ where: { key: "MICROSOFT365" } }),
+      getWhatsAppConnection(),
+      db.integration.findUnique({ where: { key: "STORAGE" } }),
+      db.integration.findUnique({ where: { key: "AI_PROVIDER" } }),
+      db.integration.findUnique({ where: { key: "WEB_SEARCH" } }),
+    ]);
 
   const ai = aiStatus();
-  const wa = whatsAppStatus();
+  const waSignup = whatsAppSignupConfig();
   const byKey = new Map(integrations.map((row) => [row.key, row]));
+  const emailState = emailSyncState(gmail?.configJson ?? microsoft?.configJson ?? null);
+  const connectedMailbox = gmail?.status === "CONNECTED" ? "Gmail" : microsoft?.status === "CONNECTED" ? "Microsoft 365" : null;
 
   const rows: IntegrationRow[] = [
-    {
-      key: "WHATSAPP",
-      title: "WhatsApp Business",
-      description: "Receives customer messages and attachments on the connected business number.",
-      status: wa.configured ? (byKey.get("WHATSAPP")?.lastCheckedAt ? byKey.get("WHATSAPP")!.status : "NEEDS_ATTENTION") : "NOT_CONFIGURED",
-      detail: wa.configured
-        ? "Credentials found. Run a connection test to confirm the number."
-        : `Not connected. Missing: ${wa.missing.join(", ") || "credentials"}.`,
-      lastCheckedAt: byKey.get("WHATSAPP")?.lastCheckedAt,
-      lastError: byKey.get("WHATSAPP")?.lastError,
-      setup:
-        "Uses Meta's official Cloud API only. The number must be registered to a WhatsApp Business Account. Family and personal chats on a personal inbox are not readable by this integration.",
-    },
-    {
-      key: "GMAIL",
-      title: "Gmail",
-      description: "Reads customer enquiry emails and sends approved messages from your company mailbox.",
-      status: gmail?.status ?? "NOT_CONFIGURED",
-      detail: gmail?.accountLabel ?? "Connect with Google to grant read and send access only.",
-      lastCheckedAt: gmail?.lastCheckedAt,
-      lastError: gmail?.lastError,
-      action: "oauth-gmail",
-      setup: "Scopes requested: gmail.readonly and gmail.send. Personal mail in other labels is not read unless it matches your enquiry filter.",
-    },
-    {
-      key: "MICROSOFT365",
-      title: "Microsoft 365 / Outlook",
-      description: "Reads customer enquiry emails and sends approved messages from your company mailbox.",
-      status: microsoft?.status ?? "NOT_CONFIGURED",
-      detail: microsoft?.accountLabel ?? "Connect with Microsoft to grant Mail.Read and Mail.Send only.",
-      lastCheckedAt: microsoft?.lastCheckedAt,
-      lastError: microsoft?.lastError,
-      action: "oauth-microsoft",
-      setup: "Scopes requested: Mail.Read, Mail.Send, offline_access. The folder to read is configured below.",
-    },
     {
       key: "AI_PROVIDER",
       title: "AI reading service",
       description: "Reads product lists from messages and documents and structures them. It never sets prices or approves anything.",
-      status: ai.configured ? (byKey.get("AI_PROVIDER")?.lastCheckedAt ? byKey.get("AI_PROVIDER")!.status : "NEEDS_ATTENTION") : "NOT_CONFIGURED",
-      detail: ai.configured ? `${ai.provider} · ${ai.model}` : ai.reason ?? "Not configured.",
-      lastCheckedAt: byKey.get("AI_PROVIDER")?.lastCheckedAt,
-      lastError: byKey.get("AI_PROVIDER")?.lastError,
-      setup: "Set AI_PROVIDER, AI_API_KEY and AI_MODEL in .env. Without it, requests are read with the built-in parser and flagged for review.",
+      status: ai.configured ? (aiIntegration?.status ?? "NEEDS_ATTENTION") : "NOT_CONFIGURED",
+      detail: ai.configured
+        ? `${ai.provider} · ${ai.model}${aiIntegration?.lastSuccessAt ? ` · last verified ${timeAgo(aiIntegration.lastSuccessAt)}` : ""}`
+        : (ai.reason ?? "Not configured."),
+      lastCheckedAt: aiIntegration?.lastCheckedAt,
+      lastError: aiIntegration?.lastError,
+      setup:
+        "Set AI_PROVIDER, AI_API_KEY and AI_MODEL in .env. Without it, requests are read with the built-in parser and flagged for review.",
     },
     {
       key: "WEB_SEARCH",
       title: "Web search",
       description: "Finds public supplier listings. A listing is evidence, never a confirmed price.",
-      status: integrationEnv.webSearch() ? (byKey.get("WEB_SEARCH")?.lastCheckedAt ? byKey.get("WEB_SEARCH")!.status : "NEEDS_ATTENTION") : "NOT_CONFIGURED",
+      status: integrationEnv.webSearch() ? (webIntegration?.status ?? "NEEDS_ATTENTION") : "NOT_CONFIGURED",
       detail: integrationEnv.webSearch()
         ? `${env.WEB_SEARCH_PROVIDER} is configured.`
         : "No search provider connected. Set WEB_SEARCH_PROVIDER and its API key.",
-      lastCheckedAt: byKey.get("WEB_SEARCH")?.lastCheckedAt,
-      lastError: byKey.get("WEB_SEARCH")?.lastError,
+      lastCheckedAt: webIntegration?.lastCheckedAt,
+      lastError: webIntegration?.lastError,
       setup: "Supported: Tavily, Serper or Brave Search official APIs. No scraping behind logins, CAPTCHAs or blocks.",
     },
     {
       key: "EXCHANGE_RATE",
       title: "Currency rates",
       description: "Converts supplier prices to AED using a recorded rate and timestamp.",
-      status: integrationEnv.exchangeRate() ? (byKey.get("EXCHANGE_RATE")?.lastCheckedAt ? byKey.get("EXCHANGE_RATE")!.status : "NEEDS_ATTENTION") : "NOT_CONFIGURED",
+      status: integrationEnv.exchangeRate() ? (byKey.get("EXCHANGE_RATE")?.status ?? "NEEDS_ATTENTION") : "NOT_CONFIGURED",
       detail: integrationEnv.exchangeRate()
         ? `Provider: ${env.EXCHANGE_RATE_PROVIDER}.`
         : "No rate source configured. Cross-currency offers are marked incomplete instead of guessed.",
@@ -133,20 +119,31 @@ export default async function SettingsPage({
       key: "STORAGE",
       title: "File storage",
       description: "Stores customer attachments and quotation PDFs. Downloads require an authorised, expiring link.",
-      status: byKey.get("STORAGE")?.lastCheckedAt ? byKey.get("STORAGE")!.status : "NEEDS_ATTENTION",
-      detail: `Folder: ${env.STORAGE_ROOT} · max upload ${env.MAX_UPLOAD_MB} MB.`,
-      lastCheckedAt: byKey.get("STORAGE")?.lastCheckedAt,
-      lastError: byKey.get("STORAGE")?.lastError,
-      setup: "Local disk is used by default. Back this folder up together with the database.",
+      status: storage?.status ?? "NEEDS_ATTENTION",
+      detail:
+        storageDriver === "s3"
+          ? `Object storage: ${env.S3_BUCKET || "bucket not set"}${env.S3_ENDPOINT ? ` at ${env.S3_ENDPOINT}` : ""}.`
+          : `Local folder: ${env.STORAGE_ROOT}. Max upload ${env.MAX_UPLOAD_MB} MB.`,
+      lastCheckedAt: storage?.lastCheckedAt,
+      lastError: storage?.lastError,
+      setup:
+        storageDriver === "s3"
+          ? "Private bucket; downloads use short-lived authenticated URLs. No public access."
+          : "Local disk must be a persistent volume. On an ephemeral host, configure STORAGE_DRIVER=s3 instead.",
     },
     {
       key: "OCR",
       title: "Photo and scan reading",
-      description: "Reads text from photographed lists and scanned pages where possible.",
-      status: env.OCR_PROVIDER === "none" ? "NOT_CONFIGURED" : byKey.get("OCR")?.lastCheckedAt ? byKey.get("OCR")!.status : "NEEDS_ATTENTION",
-      detail: env.OCR_PROVIDER === "none" ? "Turned off. Images are attached for manual reading." : "Built-in OCR (Tesseract). Language data is downloaded on first use.",
+      description: "Reads photographed lists, scanned PDFs and images.",
+      status:
+        env.OCR_PROVIDER === "none" ? "NOT_CONFIGURED" : (byKey.get("OCR")?.status ?? "NEEDS_ATTENTION"),
+      detail:
+        env.OCR_PROVIDER === "none"
+          ? "Turned off. Images are attached for manual reading."
+          : `Built-in OCR (Tesseract), languages: ${env.OCR_LANGUAGES}. Scanned PDFs are rendered and read page by page.`,
       lastCheckedAt: byKey.get("OCR")?.lastCheckedAt,
-      setup: "Scanned PDFs without embedded text are marked for review instead of being guessed.",
+      setup:
+        "Arabic needs OCR_LANGUAGES to include “ara”. Language data is downloaded once on first use, so the server needs internet access the first time.",
     },
   ];
 
@@ -155,15 +152,45 @@ export default async function SettingsPage({
     microsoft: Boolean(env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET),
   };
 
+  const emailRows = [
+    {
+      key: "GMAIL" as const,
+      title: "Gmail",
+      status: gmail?.status ?? "NOT_CONFIGURED",
+      account: gmail?.accountLabel ?? null,
+      lastCheckedAt: gmail?.lastCheckedAt ?? null,
+      lastSuccessAt: gmail?.lastSuccessAt ?? null,
+      lastError: gmail?.lastError ?? null,
+      scopes: "gmail.readonly, gmail.send",
+      push: integrationEnv.gmailPush(),
+      configured: oauthConfigured.gmail,
+      provider: "gmail" as const,
+    },
+    {
+      key: "MICROSOFT365" as const,
+      title: "Microsoft 365 / Outlook",
+      status: microsoft?.status ?? "NOT_CONFIGURED",
+      account: microsoft?.accountLabel ?? null,
+      lastCheckedAt: microsoft?.lastCheckedAt ?? null,
+      lastSuccessAt: microsoft?.lastSuccessAt ?? null,
+      lastError: microsoft?.lastError ?? null,
+      scopes: "Mail.Read, Mail.Send, offline_access",
+      push: integrationEnv.graphPush(),
+      configured: oauthConfigured.microsoft,
+      provider: "microsoft" as const,
+    },
+  ];
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Settings"
-        description="Connections, company details, pricing rules, excluded contacts and staff access."
+        description="Connections, company details, inventory policy, pricing rules, excluded contacts and staff access."
       />
 
       {flags.error ? <Notice tone="danger" title="Could not save">{flags.error}</Notice> : null}
       {flags.saved ? <Notice tone="ok">Settings saved.</Notice> : null}
+      {flags.wa === "connected" ? <Notice tone="ok">WhatsApp linked. Run a connection test to confirm it.</Notice> : null}
       {flags.sync ? <Notice tone="info" title="Mailbox check">{flags.sync}</Notice> : null}
       {flags.disconnected ? <Notice tone="info">Mailbox disconnected.</Notice> : null}
       {flags.tested ? (
@@ -172,10 +199,197 @@ export default async function SettingsPage({
         </Notice>
       ) : null}
 
-      <section id="integrations" className="space-y-3">
-        <h2 className="text-sm font-semibold text-ink">Connections</h2>
+      <section id="whatsapp" className="space-y-3">
+        <h2 className="text-sm font-semibold text-ink">WhatsApp Business</h2>
         <p className="text-xs text-muted">
-          A connection is only shown as connected after a real test succeeds. Saving a key alone never marks it active.
+          Connect MFBMT&apos;s own WhatsApp Business number with Meta&apos;s Embedded Signup. Credentials are stored encrypted for
+          this account only.
+        </p>
+        <Card>
+          <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
+            <div>
+              <h3 className="text-sm font-semibold text-ink">Connection</h3>
+              <p className="mt-0.5 text-[11px] text-muted">
+                Receives customer messages and attachments on the connected business number.
+              </p>
+            </div>
+            <Badge tone={statusTone(whatsapp?.status ?? "NOT_CONFIGURED")} dot>
+              {INTEGRATION_STATUS_LABELS[whatsapp?.status ?? "NOT_CONFIGURED"] ?? whatsapp?.status}
+            </Badge>
+          </div>
+
+          {!waSignup.configured ? (
+            <div className="px-4 py-3">
+              <Notice tone="warn" title="Meta app setup is incomplete">
+                The platform administrator must set {waSignup.missing.join(", ")} before WhatsApp can be connected. Everything else
+                in MFBMT keeps working without it.
+              </Notice>
+            </div>
+          ) : (
+            <WhatsAppConnect
+              connected={Boolean(whatsapp?.connected)}
+              businessName={whatsapp?.businessName ?? null}
+              phoneNumber={whatsapp?.phoneNumber ?? null}
+              status={whatsapp?.status ?? "NOT_CONFIGURED"}
+              lastError={whatsapp?.lastError ?? null}
+              lastCheckedAt={whatsapp?.lastCheckedAt ?? null}
+            />
+          )}
+
+          <div className="border-t border-line px-4 py-3 text-[11px] text-muted">
+            <p>
+              Webhook URL: <code className="rounded bg-elevated px-1">{env.APP_URL.replace(/\/$/, "")}/api/webhooks/whatsapp</code>
+            </p>
+            <p className="mt-1">
+              Verify token is configured ({env.WHATSAPP_VERIFY_TOKEN ? "set" : "missing"}). Subscribe to the <code>messages</code>{" "}
+              field for this WABA.
+            </p>
+            <p className="mt-1">
+              Business-initiated messages outside Meta&apos;s 24-hour service window need an approved template; free-form sends are
+              reported as rejected rather than retried silently.
+            </p>
+          </div>
+        </Card>
+      </section>
+
+      <section id="email" className="space-y-3">
+        <h2 className="text-sm font-semibold text-ink">Email intake</h2>
+        <p className="text-xs text-muted">
+          New enquiries are read automatically. Push notifications are used where configured; otherwise the worker polls with a
+          persistent cursor, so messages are not re-read or missed.
+        </p>
+        {connectedMailbox ? (
+          <Card>
+            <div className="grid gap-2 px-4 py-3 text-xs text-soft sm:grid-cols-3">
+              <p>
+                <span className="text-muted">Connected mailbox:</span> {connectedMailbox}
+              </p>
+              <p>
+                <span className="text-muted">Mode:</span>{" "}
+                {emailState.mode === "push" ? "Push notifications" : "Scheduled polling"}
+              </p>
+              <p>
+                <span className="text-muted">Last successful sync:</span>{" "}
+                {emailState.lastSuccessAt ? timeAgo(new Date(emailState.lastSuccessAt)) : "Never"}
+              </p>
+              <p>
+                <span className="text-muted">Last attempt:</span>{" "}
+                {emailState.lastSyncAt ? formatDateTime(new Date(emailState.lastSyncAt)) : "—"}
+              </p>
+              <p>
+                <span className="text-muted">Poll interval:</span> {Math.round(env.EMAIL_POLL_INTERVAL_MS / 1000)}s
+              </p>
+              <p>
+                <span className="text-muted">Last error:</span> {emailState.lastError ?? "none"}
+              </p>
+            </div>
+          </Card>
+        ) : null}
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          {emailRows.map((row) => (
+            <Card key={row.key} className="flex flex-col">
+              <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-ink">{row.title}</h3>
+                  <p className="mt-0.5 text-[11px] text-muted">Scopes requested: {row.scopes}.</p>
+                </div>
+                <Badge tone={statusTone(row.status)} dot>
+                  {INTEGRATION_STATUS_LABELS[row.status] ?? row.status}
+                </Badge>
+              </div>
+              <div className="flex-1 space-y-2 px-4 py-3">
+                <p className="text-xs text-soft">{row.account ?? "No mailbox connected."}</p>
+                <p className="text-[11px] text-muted">
+                  {row.push
+                    ? "Push notifications are configured; the worker also polls as a fallback."
+                    : "Push notifications are not configured for this mailbox, so the worker polls on a schedule."}
+                </p>
+                <p className="text-[11px] text-muted">
+                  Last successful sync: {row.lastSuccessAt ? timeAgo(row.lastSuccessAt) : "never"}
+                </p>
+                {row.lastError ? <p className="text-[11px] text-warn">{row.lastError}</p> : null}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-2.5">
+                <form action={testIntegrationAction}>
+                  <input type="hidden" name="key" value={row.key} />
+                  <Button size="sm">Test connection</Button>
+                </form>
+                {row.configured ? (
+                  row.provider === "gmail" ? (
+                    <a
+                      href="/api/integrations/gmail/start"
+                      className="inline-flex h-8 items-center rounded-control border border-line bg-surface px-2.5 text-xs text-ink hover:bg-elevated"
+                    >
+                      {row.status === "CONNECTED" ? "Reconnect Gmail" : "Connect Gmail"}
+                    </a>
+                  ) : (
+                    <a
+                      href="/api/integrations/microsoft/start"
+                      className="inline-flex h-8 items-center rounded-control border border-line bg-surface px-2.5 text-xs text-ink hover:bg-elevated"
+                    >
+                      {row.status === "CONNECTED" ? "Reconnect Outlook" : "Connect Outlook"}
+                    </a>
+                  )
+                ) : (
+                  <span className="text-[11px] text-muted">
+                    OAuth client not configured ({row.provider === "gmail" ? "GMAIL_CLIENT_ID" : "MICROSOFT_CLIENT_ID"}).
+                  </span>
+                )}
+                {row.status === "CONNECTED" ? (
+                  <>
+                    <form action={syncEmailNowAction}>
+                      <Button size="sm">Check now</Button>
+                    </form>
+                    <form action={disconnectEmailAction}>
+                      <input type="hidden" name="provider" value={row.provider} />
+                      <Button size="sm" variant="danger">Disconnect</Button>
+                    </form>
+                  </>
+                ) : null}
+              </div>
+            </Card>
+          ))}
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <Card>
+            <CardHeader title="Which emails are read?" description="Intake is limited to the connected mailbox." />
+            <div className="space-y-2 px-4 py-3 text-xs text-soft">
+              <p>
+                Gmail search filter:{" "}
+                <code className="rounded bg-elevated px-1">{env.EMAIL_FILTER || "no filter — the whole inbox"}</code>
+              </p>
+              <p>
+                Outlook folder: <code className="rounded bg-elevated px-1">{env.EMAIL_FOLDER}</code>
+              </p>
+              <p className="text-[11px] text-muted">
+                A search filter narrows what is read afterwards; it does not narrow the OAuth permission granted to the app. The
+                permission itself is the limit. A dedicated enquiries mailbox (or forwarding to one) is the cleanest arrangement when
+                personal mail shares the inbox.
+              </p>
+            </div>
+          </Card>
+          <Card>
+            <CardHeader title="Forwarding alternative" description="If you prefer not to connect a mailbox." />
+            <div className="space-y-2 px-4 py-3 text-xs text-soft">
+              <p>
+                A forwarding service can POST to{" "}
+                <code className="rounded bg-elevated px-1">/api/webhooks/inbound-email</code> with the{" "}
+                <code className="rounded bg-elevated px-1">x-inbound-secret</code> header.
+              </p>
+              <p className="text-[11px] text-muted">
+                Forwarded messages go through exactly the same classification, exclusion and extraction pipeline.
+              </p>
+            </div>
+          </Card>
+        </div>
+      </section>
+
+      <section id="integrations" className="space-y-3">
+        <h2 className="text-sm font-semibold text-ink">Other connections</h2>
+        <p className="text-xs text-muted">
+          A connection is only shown as connected after a real provider request succeeds. Saving a key alone never marks it active.
         </p>
         <div className="grid gap-3 lg:grid-cols-2">
           {rows.map((row) => (
@@ -186,17 +400,15 @@ export default async function SettingsPage({
                   <p className="mt-0.5 text-[11px] text-muted">{row.description}</p>
                 </div>
                 <Badge tone={statusTone(row.status)} dot>
-                  {row.status === "CONNECTED" ? "Connected" : row.status === "NOT_CONFIGURED" ? "Not connected" : row.status === "NEEDS_ATTENTION" ? "Needs attention" : row.status.toLowerCase()}
+                  {INTEGRATION_STATUS_LABELS[row.status] ?? row.status}
                 </Badge>
               </div>
               <div className="flex-1 space-y-2 px-4 py-3">
                 <p className="text-xs text-soft">{row.detail}</p>
                 <p className="text-[11px] text-muted">{row.setup}</p>
-                {row.lastCheckedAt ? (
-                  <p className="text-[11px] text-muted">Last checked {timeAgo(row.lastCheckedAt)}.</p>
-                ) : (
-                  <p className="text-[11px] text-muted">Never tested.</p>
-                )}
+                <p className="text-[11px] text-muted">
+                  {row.lastCheckedAt ? `Last checked ${timeAgo(row.lastCheckedAt)}.` : "Never tested."}
+                </p>
                 {row.lastError ? <p className="text-[11px] text-warn">{row.lastError}</p> : null}
               </div>
               <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-2.5">
@@ -204,78 +416,19 @@ export default async function SettingsPage({
                   <input type="hidden" name="key" value={row.key} />
                   <Button size="sm">Test connection</Button>
                 </form>
-                {row.action === "oauth-gmail" && oauthConfigured.gmail ? (
-                  <a
-                    href="/api/integrations/gmail/start"
-                    className="inline-flex h-8 items-center rounded-control border border-line bg-surface px-2.5 text-xs text-ink hover:bg-elevated"
-                  >
-                    {gmail?.status === "CONNECTED" ? "Reconnect Gmail" : "Connect Gmail"}
-                  </a>
-                ) : null}
-                {row.action === "oauth-microsoft" && oauthConfigured.microsoft ? (
-                  <a
-                    href="/api/integrations/microsoft/start"
-                    className="inline-flex h-8 items-center rounded-control border border-line bg-surface px-2.5 text-xs text-ink hover:bg-elevated"
-                  >
-                    {microsoft?.status === "CONNECTED" ? "Reconnect Outlook" : "Connect Outlook"}
-                  </a>
-                ) : null}
-                {(row.key === "GMAIL" || row.key === "MICROSOFT365") && (gmail?.status === "CONNECTED" || microsoft?.status === "CONNECTED") ? (
-                  <>
-                    <form action={syncEmailNowAction}>
-                      <Button size="sm">Check mailbox now</Button>
-                    </form>
-                    <form action={disconnectEmailAction}>
-                      <input type="hidden" name="provider" value={row.key === "GMAIL" ? "gmail" : "microsoft"} />
-                      <Button size="sm" variant="danger">Disconnect</Button>
-                    </form>
-                  </>
-                ) : null}
               </div>
             </Card>
           ))}
         </div>
       </section>
 
-      <section id="mailbox" className="grid gap-3 lg:grid-cols-2">
-        <Card>
-          <CardHeader title="Which emails are enquiries?" description="Only messages matching this filter are read." />
-          <form action={testIntegrationAction} className="hidden" />
-          <div className="space-y-2 px-4 py-3 text-xs text-soft">
-            <p>
-              Gmail filter in use: <code className="rounded bg-elevated px-1">{env.EMAIL_FILTER}</code>.
-              Only messages matching this filter are read.
-            </p>
-            <p>
-              Outlook reads the mail folder <code className="rounded bg-elevated px-1">{env.EMAIL_FOLDER}</code>.
-              Messages from excluded contacts never start sourcing.
-            </p>
-            <p className="text-[11px] text-muted">
-              Post-retrieval filtering does not reduce the OAuth permission granted to the app. The permission itself is the limit.
-            </p>
-          </div>
-        </Card>
-        <Card>
-          <CardHeader title="Forwarding alternative" description="If you prefer not to connect a mailbox." />
-          <div className="space-y-2 px-4 py-3 text-xs text-soft">
-            <p>
-              A forwarding address can post to <code className="rounded bg-elevated px-1">/api/webhooks/inbound-email</code> with the{" "}
-              <code className="rounded bg-elevated px-1">INBOUND_EMAIL_SECRET</code> header. Messages are processed exactly like a connected mailbox.
-            </p>
-            <p className="text-[11px] text-muted">
-              Setup steps are in the documentation under “Email connection”.
-            </p>
-          </div>
-        </Card>
-      </section>
-
       <section id="company" className="space-y-3">
-        <h2 className="text-sm font-semibold text-ink">Company and quotation defaults</h2>
+        <h2 className="text-sm font-semibold text-ink">Company, inventory policy and quotation defaults</h2>
         <Card>
           <form action={saveOrganizationAction} className="grid gap-3 px-4 py-4 sm:grid-cols-3">
             <label className="block text-xs text-soft sm:col-span-2">
               Trading name
-              <input name="name" defaultValue={org?.name ?? "Multi Fasteners Building Materials Trading LLC"} className={`${inputClass} mt-1`} />
+              <input name="name" defaultValue={org?.name ?? ""} placeholder="Multi Fasteners Building Materials Trading LLC" className={`${inputClass} mt-1`} />
             </label>
             <label className="block text-xs text-soft">
               Legal name
@@ -309,9 +462,20 @@ export default async function SettingsPage({
               Quotation validity (days)
               <input name="quotationValidityDays" type="number" min={1} defaultValue={org?.quotationValidityDays ?? 14} className={`${inputClass} mt-1 tabular`} />
             </label>
+            <label className="block text-xs text-soft">
+              Inventory policy
+              <select name="inventoryMode" defaultValue={org?.inventoryMode ?? "STOCK_FIRST"} className={`${inputClass} mt-1`}>
+                <option value="STOCK_FIRST">Check stock first, then source the shortage</option>
+                <option value="SOURCING_FIRST">Sourcing-first (MFBMT mostly outsources goods)</option>
+              </select>
+            </label>
             <label className="flex items-center gap-2 pt-5 text-xs text-soft">
               <input type="checkbox" name="taxEnabled" defaultChecked={org?.taxEnabled ?? false} />
-              Apply tax on quotations
+              Apply tax on customer quotations
+            </label>
+            <label className="flex items-center gap-2 pt-5 text-xs text-soft">
+              <input type="checkbox" name="taxInLandedCost" defaultChecked={org?.taxInLandedCost ?? false} />
+              Include supplier tax in landed cost
             </label>
             <label className="block text-xs text-soft">
               Tax label
@@ -335,8 +499,8 @@ export default async function SettingsPage({
       <section id="contacts" className="space-y-3">
         <h2 className="text-sm font-semibold text-ink">Family and personal contacts</h2>
         <p className="text-xs text-muted">
-          Numbers and addresses listed here never create an enquiry, never start a supplier search and never receive an automated reply.
-          Their message text is not retained.
+          Numbers and addresses listed here never create an enquiry, never start a supplier search and never receive an automated
+          reply. Message bodies and attachments are not stored and are never sent to an AI provider.
         </p>
         <div className="grid gap-3 lg:grid-cols-2">
           <Card>
@@ -351,9 +515,9 @@ export default async function SettingsPage({
                 <select name="category" className={`${inputClass} mt-1`}>
                   <option value="FAMILY">Family</option>
                   <option value="PERSONAL">Personal</option>
+                  <option value="OTHER">Other (never business)</option>
                   <option value="TRUSTED_SUPPLIER">Trusted supplier</option>
                   <option value="CUSTOMER">Customer</option>
-                  <option value="OTHER">Other</option>
                 </select>
               </label>
               <label className="block text-xs text-soft">Name<input name="label" className={`${inputClass} mt-1`} /></label>
@@ -362,7 +526,7 @@ export default async function SettingsPage({
             </form>
           </Card>
           <Card>
-            <CardHeader title="Excluded contacts" description="Messages from these contacts are ignored for business purposes." />
+            <CardHeader title="Excluded contacts" description="Messages from these contacts are ignored and their content is not kept." />
             {exclusions.length === 0 ? (
               <p className="px-4 py-5 text-sm text-muted">No excluded contacts yet.</p>
             ) : (
@@ -371,7 +535,10 @@ export default async function SettingsPage({
                   <li key={contact.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                     <div>
                       <p className="text-xs text-ink">{contact.label ?? contact.identifier}</p>
-                      <p className="text-[11px] text-muted">{contact.identifier} · {contact.category.toLowerCase()}{contact.reason ? ` · ${contact.reason}` : ""}</p>
+                      <p className="text-[11px] text-muted">
+                        {contact.identifier} · {contact.category.toLowerCase()}
+                        {contact.reason ? ` · ${contact.reason}` : ""}
+                      </p>
                     </div>
                     <form action={removeExcludedContactAction}>
                       <input type="hidden" name="id" value={contact.id} />
@@ -388,7 +555,8 @@ export default async function SettingsPage({
       <section id="pricing" className="space-y-3">
         <h2 className="text-sm font-semibold text-ink">Pricing rules</h2>
         <p className="text-xs text-muted">
-          Applied when a customer quotation is prepared. Category rules win over the global rule. Supplier cost and margin never appear on the customer document.
+          Applied when a customer quotation is prepared. Category rules win over the global rule. Supplier cost and margin never
+          appear on the customer document.
         </p>
         <Card>
           <CardHeader title="Active rules" />
@@ -403,7 +571,11 @@ export default async function SettingsPage({
                   <div>
                     <p className="text-xs text-ink">
                       {rule.scope === "GLOBAL" ? "All products" : rule.category} ·{" "}
-                      {rule.type === "PERCENT_MARKUP" ? `${rule.value}% markup` : rule.type === "FIXED_MARKUP" ? `+${rule.value} fixed` : "manual price"}
+                      {rule.type === "PERCENT_MARKUP"
+                        ? `${rule.value}% markup`
+                        : rule.type === "FIXED_MARKUP"
+                          ? `+${rule.value} fixed`
+                          : "manual price"}
                     </p>
                     <p className="text-[11px] text-muted">Priority {rule.priority}</p>
                   </div>
@@ -468,8 +640,11 @@ export default async function SettingsPage({
               {users.map((account) => (
                 <li key={account.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                   <div>
-                    <p className="text-xs text-ink">{account.name} · {account.role === "OWNER" ? "Owner" : "Staff"}</p>
-                    <p className="text-[11px] text-muted">{account.email} · {account.isActive ? "active" : "inactive"}
+                    <p className="text-xs text-ink">
+                      {account.name} · {account.role === "OWNER" ? "Owner" : "Staff"}
+                    </p>
+                    <p className="text-[11px] text-muted">
+                      {account.email} · {account.isActive ? "active" : "inactive"}
                       {account.lastLoginAt ? ` · last sign-in ${formatDateTime(account.lastLoginAt)}` : ""}
                     </p>
                   </div>
@@ -505,6 +680,9 @@ export default async function SettingsPage({
             </form>
           </Card>
         </div>
+        <p className="text-[11px] text-muted">
+          The new account must change its password at first sign-in. Own password: <a className="text-accent hover:underline" href="/account">change it here</a>.
+        </p>
       </section>
     </div>
   );

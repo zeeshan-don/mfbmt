@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import fs from "node:fs/promises";
-import path from "node:path";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
-import { env } from "@/lib/env";
+import { readBuffer } from "@/lib/storage";
 import { generateAndStoreQuotationPdf } from "@/lib/workflow/quotations";
 
 export const runtime = "nodejs";
@@ -32,12 +30,9 @@ export async function GET(
   const refreshed = await db.customerQuotation.findUnique({ where: { id } });
   if (!refreshed?.pdfPath) return NextResponse.json({ error: "PDF not available." }, { status: 404 });
 
-  const root = path.resolve(process.cwd(), env.STORAGE_ROOT);
-  const target = path.resolve(root, refreshed.pdfPath);
-  if (!target.startsWith(root)) return NextResponse.json({ error: "Invalid path." }, { status: 400 });
-
   try {
-    const buffer = await fs.readFile(target);
+    // Reads through the storage adapter, so S3/R2 deployments work too.
+    const buffer = await readBuffer(refreshed.pdfPath);
     return new NextResponse(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "application/pdf",

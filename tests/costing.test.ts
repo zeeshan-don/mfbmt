@@ -39,7 +39,8 @@ describe("landed cost", () => {
     const cost = landed({ shippingCost: null });
     expect(cost.complete).toBe(false);
     expect(cost.missing).toContain("Shipping");
-    expect(cost.total).toBe(120);
+    // No total is reported at all: an incomplete estimate is never presented as a cost.
+    expect(cost.total).toBeNull();
   });
 
   it("will not compare currencies without a recorded exchange rate", () => {
@@ -58,9 +59,23 @@ describe("landed cost", () => {
   it("adds a tax line only when the supplier states one", () => {
     const withTax = landed({ taxes: 10, taxEnabled: true });
     expect(withTax.total).toBe(150);
-    const withoutTax = landed({ taxes: null, taxEnabled: true });
-    expect(withoutTax.complete).toBe(true);
-    expect(withoutTax.total).toBe(140);
+    const taxNotCompared = landed({ taxes: null, taxEnabled: false });
+    expect(taxNotCompared.complete).toBe(true);
+    expect(taxNotCompared.total).toBe(140);
+  });
+
+  it("treats an unstated supplier tax as unknown, not as zero, when tax is part of the comparison", () => {
+    const unknownTax = landed({ taxes: null, taxEnabled: true });
+    expect(unknownTax.complete).toBe(false);
+    expect(unknownTax.missing).toContain("Supplier tax");
+    expect(unknownTax.total).toBeNull();
+  });
+
+  it("discloses MOQ overbuy instead of silently buying the requested quantity", () => {
+    const cost = landed({ unitPrice: 10, moq: 50, shippingCost: 25 });
+    expect(cost.effectiveQuantity).toBe(50);
+    expect(cost.excessQuantity).toBe(40);
+    expect(cost.notes.join(" ")).toMatch(/minimum order/i);
   });
 });
 
@@ -100,13 +115,15 @@ describe("offer eligibility and ranking", () => {
     expect(evaluation.blockers.join(" ")).toMatch(/possible match/i);
   });
 
-  it("rejects an offer whose MOQ exceeds the requested quantity", () => {
+  it("keeps an MOQ above the requested quantity eligible but discloses the overbuy", () => {
     const evaluation = evaluateOffer(
       offer({ id: "b", unitPrice: 10, moq: 50, landed: landed({ unitPrice: 10, moq: 50, shippingCost: 25 }) }),
       { requiredQuantity: 10 },
     );
-    expect(evaluation.eligible).toBe(false);
-    expect(evaluation.blockers.join(" ")).toMatch(/minimum order/i);
+    // The brief is explicit: do not auto-reject on MOQ. The owner sees the outlay.
+    expect(evaluation.eligible).toBe(true);
+    expect(evaluation.overbuy).toEqual({ effectiveQuantity: 50, excessQuantity: 40 });
+    expect(evaluation.reasons.join(" ")).toMatch(/minimum|MOQ/i);
   });
 
   it("rejects an expired quotation", () => {
@@ -141,9 +158,12 @@ describe("offer eligibility and ranking", () => {
       landed: landed({ unitPrice: 12, shippingCost: 20 }),
     });
     const ranked = rankOffers([cheapWithHighMoq, dearerButEligible], { requiredQuantity: 10 });
+    // 50 × 10 + 25 = 525 outlay vs 10 × 12 + 20 = 140: the cheaper unit price is
+    // not the cheaper purchase, and both remain visible and comparable.
     expect(ranked[0].offer.id).toBe("dearer");
     expect(ranked[0].rank).toBe(1);
-    expect(ranked.find((entry) => entry.offer.id === "cheap")?.rank).toBeNull();
+    expect(ranked.find((entry) => entry.offer.id === "cheap")?.rank).toBe(2);
+    expect(ranked.find((entry) => entry.offer.id === "cheap")?.evaluation.overbuy?.excessQuantity).toBe(40);
   });
 
   it("does not rank an offer whose total cost is incomplete", () => {

@@ -3,7 +3,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { env } from "./env";
 
+/**
+ * File storage with two drivers:
+ *  - `local`  persistent server volume (development, or a VPS with a mounted disk)
+ *  - `s3`     any S3-compatible object store (Cloudflare R2, AWS S3, MinIO)
+ *
+ * Objects are private. Downloads go through the application (authenticated or
+ * HMAC-signed) or a short-lived presigned URL; there is no public bucket URL.
+ */
+
 const STORAGE_ROOT = path.resolve(process.cwd(), env.STORAGE_ROOT);
+const DRIVER = env.STORAGE_DRIVER === "s3" ? "s3" : "local";
+
+export const storageDriver = DRIVER;
 
 export const ALLOWED_TYPES = {
   "application/pdf": "pdf",
@@ -41,7 +53,8 @@ export function sniffType(buffer: Buffer): { mime: string; family: FileFamily } 
   if (head.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))) {
     return { mime: "application/vnd.ms-excel", family: "excel" };
   }
-  if (head.subarray(4, 12).toString("latin1").includes("ftyphei") || head.subarray(4, 12).toString("latin1").includes("ftypmif1")) {
+  const brand = head.subarray(4, 12).toString("latin1");
+  if (brand.includes("ftyphei") || brand.includes("ftypmif1") || brand.includes("ftypmsf1")) {
     return { mime: "image/heic", family: "image" };
   }
   const text = head.toString("utf8");
@@ -58,6 +71,20 @@ export function sanitizeFilename(name: string): string {
   return (cleaned || "attachment").slice(0, 120);
 }
 
+/** Rejects traversal, absolute paths and NUL bytes in an object key. */
+export function assertSafeKey(key: string): string {
+  const normalized = key.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    normalized.includes("\u0000") ||
+    normalized.split("/").some((segment) => segment === ".." || segment === ".")
+  ) {
+    throw new Error("Invalid storage key.");
+  }
+  return normalized;
+}
+
 export function assertAllowedUpload(
   buffer: Buffer,
   declaredName: string,
@@ -72,35 +99,158 @@ export function assertAllowedUpload(
   if (!allowedFamilies.includes(sniffed.family)) {
     return {
       ok: false,
-      error: "This file type is not supported. Use PDF, Excel, CSV, text or an image.",
+      error: "This file type is not supported. Use PDF, XLSX, CSV, text or an image.",
     };
   }
   return { ok: true, mime: sniffed.mime, family: sniffed.family, filename: sanitizeFilename(declaredName) };
+}
+
+type S3Module = typeof import("@aws-sdk/client-s3");
+
+let s3Client: InstanceType<S3Module["S3Client"]> | null = null;
+let s3Module: S3Module | null = null;
+
+async function s3(): Promise<{ module: S3Module; client: InstanceType<S3Module["S3Client"]> }> {
+  if (!s3Module) s3Module = await import("@aws-sdk/client-s3");
+  if (!s3Client) {
+    s3Client = new s3Module.S3Client({
+      region: env.S3_REGION || "auto",
+      endpoint: env.S3_ENDPOINT || undefined,
+      forcePathStyle: env.S3_FORCE_PATH_STYLE === "true",
+      credentials: {
+        accessKeyId: env.S3_ACCESS_KEY_ID,
+        secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+      },
+    });
+  }
+  return { module: s3Module, client: s3Client };
+}
+
+function localPath(key: string): string {
+  const safe = assertSafeKey(key);
+  const resolved = path.resolve(STORAGE_ROOT, safe);
+  const rootWithSep = STORAGE_ROOT.endsWith(path.sep) ? STORAGE_ROOT : STORAGE_ROOT + path.sep;
+  if (resolved !== STORAGE_ROOT && !resolved.startsWith(rootWithSep)) {
+    throw new Error("Invalid attachment path");
+  }
+  return resolved;
+}
+
+/** Writes an object and returns its key. */
+export async function saveBuffer(
+  buffer: Buffer,
+  key: string,
+  contentType = "application/octet-stream",
+): Promise<{ storagePath: string; sha256: string; sizeBytes: number }> {
+  const safeKey = assertSafeKey(key);
+  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+  if (DRIVER === "s3") {
+    const { module, client } = await s3();
+    await client.send(
+      new module.PutObjectCommand({
+        Bucket: env.S3_BUCKET,
+        Key: safeKey,
+        Body: buffer,
+        ContentType: contentType,
+        ServerSideEncryption: env.S3_ENDPOINT.includes("amazonaws.com") ? "AES256" : undefined,
+      }),
+    );
+  } else {
+    const target = localPath(safeKey);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, buffer, { mode: 0o600 });
+  }
+  return { storagePath: safeKey, sha256, sizeBytes: buffer.length };
+}
+
+export async function readBuffer(key: string): Promise<Buffer> {
+  const safeKey = assertSafeKey(key);
+  if (DRIVER === "s3") {
+    const { module, client } = await s3();
+    const response = await client.send(new module.GetObjectCommand({ Bucket: env.S3_BUCKET, Key: safeKey }));
+    if (!response.Body) throw new Error("The stored file could not be read.");
+    const bytes = await response.Body.transformToByteArray();
+    return Buffer.from(bytes);
+  }
+  return fs.readFile(localPath(safeKey));
+}
+
+export async function objectExists(key: string): Promise<boolean> {
+  try {
+    await readBuffer(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteObject(key: string): Promise<void> {
+  const safeKey = assertSafeKey(key);
+  if (DRIVER === "s3") {
+    const { module, client } = await s3();
+    await client.send(new module.DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: safeKey }));
+    return;
+  }
+  await fs.rm(localPath(safeKey), { force: true });
+}
+
+/** Short-lived presigned URL for object storage; null for the local driver. */
+export async function presignedDownloadUrl(
+  key: string,
+  filename: string,
+  ttlSeconds = env.UPLOAD_LINK_TTL_MINUTES * 60,
+): Promise<string | null> {
+  if (DRIVER !== "s3") return null;
+  const { module, client } = await s3();
+  const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+  return getSignedUrl(
+    client,
+    new module.GetObjectCommand({
+      Bucket: env.S3_BUCKET,
+      Key: assertSafeKey(key),
+      ResponseContentDisposition: `attachment; filename="${filename.replace(/["\\]/g, "")}"`,
+    }),
+    { expiresIn: Math.max(30, ttlSeconds) },
+  );
 }
 
 export async function saveAttachment(
   buffer: Buffer,
   filename: string,
 ): Promise<{ storedName: string; storagePath: string; sha256: string; sizeBytes: number }> {
-  const dir = path.join(STORAGE_ROOT, new Date().toISOString().slice(0, 7));
-  await fs.mkdir(dir, { recursive: true });
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
   const ext = path.extname(filename).slice(0, 8);
   const storedName = `${sha256.slice(0, 24)}-${crypto.randomBytes(6).toString("hex")}${ext}`;
-  const target = path.join(dir, storedName);
-  await fs.writeFile(target, buffer, { mode: 0o600 });
-  return {
-    storedName,
-    storagePath: path.relative(STORAGE_ROOT, target).split(path.sep).join("/"),
-    sha256,
-    sizeBytes: buffer.length,
-  };
+  const month = new Date().toISOString().slice(0, 7);
+  const stored = await saveBuffer(buffer, `attachments/${month}/${storedName}`);
+  return { storedName, storagePath: stored.storagePath, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
 }
 
 export async function readAttachment(storagePath: string): Promise<Buffer> {
-  const resolved = path.resolve(STORAGE_ROOT, storagePath);
-  if (!resolved.startsWith(STORAGE_ROOT)) throw new Error("Invalid attachment path");
-  return fs.readFile(resolved);
+  return readBuffer(storagePath);
+}
+
+/** Verifies the storage driver can write and read back. */
+export async function testStorage(): Promise<{ ok: boolean; detail: string }> {
+  const key = `health/${Date.now()}-${crypto.randomBytes(4).toString("hex")}.txt`;
+  try {
+    await saveBuffer(Buffer.from("ok"), key, "text/plain");
+    const read = await readBuffer(key);
+    await deleteObject(key);
+    if (read.toString("utf8") !== "ok") return { ok: false, detail: "Stored file could not be read back." };
+    return {
+      ok: true,
+      detail:
+        DRIVER === "s3"
+          ? `Object storage ${env.S3_BUCKET} is writable and readable.`
+          : `Local storage ${env.STORAGE_ROOT} is writable and readable.`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : "Storage test failed.",
+    };
+  }
 }
 
 /** Expiring, HMAC-signed download links so attachment URLs cannot be guessed. */

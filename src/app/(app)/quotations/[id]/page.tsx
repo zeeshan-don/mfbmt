@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth";
 import { marginPct } from "@/lib/pricing/rules";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, Notice, PageHeader, inputClass, statusTone } from "@/components/ui";
-import { generateQuotationPdfAction, markQuotationSentAction, updateQuotationPriceAction } from "@/app/actions/quotations";
+import { generateQuotationPdfAction, sendQuotationAction, updateQuotationPriceAction } from "@/app/actions/quotations";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +56,7 @@ export default async function QuotationPage({
       {flags.error ? <Notice tone="danger" title="Action not completed">{flags.error}</Notice> : null}
       {flags.saved ? <Notice tone="ok">Quotation updated.</Notice> : null}
       {flags.pdf ? <Notice tone="ok">PDF created. Use the download button to open it.</Notice> : null}
-      {flags.sent ? <Notice tone="ok">Marked as sent to the customer.</Notice> : null}
+      {flags.sent ? <Notice tone="ok">{flags.sent}</Notice> : null}
 
       {quotation.status === "AWAITING_APPROVAL" ? (
         <Notice tone="warn" title="This quotation is not approved yet">
@@ -118,7 +118,7 @@ export default async function QuotationPage({
                             <input type="hidden" name="itemId" value={line.id} />
                             <input
                               name="unitPrice"
-                              defaultValue={line.unitPrice}
+                              defaultValue={line.unitPrice ?? ""}
                               inputMode="decimal"
                               aria-label={`Selling price for ${line.description}`}
                               className={`${inputClass} h-8 w-24 tabular`}
@@ -164,9 +164,29 @@ export default async function QuotationPage({
                   <ButtonLink href={`/api/quotations/${quotation.id}/pdf`} size="sm">Download PDF</ButtonLink>
                 ) : null}
                 {isOwner && quotation.status === "APPROVED" ? (
-                  <form action={markQuotationSentAction}>
+                  <form action={sendQuotationAction} className="flex flex-wrap items-end gap-2 rounded-control border border-line bg-elevated/40 px-2.5 py-2">
                     <input type="hidden" name="quotationId" value={quotation.id} />
-                    <Button size="sm" variant="primary">Mark as sent to customer</Button>
+                    <label className="text-[11px] text-muted">
+                      Send by
+                      <select name="channel" defaultValue={quotation.customerEmail ? "EMAIL" : quotation.customerPhone ? "WHATSAPP" : "MANUAL"} className={`${inputClass} mt-0.5 h-8 w-36`}>
+                        <option value="EMAIL">Email (system sends)</option>
+                        <option value="WHATSAPP">WhatsApp document</option>
+                        <option value="MANUAL">I sent it manually</option>
+                      </select>
+                    </label>
+                    <label className="text-[11px] text-muted">
+                      To
+                      <input name="to" defaultValue={quotation.customerEmail ?? quotation.customerPhone ?? ""} className={`${inputClass} mt-0.5 h-8 w-52`} />
+                    </label>
+                    <label className="text-[11px] text-muted">
+                      Manual note (optional)
+                      <input name="manualNote" placeholder="e.g. handed over at the office" className={`${inputClass} mt-0.5 h-8 w-48`} />
+                    </label>
+                    <Button size="sm" variant="primary">Release quotation</Button>
+                    <p className="w-full text-[10px] text-muted">
+                      Email/WhatsApp are only recorded as sent when the provider accepts the message. “I sent it manually” records your
+                      own confirmation — no message is sent by the system.
+                    </p>
                   </form>
                 ) : null}
               </div>
@@ -220,7 +240,19 @@ export default async function QuotationPage({
                 <p className="text-warn">Not approved. This quotation cannot be recorded as sent until it is approved.</p>
               )}
               {quotation.sentAt ? (
-                <p className="mt-2 text-soft">Recorded as sent on {formatDateTime(quotation.sentAt)}.</p>
+                <p className="mt-2 text-soft">
+                  Recorded as sent on {formatDateTime(quotation.sentAt)}
+                  {quotation.sentChannel ? ` via ${quotation.sentChannel.toLowerCase()}` : ""}
+                  {quotation.sentTo ? ` to ${quotation.sentTo}` : ""}.
+                </p>
+              ) : null}
+              {quotation.sendError ? (
+                <p className="mt-2 text-danger">Last release attempt failed: {quotation.sendError}</p>
+              ) : null}
+              {quotation.pricingExceptionById ? (
+                <p className="mt-2 text-warn">
+                  Released with an owner pricing exception: {quotation.pricingExceptionReason ?? "no reason recorded"}.
+                </p>
               ) : null}
             </div>
           </Card>

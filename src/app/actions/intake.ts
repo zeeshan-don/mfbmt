@@ -79,19 +79,27 @@ export async function createManualEnquiryAction(formData: FormData) {
   redirect(`/enquiries?filter=all&created=1`);
 }
 
+function optionalNumber(value: FormDataEntryValue | null): number | null {
+  const text = str(value)?.replace(/,/g, "");
+  if (!text) return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+/**
+ * Public supplier response. The token is the only credential and it is
+ * single-use by state; every value is validated again on the server because the
+ * form is submitted by an outside party.
+ */
 export async function submitSupplierResponseAction(formData: FormData) {
   const token = String(formData.get("token") ?? "");
   const unitPrice = Number(String(formData.get("unitPrice") ?? "").replace(/,/g, ""));
-  const currency = (str(formData.get("currency")) ?? "AED").toUpperCase();
-  const moqRaw = str(formData.get("moq"));
-  const leadRaw = str(formData.get("leadTimeDays"));
-  const shippingRaw = str(formData.get("shippingCost"));
-  const validityRaw = str(formData.get("validityDays"));
+  const currency = (str(formData.get("currency")) ?? "").toUpperCase();
 
   if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
     redirect(`/supplier-response/${token}?error=Enter+a+valid+unit+price`);
   }
-  if (currency.length !== 3) {
+  if (!/^[A-Z]{3}$/.test(currency)) {
     redirect(`/supplier-response/${token}?error=Use+a+three-letter+currency+such+as+AED`);
   }
 
@@ -99,10 +107,21 @@ export async function submitSupplierResponseAction(formData: FormData) {
     token,
     unitPrice,
     currency,
-    moq: moqRaw ? Number(moqRaw) : null,
-    leadTimeDays: leadRaw ? Number(leadRaw) : null,
-    shippingCost: shippingRaw ? Number(shippingRaw) : null,
-    validityDays: validityRaw ? Number(validityRaw) : null,
+    offeredDescription: str(formData.get("offeredDescription")),
+    size: str(formData.get("size")),
+    material: str(formData.get("material")),
+    grade: str(formData.get("grade")),
+    pressureRating: str(formData.get("pressureRating")),
+    standard: str(formData.get("standard")),
+    moq: optionalNumber(formData.get("moq")),
+    quantityAvailable: optionalNumber(formData.get("quantityAvailable")),
+    leadTimeDays: optionalNumber(formData.get("leadTimeDays")),
+    shippingCost: optionalNumber(formData.get("shippingCost")),
+    otherCharges: optionalNumber(formData.get("otherCharges")),
+    taxes: optionalNumber(formData.get("taxes")),
+    deliveryLocation: str(formData.get("deliveryLocation")),
+    paymentTerms: str(formData.get("paymentTerms")),
+    validityDays: optionalNumber(formData.get("validityDays")),
     availability: str(formData.get("availability")),
     notes: str(formData.get("notes")),
   });

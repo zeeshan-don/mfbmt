@@ -86,12 +86,64 @@ export default async function SupplierResponsePage({
                 <input name="validityDays" inputMode="numeric" defaultValue="14" className={`${inputClass} mt-1 tabular`} />
               </label>
             </div>
+            <div className="rounded-control border border-line bg-elevated/40 px-3 py-3">
+              <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">What you are offering</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-xs text-soft sm:col-span-2">
+                  Product description
+                  <input name="offeredDescription" className={`${inputClass} mt-1`} placeholder="Exact product you are quoting" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Size
+                  <input name="size" className={`${inputClass} mt-1`} placeholder="e.g. 1 inch" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Material / grade
+                  <input name="material" className={`${inputClass} mt-1`} placeholder="e.g. SS316, SS316L" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Pressure rating
+                  <input name="pressureRating" className={`${inputClass} mt-1`} placeholder="e.g. Class 150, PN16" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Standard
+                  <input name="standard" className={`${inputClass} mt-1`} placeholder="e.g. ASME B16.34" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Grade / schedule (if different)
+                  <input name="grade" className={`${inputClass} mt-1`} />
+                </label>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <label className="block text-xs text-soft">
+                Quantity available
+                <input name="quantityAvailable" inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+              </label>
+              <label className="block text-xs text-soft">
+                Other charges
+                <input name="otherCharges" inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+              </label>
+              <label className="block text-xs text-soft">
+                Taxes / VAT
+                <input name="taxes" inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+              </label>
+              <label className="block text-xs text-soft">
+                Delivery location
+                <input name="deliveryLocation" className={`${inputClass} mt-1`} placeholder="Where this price delivers to" />
+              </label>
+              <label className="block text-xs text-soft">
+                Payment terms
+                <input name="paymentTerms" className={`${inputClass} mt-1`} placeholder="e.g. 30 days" />
+              </label>
+              <label className="block text-xs text-soft">
+                Availability
+                <input name="availability" className={`${inputClass} mt-1`} placeholder="e.g. ex-stock" />
+              </label>
+            </div>
             <label className="block text-xs text-soft">
-              Availability
-              <input name="availability" className={`${inputClass} mt-1`} placeholder="e.g. ex-stock, 500 available" />
-            </label>
-            <label className="block text-xs text-soft">
-              Notes (payment terms, remarks)
+              Notes (remarks, freight exclusions)
               <textarea name="notes" rows={3} className={`${textareaClass} mt-1`} />
             </label>
             <div className="flex items-center justify-between gap-3">

@@ -1,9 +1,11 @@
 import { db } from "../db";
+import { matchProduct } from "../inventory/matching";
 import { env } from "../env";
 import { writeAudit } from "../audit";
 import { stringifyJson } from "../json";
 import { sendWhatsAppText } from "../intake/whatsapp";
-import { sendEmail } from "../email/send";
+import { activeEmailProvider, sendEmail } from "../email/send";
+import { getWhatsAppCredentials } from "../integrations/whatsapp";
 import { buildSpecSummary } from "../catalog/normalize";
 
 function quoteLink(token: string): string {
@@ -164,14 +166,18 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
   const subject = quote.subject ?? "Quotation request — MFBMT";
   const body = quote.messageBody ?? "";
 
-  if (quote.supplier.email && env.EMAIL_INTAKE_PROVIDER !== "none") {
+  // Channel availability comes from the stored connection, not from a stale env
+  // flag: with Embedded Signup there is no static WHATSAPP_ACCESS_TOKEN.
+  const emailProvider = await activeEmailProvider();
+  if (quote.supplier.email && emailProvider !== "none") {
     const sent = await sendEmail({ to: quote.supplier.email, subject, text: body });
     if (!sent.ok) return { ok: false, detail: sent.error };
     await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date() } });
     return { ok: true, detail: `Sent to ${quote.supplier.email}.` };
   }
 
-  if (quote.supplier.whatsapp && env.WHATSAPP_ACCESS_TOKEN) {
+  const whatsapp = await getWhatsAppCredentials();
+  if (quote.supplier.whatsapp && whatsapp) {
     const sent = await sendWhatsAppText(quote.supplier.whatsapp, body);
     if (!sent.ok) return { ok: false, detail: sent.detail };
     await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date() } });
@@ -185,21 +191,66 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
   };
 }
 
-/** Supplier submits price via the public form; creates an offer for comparison. */
-export async function recordSupplierResponse(input: {
+export type SupplierResponseInput = {
   token: string;
   unitPrice: number;
   currency: string;
+  offeredDescription?: string | null;
+  size?: string | null;
+  material?: string | null;
+  grade?: string | null;
+  pressureRating?: string | null;
+  standard?: string | null;
   moq?: number | null;
+  quantityAvailable?: number | null;
   leadTimeDays?: number | null;
   shippingCost?: number | null;
+  otherCharges?: number | null;
+  taxes?: number | null;
+  deliveryLocation?: string | null;
+  paymentTerms?: string | null;
   validityDays?: number | null;
   availability?: string | null;
   notes?: string | null;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+};
+
+/** Server-side validation for the public supplier form. Never trust the browser. */
+export function validateSupplierResponse(input: SupplierResponseInput): string | null {
+  if (!input.token) return "This link is not valid.";
+  if (!Number.isFinite(input.unitPrice) || input.unitPrice <= 0) return "Enter a valid unit price.";
+  if (!/^[A-Z]{3}$/.test(input.currency.toUpperCase())) return "Use a three-letter currency such as AED.";
+  for (const [label, value] of [
+    ["Minimum order quantity", input.moq],
+    ["Available quantity", input.quantityAvailable],
+    ["Shipping charges", input.shippingCost],
+    ["Other charges", input.otherCharges],
+    ["Taxes", input.taxes],
+    ["Lead time", input.leadTimeDays],
+  ] as const) {
+    if (value != null && (!Number.isFinite(value) || value < 0)) return `${label} must be a number of zero or more.`;
+  }
+  if (input.validityDays != null && (input.validityDays < 1 || input.validityDays > 365)) {
+    return "Quote validity must be between 1 and 365 days.";
+  }
+  return null;
+}
+
+/**
+ * Supplier submits a quote via the public form; an offer is created for comparison.
+ *
+ * A submitted price does not prove technical equivalence: the match is recomputed
+ * from the specs the supplier states, and the offer stays UNVERIFIED until the
+ * owner reviews it. Missing costs stay missing so the landed cost is not faked.
+ */
+export async function recordSupplierResponse(
+  input: SupplierResponseInput,
+): Promise<{ ok: true; matchStatus: string } | { ok: false; error: string }> {
+  const problem = validateSupplierResponse(input);
+  if (problem) return { ok: false, error: problem };
+
   const quote = await db.supplierQuote.findUnique({
     where: { token: input.token },
-    include: { supplier: true, items: true },
+    include: { supplier: true, items: { include: { quote: true } } },
   });
   if (!quote) return { ok: false, error: "This link is not valid." };
   if (quote.expiresAt.getTime() < Date.now()) return { ok: false, error: "This quotation link has expired." };
@@ -207,33 +258,76 @@ export async function recordSupplierResponse(input: {
 
   const item = quote.items[0];
   if (!item || !quote.enquiryItemId) return { ok: false, error: "The request is incomplete." };
+
+  const requested = await db.enquiryItem.findUnique({ where: { id: quote.enquiryItemId } });
+  if (!requested) return { ok: false, error: "The request is incomplete." };
+
+  const match = matchProduct(
+    {
+      description: requested.description,
+      category: requested.category,
+      brand: requested.brand,
+      size: requested.size,
+      material: requested.material,
+      grade: requested.grade,
+      pressureRating: requested.pressureRating,
+      schedule: requested.schedule,
+      standard: requested.standard,
+    },
+    {
+      description: input.offeredDescription ?? requested.description,
+      size: input.size ?? null,
+      material: input.material ?? null,
+      grade: input.grade ?? null,
+      pressureRating: input.pressureRating ?? null,
+      standard: input.standard ?? null,
+    },
+    { strictStandard: Boolean(requested.standard) },
+  );
+
   const validityDate =
     input.validityDays && input.validityDays > 0
       ? new Date(Date.now() + input.validityDays * 24 * 60 * 60 * 1000)
-      : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+      : null;
 
   const offer = await db.supplierOffer.create({
     data: {
       enquiryItemId: quote.enquiryItemId,
       supplierId: quote.supplierId,
       supplierName: quote.supplier.name,
-      productTitle: item.description,
-      matchStatus: "POSSIBLE",
+      productTitle: input.offeredDescription?.trim() || item.description,
+      matchStatus: match.status,
       unitPrice: input.unitPrice,
       currency: input.currency.toUpperCase(),
+      quantityAvailable: input.quantityAvailable ?? null,
       moq: input.moq ?? null,
       shippingCost: input.shippingCost ?? null,
-      leadTimeDays: input.leadTimeDays ?? null,
+      otherCharges: input.otherCharges ?? null,
+      taxes: input.taxes ?? null,
+      leadTimeDays: input.leadTimeDays != null ? Math.round(input.leadTimeDays) : null,
+      deliveryLocation: input.deliveryLocation ?? null,
+      paymentTerms: input.paymentTerms ?? null,
       validityDate,
       status: "QUOTE_RECEIVED",
       sourceType: "SUPPLIER_QUOTE",
       quotedAt: new Date(),
       quoteRef: quote.id,
-      verificationStatus: "VERIFIED",
+      // A supplier form submission is evidence of a price, not proof of equivalence.
+      verificationStatus: "UNVERIFIED",
       evidenceJson: stringifyJson({
         submittedBySupplier: true,
+        receivedAt: new Date().toISOString(),
         availability: input.availability ?? null,
         notes: input.notes ?? null,
+        statedSpecs: {
+          description: input.offeredDescription ?? null,
+          size: input.size ?? null,
+          material: input.material ?? null,
+          grade: input.grade ?? null,
+          pressureRating: input.pressureRating ?? null,
+          standard: input.standard ?? null,
+        },
+        match: { status: match.status, reasons: match.reasons ?? [], mismatches: match.mismatches ?? [] },
       }),
       quoteItemId: item.id,
     },
@@ -253,8 +347,10 @@ export async function recordSupplierResponse(input: {
       unitPrice: input.unitPrice,
       currency: input.currency.toUpperCase(),
       moq: input.moq ?? null,
-      leadTimeDays: input.leadTimeDays ?? null,
+      leadTimeDays: input.leadTimeDays != null ? Math.round(input.leadTimeDays) : null,
       shippingCost: input.shippingCost ?? null,
+      otherCharges: input.otherCharges ?? null,
+      taxes: input.taxes ?? null,
       validityDate,
       notes: input.notes ?? null,
     },
@@ -272,9 +368,14 @@ export async function recordSupplierResponse(input: {
       entityType: "SupplierQuote",
       entityId: quote.id,
       actorLabel: "supplier",
-      metaJson: stringifyJson({ offerId: offer.id, unitPrice: input.unitPrice }),
+      metaJson: stringifyJson({
+        offerId: offer.id,
+        unitPrice: input.unitPrice,
+        currency: input.currency.toUpperCase(),
+        matchStatus: match.status,
+      }),
     },
   });
 
-  return { ok: true };
+  return { ok: true, matchStatus: match.status };
 }

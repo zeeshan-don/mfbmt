@@ -91,10 +91,26 @@ export function parseLineItems(text: string, sourceRef: string): ItemDraft[] {
       unit = trailing[3] ?? null;
       description = trailing[1];
     } else {
-      description = line;
+      // Real WhatsApp and email requests are prose: "Please quote 20 pcs SS316
+      // elbow, 1 inch." The quantity sits mid-sentence, so it must be found
+      // before the line is dismissed as narrative.
+      const inline = line.match(
+        /\b(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|meters?|metres?|m|boxes?|box|rolls?|litres?|liters?)\b\.?\s+([A-Za-z].*)$/i,
+      );
+      if (inline) {
+        quantity = Number(inline[1].replace(",", ""));
+        unit = inline[2];
+        description = inline[3];
+      } else {
+        description = line;
+      }
     }
 
-    description = description.replace(/\s{2,}/g, " ").replace(/^[-–—:.\s]+/, "").trim();
+    description = description
+      .replace(/\s{2,}/g, " ")
+      .replace(/^[-–—:.\s]+/, "")
+      .replace(/[.;,]+$/, "")
+      .trim();
     if (description.length < 3) continue;
     if (!/[a-z]/i.test(description)) continue;
     if (description.split(" ").length > 25) continue;
@@ -230,6 +246,32 @@ export async function extractEnquiry(input: ExtractionInput): Promise<Extraction
     ...parseLineItems(input.text, "message"),
     ...documents.flatMap((doc) => parseLineItems(doc.text, `${doc.filename}`)),
   ]);
+
+  // Nothing parseable must still become a reviewable line, never a silently
+  // empty enquiry: the owner is asked for the quantity instead of the request
+  // disappearing.
+  if (ruleItems.length === 0 && input.text.trim()) {
+    const fallback = finalizeItems([
+      {
+        description: input.text.replace(/\s+/g, " ").trim().slice(0, 240),
+        quantity: null,
+        unit: null,
+        category: null,
+        brand: null,
+        size: null,
+        material: null,
+        grade: null,
+        pressureRating: null,
+        schedule: null,
+        standard: null,
+        otherSpecs: {},
+        sourceRef: "message",
+        missingFields: ["quantity"],
+        confidence: {},
+      },
+    ]);
+    ruleItems.push(...fallback);
+  }
 
   if (!aiStatus().configured) {
     const unreadable = documents.filter((d) => d.unreadable).map((d) => d.filename);
