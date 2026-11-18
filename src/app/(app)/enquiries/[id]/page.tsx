@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission, canSeeSupplierCosts } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
 import { buildSpecSummary } from "@/lib/catalog/normalize";
+import { fastenerSpecSummary, parseFastenerSpecJson, lengthApplies, FASTENER_TYPE_LABELS } from "@/lib/fasteners/spec";
 import {
   ENQUIRY_STATUS_LABELS,
   INVENTORY_STATUS_LABELS,
@@ -34,7 +35,8 @@ export default async function EnquiryDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; saved?: string; queued?: string; stock?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("enquiries.view");
+  const canViewCosts = canSeeSupplierCosts(user);
   const { id } = await params;
   const flags = await searchParams;
 
@@ -147,6 +149,7 @@ export default async function EnquiryDetailPage({
           ) : (
             enquiry.items.map((item) => {
               const missing = parseJson<string[]>(item.missingFields, []);
+              const fastener = parseFastenerSpecJson(item.fastenerSpecJson);
               const inline = parseJson<{ candidates?: unknown[]; note?: string | null }>(item.matchedStockJson, {});
               const offers = item.offers;
               const eligible = offers.filter((offer) => offer.isEligible);
@@ -180,6 +183,51 @@ export default async function EnquiryDetailPage({
                         }) || "No further specification recorded"}
                         {item.sourceRef ? ` · from ${item.sourceRef}` : ""}
                       </p>
+                      {fastener ? (
+                        <div className="mt-2 rounded-control border border-line bg-elevated/50 px-2.5 py-2">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-muted">
+                            Fastener specification · {item.specSource === "MANUAL" ? "reviewed by owner" : item.specSource === "SUPPLIER_CONFIRMED" ? "supplier confirmed" : "extracted — confirm before sourcing"}
+                            {item.specConfirmedAt ? ` · ${new Date(item.specConfirmedAt).toLocaleDateString("en-GB")}` : ""}
+                          </p>
+                          <p className="mt-1 text-xs text-ink">
+                            {fastenerSpecSummary({
+                              ...fastener,
+                              lengthMm: missing.includes("Length") ? null : fastener.lengthMm,
+                            })}
+                          </p>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {([
+                              ["Type", fastener.type ? FASTENER_TYPE_LABELS[fastener.type] : null],
+                              ["Diameter", fastener.diameter],
+                              ["Thread", fastener.threadSeries],
+                              ["Pitch", fastener.pitchMm != null ? `${fastener.pitchMm} mm` : null],
+                              [
+                                "Length",
+                                lengthApplies(fastener.type)
+                                  ? missing.includes("Length")
+                                    ? null
+                                    : fastener.lengthMm != null
+                                      ? `${fastener.lengthMm} mm`
+                                      : null
+                                  : null,
+                              ],
+                              ["Material", fastener.material],
+                              ["Class", fastener.propertyClass],
+                              ["Finish", fastener.finish],
+                              ["Standard", fastener.standard],
+                            ] as const)
+                              .filter(([labelText]) => labelText !== "Length" || lengthApplies(fastener.type))
+                              .map(([labelText, value]) => (
+                              <span
+                                key={labelText}
+                                className={`rounded border px-1.5 py-0.5 text-[10px] ${value ? "border-line text-soft" : "border-warn/40 bg-warn/5 text-warn"}`}
+                              >
+                                {labelText}: {value ?? "missing"}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Badge tone={statusTone(item.inventoryStatus)}>
@@ -226,7 +274,7 @@ export default async function EnquiryDetailPage({
                     {savedOffer ? (
                       <div className="mb-2 rounded-card border border-ok/30 bg-ok/5 px-3 py-2 text-xs text-soft">
                         Approved supplier: <span className="font-medium text-ink">{savedOffer.supplierName}</span>
-                        {savedOffer.unitPrice != null
+                        {canViewCosts && savedOffer.unitPrice != null
                           ? ` · ${formatMoney(savedOffer.unitPrice, savedOffer.currency ?? "AED")} per ${item.unit}`
                           : ""}
                         <span className="block text-[11px] text-muted">
@@ -240,7 +288,7 @@ export default async function EnquiryDetailPage({
                         <p className="text-xs text-soft">
                           {offers.length} supplier option{offers.length === 1 ? "" : "s"} found ·{" "}
                           {eligible.length} eligible
-                          {best?.total != null ? (
+                          {canViewCosts && best?.total != null ? (
                             <>
                               {" "}· best eligible total{" "}
                               <span className="font-medium tabular text-ink">
@@ -270,9 +318,11 @@ export default async function EnquiryDetailPage({
                       </div>
                     ) : (
                       <p className="text-xs text-muted">
-                        {item.quantityToSource === 0
-                          ? "Covered by your stock — no supplier search needed."
-                          : "Add the missing details to start a supplier search."}
+                        {missing.length > 0
+                          ? "Add the missing details before a supplier search or stock promise can be made."
+                          : item.quantityToSource === 0
+                            ? "Covered by your stock — no supplier search needed."
+                            : "Add the missing details to start a supplier search."}
                       </p>
                     )}
                   </div>
@@ -330,6 +380,53 @@ export default async function EnquiryDetailPage({
                           <input name="brand" defaultValue={item.brand ?? ""} className={`${inputClass} mt-1`} />
                         </label>
                       </div>
+                      <fieldset className="rounded-control border border-line px-3 py-2">
+                        <legend className="px-1 text-[11px] font-medium text-muted">Fastener specification (when applicable)</legend>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <label className="block text-xs text-soft">
+                            Fastener type
+                            <select name="fastenerType" defaultValue={item.fastenerType ?? fastener?.type ?? ""} className={`${inputClass} mt-1`}>
+                              <option value="">Not set</option>
+                              {Object.entries(FASTENER_TYPE_LABELS).map(([value, text]) => (
+                                <option key={value} value={value}>{text}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block text-xs text-soft">
+                            Diameter
+                            <input name="fastenerDiameter" defaultValue={fastener?.diameter ?? item.diameter ?? ""} placeholder="M10 / 3/8" className={`${inputClass} mt-1`} />
+                          </label>
+                          <label className="block text-xs text-soft">
+                            Thread system
+                            <select name="threadSeries" defaultValue={item.threadSeries ?? fastener?.threadSeries ?? ""} className={`${inputClass} mt-1`}>
+                              <option value="">Not set</option>
+                              {["METRIC_COARSE", "METRIC_FINE", "UNC", "UNF", "BSP", "NPT"].map((value) => (
+                                <option key={value} value={value}>{value.replaceAll("_", " ").toLowerCase()}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="block text-xs text-soft">
+                            Pitch (mm)
+                            <input name="pitchMm" defaultValue={item.pitchMm != null ? String(item.pitchMm) : ""} inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+                          </label>
+                          <label className="block text-xs text-soft">
+                            Length (mm)
+                            <input name="lengthMm" defaultValue={item.lengthMm != null ? String(item.lengthMm) : ""} inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+                          </label>
+                          <label className="block text-xs text-soft">
+                            Property class
+                            <input name="propertyClass" defaultValue={item.propertyClass ?? fastener?.propertyClass ?? ""} placeholder="8.8 / 10.9 / A2-70" className={`${inputClass} mt-1`} />
+                          </label>
+                          <label className="block text-xs text-soft">
+                            Finish
+                            <input name="finish" defaultValue={item.finish ?? fastener?.finish ?? ""} placeholder="ZINC_PLATED / HOT_DIP_GALVANIZED" className={`${inputClass} mt-1`} />
+                          </label>
+                          <label className="flex items-center gap-2 self-end pb-2 text-xs text-soft">
+                            <input type="checkbox" name="confirm" value="1" />
+                            I have checked these details against the customer request
+                          </label>
+                        </div>
+                      </fieldset>
                       <div className="flex items-center justify-between">
                         <p className="text-[11px] text-muted">Saving rechecks stock and asks the supplier search to use the corrected details.</p>
                         <Button size="sm" variant="primary">

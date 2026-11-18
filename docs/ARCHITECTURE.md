@@ -22,7 +22,7 @@
         │                       │                              │
         └───────────────────────┴──────────────┬───────────────┘
                                                ▼
-                       Prisma → SQLite (default) / PostgreSQL (documented swap)
+                       Prisma → PostgreSQL
                        Attachments on disk, encrypted integration secrets in DB
                        BackgroundJob table → `npm run worker` or /api/jobs/tick
 ```
@@ -68,7 +68,7 @@ The important boundary: **AI never computes commercial facts**. It reads text an
 
 - States: `QUEUED → PROCESSING → COMPLETED | FAILED | CANCELLED`.
 - `idempotencyKey` is unique: re-queuing the same work returns the existing job.
-- Attempts are stored; failures back off (15s, 30s, 60s…) up to `maxAttempts`, then stay `FAILED` with the reason.
+- Attempts are stored; failures back off (20s, 40s, 80s… capped at 15 minutes) up to each job's own `maxAttempts`, then stay `FAILED` with the reason. Expired leases are requeued by the same per-job limit.
 - A worker that dies mid-job is recovered after 10 minutes (`releaseStaleJobs`).
 - `npm run worker` is the normal runner. `/api/jobs/tick` exists for hosts without a long-running process; it performs the same work and requires `WORKER_SECRET`.
 
@@ -87,7 +87,7 @@ The important boundary: **AI never computes commercial facts**. It reads text an
 
 ## Defaults and deliberate constraints
 
-- **SQLite** keeps local setup and backups simple. The schema avoids enums/JSON columns for portability; switching to PostgreSQL changes the datasource and converts JSON text to `jsonb` (see `docs/DATABASE.md`).
+- **PostgreSQL** is the datasource. JSON payloads are stored as validated text so schemas evolve without destructive enum changes; the queue relies on PostgreSQL row locking (`FOR UPDATE SKIP LOCKED`) and worker liveness on a persisted heartbeat registry (see `docs/DATABASE.md`).
 - **Single organisation** is assumed; the `Organization` row holds quotation identity and defaults.
 - **Currency**: prices keep their original currency. Comparison uses the enquiry currency (or the organisation default).
 - **No scraping behind controls**: page fetching checks robots.txt, blocks private hosts, caps size and timeout.

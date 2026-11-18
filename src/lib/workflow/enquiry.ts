@@ -594,6 +594,15 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
         clarificationQuestion: item.clarificationQuestion,
         reviewStatus: item.clarificationQuestion ? "NEEDS_CLARIFICATION" : "PENDING",
         extractedJson: stringifyJson(item),
+        fastenerSpecJson: item.fastenerSpec ? stringifyJson(item.fastenerSpec) : null,
+        fastenerType: item.fastenerSpec?.type ?? null,
+        diameter: item.fastenerSpec?.diameter ?? null,
+        threadSeries: item.fastenerSpec?.threadSeries ?? null,
+        pitchMm: item.fastenerSpec?.pitchMm ?? null,
+        lengthMm: item.fastenerSpec?.lengthMm ?? null,
+        propertyClass: item.fastenerSpec?.propertyClass ?? null,
+        finish: item.fastenerSpec?.finish ?? null,
+        specSource: "EXTRACTED",
       },
     });
     await applyInventoryCheck(created.id);

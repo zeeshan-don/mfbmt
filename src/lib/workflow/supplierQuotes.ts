@@ -1,12 +1,13 @@
 import { db } from "../db";
 import { matchProduct } from "../inventory/matching";
-import { env } from "../env";
+import { env, isDemoMode } from "../env";
 import { writeAudit } from "../audit";
 import { stringifyJson } from "../json";
 import { sendWhatsAppText } from "../intake/whatsapp";
 import { activeEmailProvider, sendEmail } from "../email/send";
 import { getWhatsAppCredentials } from "../integrations/whatsapp";
 import { buildSpecSummary } from "../catalog/normalize";
+import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
 
 function quoteLink(token: string): string {
   return `${env.APP_URL.replace(/\/$/, "")}/supplier-response/${token}`;
@@ -166,6 +167,19 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
   const subject = quote.subject ?? "Quotation request — MFBMT";
   const body = quote.messageBody ?? "";
 
+  // Demo mode never reaches a provider. The activity log records the simulation.
+  if (isDemoMode) {
+    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date() } });
+    await writeAudit({
+      actorLabel: "demo-simulation",
+      action: "supplier_quote.simulated_sent",
+      entityType: "SupplierQuote",
+      entityId: quote.id,
+      meta: { channel: quote.supplier.email ? "email" : "whatsapp", to: quote.supplier.email ?? quote.supplier.whatsapp },
+    });
+    return { ok: true, detail: "Demo simulation: recorded as sent. No supplier message was transmitted." };
+  }
+
   // Channel availability comes from the stored connection, not from a stale env
   // flag: with Embedded Signup there is no static WHATSAPP_ACCESS_TOKEN.
   const emailProvider = await activeEmailProvider();
@@ -201,6 +215,12 @@ export type SupplierResponseInput = {
   grade?: string | null;
   pressureRating?: string | null;
   standard?: string | null;
+  fastenerType?: string | null;
+  threadSeries?: string | null;
+  pitchMm?: number | null;
+  lengthMm?: number | null;
+  propertyClass?: string | null;
+  finish?: string | null;
   moq?: number | null;
   quantityAvailable?: number | null;
   leadTimeDays?: number | null;
@@ -262,6 +282,21 @@ export async function recordSupplierResponse(
   const requested = await db.enquiryItem.findUnique({ where: { id: quote.enquiryItemId } });
   if (!requested) return { ok: false, error: "The request is incomplete." };
 
+  const offeredSpec = parseFastenerSpec({
+    description: input.offeredDescription ?? requested.description,
+    size: input.size ?? null,
+    material: input.material ?? null,
+    grade: input.grade ?? null,
+    standard: input.standard ?? null,
+  });
+  // Supplier-entered structured fields take precedence over text extraction.
+  if (input.fastenerType) offeredSpec.type = input.fastenerType as typeof offeredSpec.type;
+  if (input.threadSeries) offeredSpec.threadSeries = input.threadSeries as typeof offeredSpec.threadSeries;
+  if (input.pitchMm != null) offeredSpec.pitchMm = input.pitchMm;
+  if (input.lengthMm != null) offeredSpec.lengthMm = input.lengthMm;
+  if (input.propertyClass) offeredSpec.propertyClass = input.propertyClass;
+  if (input.finish) offeredSpec.finish = input.finish as typeof offeredSpec.finish;
+
   const match = matchProduct(
     {
       description: requested.description,
@@ -273,6 +308,7 @@ export async function recordSupplierResponse(
       pressureRating: requested.pressureRating,
       schedule: requested.schedule,
       standard: requested.standard,
+      fastenerSpec: parseFastenerSpecJson(requested.fastenerSpecJson),
     },
     {
       description: input.offeredDescription ?? requested.description,
@@ -281,6 +317,7 @@ export async function recordSupplierResponse(
       grade: input.grade ?? null,
       pressureRating: input.pressureRating ?? null,
       standard: input.standard ?? null,
+      fastenerSpec: offeredSpec,
     },
     { strictStandard: Boolean(requested.standard) },
   );
@@ -312,6 +349,7 @@ export async function recordSupplierResponse(
       sourceType: "SUPPLIER_QUOTE",
       quotedAt: new Date(),
       quoteRef: quote.id,
+      offeredSpecJson: stringifyJson(offeredSpec),
       // A supplier form submission is evidence of a price, not proof of equivalence.
       verificationStatus: "UNVERIFIED",
       evidenceJson: stringifyJson({

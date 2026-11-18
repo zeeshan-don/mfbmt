@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { parseJson, stringifyJson } from "../json";
 import { matchProduct } from "../inventory/matching";
+import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
 import { recomputeOffersForItem } from "../costing/evaluate";
 import { buildSearchQueries } from "./queries";
 import { getSearchAdapters } from "./registry";
@@ -23,8 +24,9 @@ function candidateSpecs(candidate: SourcingCandidate) {
   const extracted = (candidate.evidence?.specifications ?? {}) as Record<string, unknown>;
   const pick = (key: string) =>
     (extracted[key] as string | undefined) ?? (stored[key] as string | undefined) ?? null;
+  const description = `${candidate.title} ${candidate.snippet ?? ""}`.slice(0, 400);
   return {
-    description: `${candidate.title} ${candidate.snippet ?? ""}`.slice(0, 400),
+    description,
     material: pick("material"),
     size: pick("size"),
     grade: pick("grade"),
@@ -32,6 +34,13 @@ function candidateSpecs(candidate: SourcingCandidate) {
     schedule: pick("schedule"),
     standard: pick("standard"),
     brand: pick("brand"),
+    fastenerSpec: parseFastenerSpec({
+      description,
+      size: pick("size"),
+      material: pick("material"),
+      grade: pick("grade"),
+      standard: pick("standard"),
+    }),
   };
 }
 
@@ -216,6 +225,7 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
     pressureRating: item.pressureRating,
     schedule: item.schedule,
     standard: item.standard,
+    fastenerSpec: parseFastenerSpecJson(item.fastenerSpecJson),
   };
 
   let offerCount = 0;
@@ -290,6 +300,7 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
         sourceUrl: candidate.sourceUrl ?? null,
         quotedAt: candidate.retrievedAt,
         verificationStatus: candidate.unitPrice != null ? "PARTIAL" : "UNVERIFIED",
+        offeredSpecJson: stringifyJson(specs.fastenerSpec),
         evidenceJson: stringifyJson({
           specifications: candidate.evidence?.specifications ?? null,
           match: { status: match.status, reasons: match.reasons, missing: match.missing },

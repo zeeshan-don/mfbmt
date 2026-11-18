@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings=200",
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -19,6 +19,8 @@
     "check:config": "tsx src/scripts/check-config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "tsx tests/e2e/seed-fixture.ts && playwright test",
+    "test:e2e:fixture": "tsx tests/e2e/seed-fixture.ts",
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "prisma": {
@@ -47,6 +49,7 @@
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/bcryptjs": "2.4.6",
     "@types/node": "22.10.2",
     "@types/pdf-parse": "1.1.4",
@@ -54,6 +57,8 @@
     "@types/react": "19.1.8",
     "@types/react-dom": "19.1.6",
     "autoprefixer": "10.4.20",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.29",
     "postcss": "8.4.49",
     "prisma": "^6.16.2",
     "tailwindcss": "3.4.17",

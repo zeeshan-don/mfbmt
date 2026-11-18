@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission, canSeeSupplierCosts } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
 import { MATCH_STATUS_LABELS, SOURCING_STATUS_LABELS, label } from "@/lib/constants";
 import { formatMoney, timeAgo, truncate } from "@/lib/format";
@@ -14,7 +14,8 @@ export default async function SourcingPage({
 }: {
   searchParams: Promise<{ tab?: string }>;
 }) {
-  await requireUser();
+  const user = await requirePermission("sourcing.view");
+  const canViewCosts = canSeeSupplierCosts(user);
   const { tab } = await searchParams;
 
   const [items, responses] = await Promise.all([
@@ -63,7 +64,7 @@ export default async function SourcingPage({
                   <Th>Supplier</Th>
                   <Th>Product</Th>
                   <Th>Request status</Th>
-                  <Th align="right">Price</Th>
+                  {canViewCosts ? <Th align="right">Price</Th> : null}
                   <Th>Updated</Th>
                 </tr>
               </thead>
@@ -91,12 +92,14 @@ export default async function SourcingPage({
                               : quote.status.toLowerCase()}
                         </Badge>
                       </Td>
-                      <Td align="right">
-                        {line?.unitPrice != null
-                          ? formatMoney(line.unitPrice, line.currency ?? "AED")
-                          : "—"}
-                        {line?.moq != null ? <span className="block text-[11px] text-muted">MOQ {line.moq}</span> : null}
-                      </Td>
+                      {canViewCosts ? (
+                        <Td align="right">
+                          {line?.unitPrice != null
+                            ? formatMoney(line.unitPrice, line.currency ?? "AED")
+                            : "—"}
+                          {line?.moq != null ? <span className="block text-[11px] text-muted">MOQ {line.moq}</span> : null}
+                        </Td>
+                      ) : null}
                       <Td>
                         <span className="text-xs text-soft">{timeAgo(quote.respondedAt ?? quote.sentAt ?? quote.createdAt)}</span>
                       </Td>
@@ -135,7 +138,7 @@ export default async function SourcingPage({
                 <Th>Customer</Th>
                 <Th align="right">To buy</Th>
                 <Th align="right">Options</Th>
-                <Th align="right">Best eligible total</Th>
+                {canViewCosts ? <Th align="right">Best eligible total</Th> : null}
                 <Th>Status</Th>
                 <Th>Last checked</Th>
               </tr>
@@ -174,9 +177,11 @@ export default async function SourcingPage({
                       {item.offers.length}
                       {exact > 0 ? <span className="block text-[11px] text-ok">{exact} exact</span> : null}
                     </Td>
-                    <Td align="right">
-                      {best?.total != null ? formatMoney(best.total, "AED") : <span className="text-muted">—</span>}
-                    </Td>
+                    {canViewCosts ? (
+                      <Td align="right">
+                        {best?.total != null ? formatMoney(best.total, "AED") : <span className="text-muted">—</span>}
+                      </Td>
+                    ) : null}
                     <Td>
                       <Badge tone={statusTone(item.sourcingStatus)} dot>
                         {label(SOURCING_STATUS_LABELS, item.sourcingStatus)}

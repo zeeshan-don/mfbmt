@@ -1,5 +1,11 @@
 import { inferCategoryFromDescription, type CategoryRule } from "../catalog/categories";
 import {
+  compareFastenerSpecs,
+  isFastenerCategory,
+  parseFastenerSpec,
+  type FastenerSpec,
+} from "../fasteners/spec";
+import {
   normalizeGrade,
   normalizeMaterial,
   normalizePressure,
@@ -20,6 +26,8 @@ export type SpecFields = {
   pressureRating?: string | null;
   schedule?: string | null;
   standard?: string | null;
+  /** Structured fastener specification. Required for the Industrial Fasteners category. */
+  fastenerSpec?: FastenerSpec | null;
 };
 
 /** An owner-approved substitution such as SS316 → SS316L. */
@@ -159,6 +167,45 @@ export function matchProduct(
     (candidate.category ? (inferCategoryFromDescription(candidate.category)?.name ?? candidate.category) : null) ??
     inferCategoryFromDescription(candidate.description)?.name ??
     null;
+
+  // Fasteners are compared deterministically on their structured specification.
+  // A generic text score can never turn a wrong pitch, grade or finish into a match.
+  // Only a fastener *request* switches to the deterministic fastener matcher. A
+  // non-fastener request compared with a fastener listing falls through to the
+  // generic path, which reports the category conflict as NO_MATCH.
+  const requestedFastener =
+    isFastenerCategory(reqCategory) ||
+    Boolean(requested.fastenerSpec && requested.fastenerSpec.type);
+  if (requestedFastener) {
+    const reqSpec =
+      requested.fastenerSpec ??
+      parseFastenerSpec({
+        description: requested.description,
+        size: requested.size,
+        material: requested.material,
+        grade: requested.grade,
+        standard: requested.standard,
+      });
+    const candSpec =
+      candidate.fastenerSpec ??
+      parseFastenerSpec({
+        description: candidate.description,
+        size: candidate.size,
+        material: candidate.material,
+        grade: candidate.grade,
+        standard: candidate.standard,
+      });
+    const comparison = compareFastenerSpecs(reqSpec, candSpec);
+    const score = Math.max(0, 1 - comparison.mismatches.length * 0.25 - comparison.missing.length * 0.2);
+    return {
+      status: comparison.status,
+      score,
+      reasons: comparison.reasons,
+      mismatches: comparison.mismatches,
+      missing: comparison.missing,
+      usedEquivalence: false,
+    };
+  }
 
   if (reqCategory && candCategory && reqCategory !== candCategory) {
     mismatches.push(`Different product type (${candCategory} instead of ${reqCategory})`);

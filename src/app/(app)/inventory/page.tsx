@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { isStockStale } from "@/lib/inventory/matching";
 import { timeAgo } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, DataTable, EmptyState, Notice, PageHeader, Td, Th, inputClass, statusTone } from "@/components/ui";
@@ -23,7 +23,7 @@ export default async function InventoryPage({
     firstError?: string;
   }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("inventory.view");
   const params = await searchParams;
   const query = params.q?.trim();
 

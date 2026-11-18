@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { marginPct } from "@/lib/pricing/rules";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, Notice, PageHeader, inputClass, statusTone } from "@/components/ui";
@@ -16,7 +16,7 @@ export default async function QuotationPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ saved?: string; pdf?: string; sent?: string; error?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("quotations.view");
   const { id } = await params;
   const flags = await searchParams;
 
@@ -36,7 +36,8 @@ export default async function QuotationPage({
   });
 
   const isOwner = user.role === "OWNER";
-  const internalMargin = quotation.subtotal - (quotation.internalCostTotal ?? 0);
+  const costKnown = quotation.internalCostComplete && quotation.internalCostTotal != null;
+  const internalMargin = costKnown ? quotation.subtotal - (quotation.internalCostTotal ?? 0) : null;
   const totalQty = quotation.items.reduce((sum, line) => sum + line.quantity, 0);
 
   return (
@@ -156,10 +157,14 @@ export default async function QuotationPage({
                 Valid until {quotation.validityDate ? formatDate(quotation.validityDate) : "not set"} · {totalQty} unit(s).
               </p>
               <div className="flex flex-wrap gap-2">
-                <form action={generateQuotationPdfAction}>
-                  <input type="hidden" name="quotationId" value={quotation.id} />
-                  <Button size="sm">Create PDF</Button>
-                </form>
+                {isOwner && ["APPROVED", "SENT"].includes(quotation.status) ? (
+                  <form action={generateQuotationPdfAction}>
+                    <input type="hidden" name="quotationId" value={quotation.id} />
+                    <Button size="sm">{quotation.pdfPath ? "Regenerate PDF" : "Create PDF"}</Button>
+                  </form>
+                ) : !["APPROVED", "SENT"].includes(quotation.status) ? (
+                  <span className="text-[11px] text-muted">PDF can be created after approval.</span>
+                ) : null}
                 {quotation.pdfPath ? (
                   <ButtonLink href={`/api/quotations/${quotation.id}/pdf`} size="sm">Download PDF</ButtonLink>
                 ) : null}
@@ -206,15 +211,17 @@ export default async function QuotationPage({
             <Card>
               <CardHeader title="Internal only" description="Never printed on the customer quotation." />
               <dl className="space-y-2 px-4 py-3 text-xs">
-                <div className="flex justify-between"><dt className="text-muted">Estimated supplier cost</dt><dd className="tabular text-ink">{formatMoney(quotation.internalCostTotal, quotation.currency)}</dd></div>
-                <div className="flex justify-between"><dt className="text-muted">Gross margin</dt><dd className="tabular text-ink">{formatMoney(internalMargin, quotation.currency)}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted">Estimated supplier cost</dt><dd className="tabular text-ink">{costKnown ? formatMoney(quotation.internalCostTotal, quotation.currency) : "Not complete"}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted">Gross margin</dt><dd className="tabular text-ink">{internalMargin != null ? formatMoney(internalMargin, quotation.currency) : "—"}</dd></div>
                 <div className="flex justify-between">
                   <dt className="text-muted">Margin</dt>
-                  <dd className="tabular text-ink">{marginPct(quotation.internalCostTotal, quotation.subtotal) ?? "—"}%</dd>
+                  <dd className="tabular text-ink">{costKnown ? `${marginPct(quotation.internalCostTotal, quotation.subtotal) ?? "—"}%` : "—"}</dd>
                 </div>
               </dl>
               <p className="border-t border-line px-4 py-2 text-[11px] text-muted">
-                Based on approved supplier landed costs at the time of preparation.
+                {costKnown
+                  ? "Based on approved supplier landed costs and recorded stock cost at the time of preparation."
+                  : "Cost is incomplete because a stock unit cost or supplier cost is missing. No margin is claimed."}
               </p>
             </Card>
           ) : null}

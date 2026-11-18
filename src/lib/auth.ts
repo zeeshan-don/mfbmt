@@ -6,9 +6,11 @@ import { randomBytes, createHash } from "node:crypto";
 import { db } from "./db";
 import { PERMISSIONS, type Permission, type Role } from "./constants";
 import { parseStringArray } from "./json";
+import { env } from "./env";
 
 const COOKIE_NAME = "mfbmt_session";
-const SESSION_DAYS = 7;
+/** One validated setting drives both the cookie and the database expiry. */
+const SESSION_DAYS = Math.max(1, Math.min(90, env.AUTH_SESSION_DAYS));
 
 export type SessionUser = {
   id: string;
@@ -92,8 +94,20 @@ export async function requireOwner(): Promise<SessionUser> {
   return user;
 }
 
+/** Page guard: the navigation hiding an item is not the authorization boundary. */
+export async function requirePermission(permission: Permission): Promise<SessionUser> {
+  const user = await requireUser();
+  if (!can(user, permission)) redirect("/?denied=1");
+  return user;
+}
+
 export function can(user: SessionUser, permission: Permission): boolean {
   return user.role === "OWNER" || user.permissions.includes(permission);
+}
+
+/** Only the owner may see supplier cost, margin and decision controls. */
+export function canSeeSupplierCosts(user: SessionUser): boolean {
+  return user.role === "OWNER";
 }
 
 /** For API routes / server actions: returns null instead of redirecting. */

@@ -12,24 +12,66 @@ import {
   BadgeCheck,
   Activity,
   Settings,
+  UserRound,
+  PlayCircle,
 } from "lucide-react";
 
-const items = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  ownerOnly?: boolean;
+  demoOnly?: boolean;
+};
+
+const items: NavItem[] = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/enquiries", label: "Enquiries", icon: Inbox },
   { href: "/sourcing", label: "Sourcing", icon: Radar },
   { href: "/inventory", label: "Inventory", icon: Boxes },
   { href: "/suppliers", label: "Suppliers", icon: Building2 },
-  { href: "/approvals", label: "Approvals", icon: BadgeCheck },
+  { href: "/approvals", label: "Approvals", icon: BadgeCheck, ownerOnly: true },
   { href: "/activity", label: "Activity", icon: Activity },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/settings", label: "Settings", icon: Settings, ownerOnly: true },
+  { href: "/account", label: "My account", icon: UserRound },
+  { href: "/demo", label: "Demo walkthrough", icon: PlayCircle, demoOnly: true, ownerOnly: true },
 ];
 
-export function SideNav() {
+export function visibleNavItems(role: string, isDemo = false) {
+  return items.filter(
+    (item) => (!item.ownerOnly || role === "OWNER") && (!item.demoOnly || isDemo),
+  );
+}
+
+export function MobileNav({ role, isDemo = false }: { role: string; isDemo?: boolean }) {
+  const pathname = usePathname();
+  return (
+    <nav aria-label="Main" className="flex gap-1 overflow-x-auto text-xs">
+      {visibleNavItems(role, isDemo).map((item) => {
+        const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            aria-current={active ? "page" : undefined}
+            className={clsx(
+              "shrink-0 rounded px-2 py-1.5",
+              active ? "bg-elevated font-medium text-ink" : "text-soft hover:bg-elevated hover:text-ink",
+            )}
+          >
+            {item.label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+export function SideNav({ role, isDemo = false }: { role: string; isDemo?: boolean }) {
   const pathname = usePathname();
   return (
     <nav aria-label="Main" className="flex flex-col gap-0.5">
-      {items.map((item) => {
+      {visibleNavItems(role, isDemo).map((item) => {
         const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
         const Icon = item.icon;
         return (

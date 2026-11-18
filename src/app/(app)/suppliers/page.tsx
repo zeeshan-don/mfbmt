@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { parseStringArray } from "@/lib/json";
 import { timeAgo } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, DataTable, EmptyState, Notice, PageHeader, Td, Th, inputClass, statusTone } from "@/components/ui";
@@ -14,7 +14,7 @@ export default async function SuppliersPage({
 }: {
   searchParams: Promise<{ q?: string; saved?: string; error?: string; imported?: string; skipped?: string }>;
 }) {
-  const user = await requireUser();
+  const user =  await requirePermission("suppliers.view");
   const params = await searchParams;
   const query = params.q?.trim();
   const isOwner = user.role === "OWNER";

@@ -1,11 +1,12 @@
 import bcrypt from "bcryptjs";
-import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { ingestInboundMessage, processInboundMessage, extractEnquiryById } from "../lib/workflow/enquiry";
 import { runNextJob } from "../lib/workflow/process";
 import { recomputeOffersForItem } from "../lib/costing/evaluate";
 import { ensureSourcingApproval } from "../lib/workflow/approvals";
 import { writeAudit } from "../lib/audit";
+import { seedFastenerWalkthrough } from "./demo-fasteners";
+import { demoSeedProblem } from "../lib/demo-guard";
 
 const db = new PrismaClient();
 
@@ -14,15 +15,8 @@ const DEMO_PASSWORD = "ChangeMe123!";
 async function main() {
   // Hard production guard. Demo data is only allowed in local development and
   // automated tests, and only when the operator has explicitly opted in.
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("Refusing to seed demo data in production.");
-  }
-  if (process.env.VERCEL_ENV === "production" || process.env.APP_ENV === "production") {
-    throw new Error("Refusing to seed demo data outside local development.");
-  }
-  if (process.env.DEMO_MODE === "false" || process.env.SEED_DEMO_DATA === "false") {
-    throw new Error("DEMO_MODE/SEED_DEMO_DATA is false; demo seeding is disabled. Use npm run provision:owner instead.");
-  }
+  const problem = demoSeedProblem(process.env);
+  if (problem) throw new Error(problem);
 
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
 
@@ -67,10 +61,13 @@ async function main() {
     });
   }
 
-  await db.pricingRule.deleteMany({ where: { category: null, scope: "GLOBAL", type: "PERCENT_MARKUP", value: 18 } });
-  await db.pricingRule.create({
-    data: { scope: "GLOBAL", type: "PERCENT_MARKUP", value: 18, priority: 100, isActive: true },
-  });
+  // Never delete a pricing rule the owner may have edited; add the default once.
+  const existingRule = await db.pricingRule.findFirst({ where: { scope: "GLOBAL", isActive: true } });
+  if (!existingRule) {
+    await db.pricingRule.create({
+      data: { scope: "GLOBAL", type: "PERCENT_MARKUP", value: 18, priority: 100, isActive: true },
+    });
+  }
 
   const main = await db.inventoryLocation.upsert({
     where: { code: "MAIN" },
@@ -124,9 +121,10 @@ async function main() {
     { productId: valveStock.id, quantity: 0 },
   ];
   for (const row of stockRows) {
+    // Re-running the seed must not reset a quantity the owner has corrected.
     await db.inventoryStock.upsert({
       where: { productId_locationId: { productId: row.productId, locationId: main.id } },
-      update: { quantityOnHand: row.quantity, quantityReserved: 0, source: "DEMO", lastUpdatedAt: new Date() },
+      update: {},
       create: {
         productId: row.productId,
         locationId: main.id,
@@ -191,10 +189,8 @@ async function main() {
     supplierIds.push(record.id);
   }
 
-  await db.supplierProduct.deleteMany({ where: { supplierId: { in: supplierIds } } });
-  await db.supplierProduct.createMany({
-    data: [
-      {
+  const catalogueRows = [
+    {
         supplierId: supplierIds[0],
         title: "Gate Valve 1 inch SS316 Class 150 — threaded",
         description: "Stainless steel gate valve, 1 inch, SS316 body, Class 150, threaded ends. Sample listing.",
@@ -219,8 +215,17 @@ async function main() {
         lastSeenAt: new Date(),
         isDemo: true,
       },
-    ],
-  });
+  ];
+
+  // Catalogue rows are inserted once and then left alone: re-seeding must not
+  // destroy a supplier price or note added by the owner.
+  for (const row of catalogueRows) {
+    const exists = await db.supplierProduct.findFirst({
+      where: { supplierId: row.supplierId, title: row.title },
+      select: { id: true },
+    });
+    if (!exists) await db.supplierProduct.create({ data: row });
+  }
 
   await db.excludedContact.upsert({
     where: { identifier: "+971500000099" },
@@ -233,14 +238,17 @@ async function main() {
     },
   });
 
-  const existingDemo = await db.enquiry.count({ where: { isDemo: true } });
-  if (existingDemo === 0) {
-    await writeAudit({ action: "demo.seed_started", entityType: "System", entityId: "seed", actorLabel: "seed" });
+  const classicMessageId = "demo-inbound-classic-1";
+  const classicEnquiryRef = `ENQ-${new Date().getFullYear()}-9002`;
+  await writeAudit({ action: "demo.seed_started", entityType: "System", entityId: "seed", actorLabel: "seed" });
 
+  // Each classic demo record is checked by its stable identity, so re-running the
+  // seed never duplicates it and never skips one that is missing.
+  if (!(await db.message.findUnique({ where: { externalMessageId: classicMessageId } }))) {
     // Enquiry A — the exact scenario from the brief (ambiguous hammer and valve).
     const messageA = await ingestInboundMessage({
       channel: "WHATSAPP",
-      externalMessageId: `demo-inbound-${randomUUID()}`,
+      externalMessageId: classicMessageId,
       from: "+971500000010",
       fromName: "Al Noor Contracting (sample)",
       body: "Please quote:\n10 hammers\n20 pcs SS316 elbow 1 inch\n5 industrial valves",
@@ -254,10 +262,13 @@ async function main() {
       await db.enquiryItem.updateMany({ where: { enquiryId: enquiryA.enquiryId }, data: { reviewStatus: "NEEDS_CLARIFICATION" } });
     }
 
+  }
+
+  if (!(await db.enquiry.findUnique({ where: { publicRef: classicEnquiryRef } }))) {
     // Enquiry B — a complete specification so the supplier comparison has data.
     const enquiryB = await db.enquiry.create({
       data: {
-        publicRef: `ENQ-${new Date().getFullYear()}-9002`,
+        publicRef: classicEnquiryRef,
         channel: "EMAIL",
         customerName: "Emirates Facilities Co. (sample)",
         customerEmail: "buyer@emirates-facilities-sample.test",
@@ -383,6 +394,9 @@ async function main() {
     });
   }
 
+  // The fastener-owner walkthrough is separate from the original demo records.
+  await seedFastenerWalkthrough(db);
+
   // Drain any jobs queued by the demo pipeline so the demo state is complete.
   for (let i = 0; i < 25; i += 1) {
     const ran = await runNextJob("seed-worker");
@@ -390,9 +404,8 @@ async function main() {
   }
 
   console.log("Seed complete.");
-  console.log(`Owner login: owner@mfbmt.local / ${DEMO_PASSWORD}`);
-  console.log(`Staff login: staff@mfbmt.local / ${DEMO_PASSWORD}`);
-  console.log("All demo records are marked as sample data.");
+  console.log("Demo accounts: owner@mfbmt.local and staff@mfbmt.local (password is shown only on the demo sign-in page).");
+  console.log("All demo records are marked as sample data. Replace these accounts before real use.");
 }
 
 main()

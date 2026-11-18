@@ -2,6 +2,8 @@ import { db } from "../db";
 import { sniffType } from "../storage";
 import { normalizeGrade, normalizeMaterial, normalizePressure, normalizeSchedule, normalizeSize, normalizeUnit } from "../catalog/normalize";
 import { inferCategoryFromDescription } from "../catalog/categories";
+import { isFastenerCategory, parseFastenerSpec } from "../fasteners/spec";
+import { stringifyJson } from "../json";
 
 export const MAPPABLE_FIELDS = [
   { key: "sku", label: "Product code / SKU", required: false },
@@ -14,6 +16,14 @@ export const MAPPABLE_FIELDS = [
   { key: "pressureRating", label: "Pressure rating", required: false },
   { key: "schedule", label: "Schedule", required: false },
   { key: "standard", label: "Standard", required: false },
+  { key: "fastenerType", label: "Fastener type", required: false },
+  { key: "diameter", label: "Fastener diameter", required: false },
+  { key: "threadSeries", label: "Thread system", required: false },
+  { key: "pitch", label: "Thread pitch (mm)", required: false },
+  { key: "length", label: "Length (mm)", required: false },
+  { key: "propertyClass", label: "Property class", required: false },
+  { key: "finish", label: "Finish / coating", required: false },
+  { key: "packMultiple", label: "Pack multiple", required: false },
   { key: "unit", label: "Unit", required: false },
   { key: "quantity", label: "Quantity on hand", required: true },
   { key: "reserved", label: "Reserved quantity", required: false },
@@ -76,6 +86,14 @@ const GUESS: Record<MappingField, RegExp> = {
   pressureRating: /(pressure|rating|pn)/i,
   schedule: /(schedule|sch)/i,
   standard: /(standard|spec)/i,
+  fastenerType: /(fastener ?type|bolt ?type|product ?type)/i,
+  diameter: /(diameter|\bdia\b|thread ?size)/i,
+  threadSeries: /(thread ?(?:system|series|type)|unc|unf|bsp|npt)/i,
+  pitch: /(pitch)/i,
+  length: /(length|\blen\b)/i,
+  propertyClass: /(property ?class|grade|class)/i,
+  finish: /(finish|coating|plating)/i,
+  packMultiple: /(pack ?(?:multiple|size|qty)|units per)/i,
   unit: /(unit|uom)/i,
   quantity: /(qty|quantity|on ?hand|stock)/i,
   reserved: /(reserved|allocated)/i,
@@ -196,10 +214,38 @@ export async function importInventory(options: {
       unit: normalizeUnit(pick("unit")),
     };
 
+    // Fastener rows get a validated structured specification, built from the
+    // mapped columns first and the description only for what is still absent.
+    const fastenerSpec = isFastenerCategory(categoryName)
+      ? parseFastenerSpec({
+          description:
+            [name, pick("fastenerType"), pick("threadSeries"), pick("propertyClass"), pick("finish")]
+              .filter(Boolean)
+              .join(" ") || name,
+          size: pick("diameter") || attributes.size,
+          material: attributes.material,
+          grade: pick("propertyClass") || attributes.grade,
+          standard: attributes.standard,
+          packMultiple: pick("packMultiple") ? Number(pick("packMultiple")) : null,
+          packagingUnit: pick("unit") || null,
+        })
+      : null;
+    if (fastenerSpec) {
+      const pitch = Number(pick("pitch"));
+      const length = Number(pick("length"));
+      if (Number.isFinite(pitch) && pitch > 0) fastenerSpec.pitchMm = pitch;
+      if (Number.isFinite(length) && length > 0) fastenerSpec.lengthMm = length;
+    }
+
     const existing = await db.product.findUnique({ where: { sku } });
     const product = existing
-      ? await db.product.update({ where: { sku }, data: attributes })
-      : await db.product.create({ data: { sku, ...attributes } });
+      ? await db.product.update({
+          where: { sku },
+          data: { ...attributes, ...(fastenerSpec ? { fastenerSpecJson: stringifyJson(fastenerSpec) } : {}) },
+        })
+      : await db.product.create({
+          data: { sku, ...attributes, ...(fastenerSpec ? { fastenerSpecJson: stringifyJson(fastenerSpec) } : {}) },
+        });
     if (existing) report.updated += 1;
     else report.created += 1;
 

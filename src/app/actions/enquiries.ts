@@ -17,6 +17,13 @@ function str(value: FormDataEntryValue | null): string | null {
   return text.length > 0 ? text : null;
 }
 
+function optionalNumber(value: FormDataEntryValue | null): number | null {
+  const text = str(value);
+  if (!text) return null;
+  const parsed = Number(text.replace(/,/g, ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export async function updateItemAction(formData: FormData) {
   const user = await authorize("enquiries.review");
   if (!user) redirect("/login");
@@ -43,7 +50,19 @@ export async function updateItemAction(formData: FormData) {
         pressureRating: str(formData.get("pressureRating")),
         schedule: str(formData.get("schedule")),
         standard: str(formData.get("standard")),
+        fastenerSpec: str(formData.get("fastenerType")) || optionalNumber(formData.get("pitchMm")) || optionalNumber(formData.get("lengthMm"))
+          ? {
+              type: (str(formData.get("fastenerType")) as never) ?? undefined,
+              diameter: str(formData.get("fastenerDiameter")) ?? undefined,
+              threadSeries: (str(formData.get("threadSeries")) as never) ?? undefined,
+              pitchMm: optionalNumber(formData.get("pitchMm")) ?? undefined,
+              lengthMm: optionalNumber(formData.get("lengthMm")) ?? undefined,
+              propertyClass: str(formData.get("propertyClass")) ?? undefined,
+              finish: (str(formData.get("finish")) as never) ?? undefined,
+            }
+          : undefined,
       },
+      confirm: str(formData.get("confirm")) === "1",
     });
     await applyInventoryCheck(itemId);
     await writeAudit({

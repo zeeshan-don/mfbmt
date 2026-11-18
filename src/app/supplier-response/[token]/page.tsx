@@ -113,6 +113,30 @@ export default async function SupplierResponsePage({
                   Grade / schedule (if different)
                   <input name="grade" className={`${inputClass} mt-1`} />
                 </label>
+                <label className="block text-xs text-soft">
+                  Fastener type (bolts, nuts, washers only)
+                  <input name="fastenerType" className={`${inputClass} mt-1`} placeholder="e.g. HEX_BOLT, HEX_NUT" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Thread system
+                  <input name="threadSeries" className={`${inputClass} mt-1`} placeholder="METRIC_COARSE, UNC, UNF" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Thread pitch (mm)
+                  <input name="pitchMm" inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+                </label>
+                <label className="block text-xs text-soft">
+                  Length (mm)
+                  <input name="lengthMm" inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+                </label>
+                <label className="block text-xs text-soft">
+                  Property class
+                  <input name="propertyClass" className={`${inputClass} mt-1`} placeholder="8.8, 10.9, A2-70" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Finish / coating
+                  <input name="finish" className={`${inputClass} mt-1`} placeholder="ZINC_PLATED, HOT_DIP_GALVANIZED" />
+                </label>
               </div>
             </div>
 

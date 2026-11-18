@@ -5,6 +5,8 @@ import { aiStatus } from "@/lib/ai/provider";
 import { getWhatsAppConnection } from "@/lib/integrations/whatsapp";
 import { emailSyncState } from "@/lib/email/sync";
 import { storageDriver } from "@/lib/storage";
+import { workerLiveness } from "@/lib/workflow/jobs";
+import { JOB_STATUS } from "@/lib/constants";
 import { Badge, Button, Card, CardHeader, Notice, PageHeader, statusTone } from "@/components/ui";
 import { completeOnboardingAction } from "@/app/actions/settings";
 
@@ -28,7 +30,7 @@ export default async function OnboardingPage({
   await requireOwner();
   const flags = await searchParams;
 
-  const [org, whatsapp, gmail, microsoft, ai, products, suppliers, exclusions, rules, jobs] = await Promise.all([
+  const [org, whatsapp, gmail, microsoft, ai, products, suppliers, exclusions, rules, jobs, worker] = await Promise.all([
     db.organization.findFirst(),
     getWhatsAppConnection(),
     db.integration.findUnique({ where: { key: "GMAIL" } }),
@@ -39,19 +41,22 @@ export default async function OnboardingPage({
     db.excludedContact.count(),
     db.pricingRule.count({ where: { isActive: true } }),
     db.backgroundJob.groupBy({ by: ["status"], _count: { _all: true } }),
+    workerLiveness(),
   ]);
 
   const aiState = aiStatus();
   const waSignup = whatsAppSignupConfig();
   const emailState = emailSyncState(gmail?.configJson ?? microsoft?.configJson ?? null);
   const mailConnected = gmail?.status === "CONNECTED" || microsoft?.status === "CONNECTED";
-  const failedJobs = jobs.find((row) => row.status === "FAILED")?._count._all ?? 0;
+  const failedJobs = jobs.find((row) => row.status === JOB_STATUS.FAILED)?._count._all ?? 0;
   const pendingJobs = jobs
-    .filter((row) => ["PENDING", "RUNNING", "RETRYING"].includes(row.status))
+    .filter((row) => row.status === JOB_STATUS.QUEUED || row.status === JOB_STATUS.PROCESSING)
     .reduce((total, row) => total + row._count._all, 0);
+  const sourcingFirst = org?.inventoryMode === "SOURCING_FIRST";
+  const workerHealthy = worker.status === "HEALTHY";
 
   const companyComplete = Boolean(org?.address && org?.email && (org?.trn || org?.legalName));
-  const inventoryConfigured = Boolean(org?.inventoryConfiguredAt) || products > 0;
+  const inventoryConfigured = sourcingFirst || Boolean(org?.inventoryConfiguredAt) || products > 0;
 
   const steps: Step[] = [
     {
@@ -126,7 +131,7 @@ export default async function OnboardingPage({
       done: inventoryConfigured,
       status: inventoryConfigured ? "CONNECTED" : "NOT_CONFIGURED",
       detail: inventoryConfigured
-        ? `${products} product(s). Policy: ${org?.inventoryMode === "SOURCING_FIRST" ? "sourcing-first" : "stock first, source the shortage"}.`
+        ? `${products} product(s). Policy: ${sourcingFirst ? "sourcing-first" : "stock first, source the shortage"}.`
         : "Import a stock spreadsheet, or set the sourcing-first policy if MFBMT normally outsources goods.",
       href: "/inventory",
       action: "Import inventory",
@@ -164,14 +169,14 @@ export default async function OnboardingPage({
     {
       title: "11. Background worker",
       required: true,
-      done: failedJobs === 0,
-      status: failedJobs === 0 ? "CONNECTED" : "NEEDS_ATTENTION",
-      detail:
-        failedJobs === 0
-          ? pendingJobs > 0
-            ? `${pendingJobs} job(s) queued or running.`
-            : "No failed jobs."
-          : `${failedJobs} job(s) need attention. Open Activity to retry them.`,
+      // An empty failed count proves nothing. Only a fresh worker heartbeat does.
+      done: workerHealthy,
+      status: workerHealthy ? "CONNECTED" : "NEEDS_ATTENTION",
+      detail: workerHealthy
+        ? `Worker last checked in ${worker.lastSeenAt ? new Date(worker.lastSeenAt).toLocaleTimeString("en-GB") : "just now"} · ${pendingJobs} job(s) queued or running${failedJobs > 0 ? ` · ${failedJobs} failed` : ""}.`
+        : worker.status === "STALE"
+          ? `The worker last checked in ${worker.lastSeenAt ? new Date(worker.lastSeenAt).toLocaleString("en-GB") : "never"} and is not responding. Start it with npm run worker.`
+          : "No worker has ever checked in. Start it with npm run worker; queued work will not move until then.",
       href: "/activity",
       action: "Open activity",
     },

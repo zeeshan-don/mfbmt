@@ -246,6 +246,18 @@ model EnquiryItem {
   matchedStockJson      String? // JSON snapshot of stock rows used for the decision
   extractedJson         String? // original extracted values for this line
   approvedOfferId       String? // supplier offer approved by the owner
+  // Structured fastener specification (versioned JSON, see src/lib/fasteners/spec.ts).
+  // Core attributes are duplicated into columns for filtering and indexing.
+  fastenerSpecJson      String?
+  fastenerType          String?
+  diameter              String?
+  threadSeries          String?
+  pitchMm               Float?
+  lengthMm              Float?
+  propertyClass         String?
+  finish                String?
+  specSource            String                  @default("EXTRACTED") // EXTRACTED | MANUAL | SUPPLIER_CONFIRMED
+  specConfirmedAt       DateTime?
   createdAt             DateTime                @default(now())
   updatedAt             DateTime                @updatedAt
   offers                SupplierOffer[]
@@ -255,6 +267,7 @@ model EnquiryItem {
 
   @@index([enquiryId])
   @@index([sourcingStatus])
+  @@index([fastenerType, diameter])
 }
 
 model Product {
@@ -271,6 +284,7 @@ model Product {
   standard         String?
   unit             String                 @default("pcs")
   specs            String                 @default("{}") // JSON free-form extra attributes
+  fastenerSpecJson String? // validated fastener specification (see src/lib/fasteners/spec.ts)
   notes            String?
   isDemo           Boolean                @default(false)
   createdAt        DateTime               @default(now())
@@ -484,6 +498,8 @@ model SupplierOffer {
   isEligible          Boolean                 @default(false)
   ineligibilityReason String?
   evidenceJson        String                  @default("{}")
+  // Specifications the supplier actually stated, validated against the fastener schema.
+  offeredSpecJson     String?
   // Actual quantity MFBMT would have to buy (MOQ applied), disclosed to the owner.
   procurementQuantity Float?
   isDemo              Boolean                 @default(false)
@@ -556,7 +572,9 @@ model Approval {
   createdAt   DateTime  @default(now())
   decidedAt   DateTime?
 
-  @@unique([type, entityId, status])
+  // Enforced in the database by a partial unique index: one PENDING approval
+  // per subject, while decided rows remain as history.
+  @@index([type, entityId, status])
   @@index([status, createdAt])
   @@index([enquiryId])
 }
@@ -674,6 +692,21 @@ model Integration {
   nextSyncAt    DateTime?
   lastError     String?
   updatedAt     DateTime  @updatedAt
+}
+
+/// Durable worker liveness registry. Written by each worker process on every
+/// poll and while it runs a job; never inferred from a job heartbeat, which is
+/// cleared when a job finishes.
+model WorkerHeartbeat {
+  id         String   @id @default(cuid())
+  workerId   String   @unique
+  processName String?
+  startedAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  metaJson   String   @default("{}")
+  updatedAt  DateTime @updatedAt
+
+  @@index([lastSeenAt])
 }
 
 model BackgroundJob {

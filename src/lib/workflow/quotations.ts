@@ -179,11 +179,9 @@ export async function createQuotationDraft(input: {
       internalCostTotal: internalCost,
       internalCostComplete,
       terms: buildQuoteTerms(org),
-      notes:
-        input.notes?.trim() ||
-        (unpriced.length > 0
-          ? `${unpriced.length} line${unpriced.length === 1 ? "" : "s"} still need a price: ${unpriced.join(", ")}.`
-          : null),
+      // Only text the owner explicitly enters as customer-facing notes is printed.
+      // Internal pricing warnings stay in the approval payload and audit trail.
+      notes: input.notes?.trim() || null,
       validityDate: new Date(Date.now() + (org?.quotationValidityDays ?? 14) * 24 * 60 * 60 * 1000),
       status: "AWAITING_APPROVAL",
       isDemo: enquiry.isDemo,
@@ -520,26 +518,32 @@ export async function sendApprovedQuotation(input: {
       attachments: [{ filename: `${quotation.quoteNumber}.pdf`, content: pdf, contentType: "application/pdf" }],
     });
     if (!sent.ok) return fail(sent.error);
+    const simulated = Boolean("simulated" in sent && sent.simulated);
     await db.customerQuotation.update({
       where: { id: quotation.id },
       data: {
         status: "SENT",
         sentAt: new Date(),
-        sentChannel: "EMAIL",
+        sentChannel: simulated ? "DEMO" : "EMAIL",
         sentTo: to,
-        sendError: null,
+        sendError: simulated ? "Demo simulation — no email was transmitted." : null,
       },
     });
     await db.enquiry.update({ where: { id: quotation.enquiryId }, data: { status: "QUOTED" } });
     await writeAudit({
       actorId: input.userId,
       actorLabel: input.actorLabel,
-      action: "quotation.sent",
+      action: simulated ? "quotation.simulated_sent" : "quotation.sent",
       entityType: "CustomerQuotation",
       entityId: quotation.id,
-      meta: { channel: "EMAIL", to },
+      meta: { channel: simulated ? "DEMO" : "EMAIL", to },
     });
-    return { ok: true, detail: `Emailed to ${to}.` };
+    return {
+      ok: true,
+      detail: simulated
+        ? `Demo simulation: recorded as sent to ${to}. No email was transmitted.`
+        : `Emailed to ${to}.`,
+    };
   }
 
   const to = (input.to ?? quotation.customerPhone ?? "").trim();
@@ -582,21 +586,26 @@ export async function sendApprovedQuotation(input: {
     data: {
       status: "SENT",
       sentAt: new Date(),
-      sentChannel: "WHATSAPP",
+      sentChannel: sent.simulated ? "DEMO" : "WHATSAPP",
       sentTo: to,
-      sendError: null,
+      sendError: sent.simulated ? "Demo simulation — no WhatsApp message was transmitted." : null,
     },
   });
   await db.enquiry.update({ where: { id: quotation.enquiryId }, data: { status: "QUOTED" } });
   await writeAudit({
     actorId: input.userId,
     actorLabel: input.actorLabel,
-    action: "quotation.sent",
+    action: sent.simulated ? "quotation.simulated_sent" : "quotation.sent",
     entityType: "CustomerQuotation",
     entityId: quotation.id,
-    meta: { channel: "WHATSAPP", to },
+    meta: { channel: sent.simulated ? "DEMO" : "WHATSAPP", to },
   });
-  return { ok: true, detail: `Sent on WhatsApp to ${to} (message ${sent.messageId ?? "accepted"}).` };
+  return {
+    ok: true,
+    detail: sent.simulated
+      ? `Demo simulation: recorded as sent to ${to}. No WhatsApp message was transmitted.`
+      : `Sent on WhatsApp to ${to} (message ${sent.messageId ?? "accepted"}).`,
+  };
 }
 
 export function quotationShareLink(quotationId: string): string {

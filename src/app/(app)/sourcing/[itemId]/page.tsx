@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission, canSeeSupplierCosts } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
 import { buildSpecSummary } from "@/lib/catalog/normalize";
 import {
@@ -43,7 +43,8 @@ export default async function SourcingDetailPage({
   params: Promise<{ itemId: string }>;
   searchParams: Promise<{ error?: string; saved?: string; approved?: string; queued?: string; requested?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("sourcing.view");
+  const canViewCosts = canSeeSupplierCosts(user);
   const { itemId } = await params;
   const flags = await searchParams;
 
@@ -148,7 +149,7 @@ export default async function SourcingDetailPage({
           <CheckCircle2 size={15} className="text-ok" aria-hidden />
           <span className="text-ink">
             Approved sourcing option: <strong>{approvedOffer.supplierName}</strong>
-            {approvedOffer.unitPrice != null ? ` at ${formatMoney(approvedOffer.unitPrice, approvedOffer.currency ?? currency)} per ${item.unit}` : ""}.
+            {canViewCosts && approvedOffer.unitPrice != null ? ` at ${formatMoney(approvedOffer.unitPrice, approvedOffer.currency ?? currency)} per ${item.unit}` : ""}.
           </span>
           <Link href={`/enquiries/${item.enquiryId}`} className="text-xs text-accent hover:underline">
             Prepare the customer quotation
@@ -172,12 +173,16 @@ export default async function SourcingDetailPage({
                 <Info size={12} aria-hidden /> Recommended option
               </p>
               <p className="mt-1 text-base font-semibold text-ink">{recommended.offer.supplierName}</p>
-              <p className="text-sm tabular text-ink">
-                Estimated total {formatMoney(recommended.snapshot.landed?.total ?? null, currency)}
-                <span className="ml-1 text-xs font-normal text-muted">
-                  for {recommended.snapshot.landed?.effectiveQuantity ?? item.quantityToSource} {item.unit}
-                </span>
-              </p>
+              {canViewCosts ? (
+                <p className="text-sm tabular text-ink">
+                  Estimated total {formatMoney(recommended.snapshot.landed?.total ?? null, currency)}
+                  <span className="ml-1 text-xs font-normal text-muted">
+                    {" "}for {recommended.snapshot.landed?.effectiveQuantity ?? item.quantityToSource} {item.unit}
+                  </span>
+                </p>
+              ) : (
+                <p className="text-xs text-muted">Supplier costs are visible to the owner only.</p>
+              )}
               <ul className="mt-2 space-y-1 text-xs text-soft">
                 {(recommended.snapshot.evaluation?.reasons ?? []).slice(0, 3).map((reason) => (
                   <li key={reason} className="flex gap-1.5">
@@ -219,10 +224,12 @@ export default async function SourcingDetailPage({
           title="Supplier comparison"
           description="Compared by total estimated landed cost, not the advertised unit price."
           action={
-            <form action={requestMoreQuotesAction}>
-              <input type="hidden" name="itemId" value={item.id} />
-              <Button size="sm">Search again</Button>
-            </form>
+            isOwner ? (
+              <form action={requestMoreQuotesAction}>
+                <input type="hidden" name="itemId" value={item.id} />
+                <Button size="sm">Search again</Button>
+              </form>
+            ) : undefined
           }
         />
         {offers.length === 0 ? (
@@ -236,10 +243,14 @@ export default async function SourcingDetailPage({
                 <tr>
                   <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Supplier</th>
                   <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Match</th>
-                  <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">Unit price</th>
-                  <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">MOQ</th>
-                  <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">Shipping</th>
-                  <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">Est. total</th>
+                  {canViewCosts ? (
+                    <>
+                      <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">Unit price</th>
+                      <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">MOQ</th>
+                      <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">Shipping</th>
+                      <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">Est. total</th>
+                    </>
+                  ) : null}
                   <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Delivery</th>
                   <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Price date</th>
                   <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Status</th>
@@ -289,21 +300,25 @@ export default async function SourcingDetailPage({
                           </span>
                         ) : null}
                       </td>
-                      <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular whitespace-nowrap">
-                        {offer.unitPrice != null ? formatMoney(offer.unitPrice, offer.currency ?? currency) : <span className="text-muted">Not listed</span>}
-                      </td>
-                      <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular">{offer.moq ?? "—"}</td>
-                      <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular">
-                        {offer.shippingCost != null ? formatMoney(offer.shippingCost, offer.currency ?? currency) : <span className="text-warn">Unknown</span>}
-                      </td>
-                      <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular whitespace-nowrap">
-                        <span className={snapshot.landed?.complete ? "font-medium text-ink" : "text-warn"}>
-                          {snapshot.landed?.total != null ? formatMoney(snapshot.landed.total, currency) : "Incomplete"}
-                        </span>
-                        {!snapshot.landed?.complete && (snapshot.landed?.missing?.length ?? 0) > 0 ? (
-                          <span className="mt-0.5 block text-[10px] text-muted">Missing {snapshot.landed?.missing?.join(", ").toLowerCase()}</span>
-                        ) : null}
-                      </td>
+                      {canViewCosts ? (
+                        <>
+                          <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular whitespace-nowrap">
+                            {offer.unitPrice != null ? formatMoney(offer.unitPrice, offer.currency ?? currency) : <span className="text-muted">Not listed</span>}
+                          </td>
+                          <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular">{offer.moq ?? "—"}</td>
+                          <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular">
+                            {offer.shippingCost != null ? formatMoney(offer.shippingCost, offer.currency ?? currency) : <span className="text-warn">Unknown</span>}
+                          </td>
+                          <td className="border-b border-line/70 px-3 py-2.5 align-top text-right tabular whitespace-nowrap">
+                            <span className={snapshot.landed?.complete ? "font-medium text-ink" : "text-warn"}>
+                              {snapshot.landed?.total != null ? formatMoney(snapshot.landed.total, currency) : "Incomplete"}
+                            </span>
+                            {!snapshot.landed?.complete && (snapshot.landed?.missing?.length ?? 0) > 0 ? (
+                              <span className="mt-0.5 block text-[10px] text-muted">Missing {snapshot.landed?.missing?.join(", ").toLowerCase()}</span>
+                            ) : null}
+                          </td>
+                        </>
+                      ) : null}
                       <td className="border-b border-line/70 px-3 py-2.5 align-top text-xs text-soft">
                         {offer.leadTimeDays != null ? `${offer.leadTimeDays} day${offer.leadTimeDays === 1 ? "" : "s"}` : <span className="text-muted">Not stated</span>}
                         {offer.quantityAvailable != null ? <span className="block text-[11px] text-muted">{offer.quantityAvailable} available</span> : null}
@@ -428,7 +443,9 @@ export default async function SourcingDetailPage({
         <Card>
           <CardHeader title="Ask a supplier" description="Sends only after your approval, from your connected company account." />
           <div className="space-y-4 px-4 py-3">
-            {suppliers.length === 0 ? (
+            {!isOwner ? (
+              <p className="text-sm text-muted">Only the owner can request supplier quotations or record supplier prices.</p>
+            ) : suppliers.length === 0 ? (
               <p className="text-sm text-muted">
                 No suppliers are saved yet. <Link href="/suppliers" className="text-accent hover:underline">Add a supplier</Link> with an email or WhatsApp number.
               </p>
@@ -474,6 +491,7 @@ export default async function SourcingDetailPage({
         </Card>
       </div>
 
+      {isOwner ? (
       <Card>
         <CardHeader title="Record a price you received" description="For prices confirmed by phone, WhatsApp or email. It is marked as entered by MFBMT, not scraped." />
         <details className="group">
@@ -562,6 +580,30 @@ export default async function SourcingDetailPage({
                   Brand offered
                   <input name="offeredBrand" defaultValue={item.brand ?? ""} className={`${inputClass} mt-1`} />
                 </label>
+                <label className="block text-xs text-soft">
+                  Thread system offered
+                  <input name="offeredThread" className={`${inputClass} mt-1`} placeholder="METRIC_COARSE / UNC / UNF" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Pitch offered (mm)
+                  <input name="offeredPitch" inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+                </label>
+                <label className="block text-xs text-soft">
+                  Length offered (mm)
+                  <input name="offeredLength" inputMode="decimal" className={`${inputClass} mt-1 tabular`} />
+                </label>
+                <label className="block text-xs text-soft">
+                  Fastener type offered
+                  <input name="offeredFastenerType" className={`${inputClass} mt-1`} placeholder="HEX_BOLT / HEX_NUT" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Property class offered
+                  <input name="offeredPropertyClass" className={`${inputClass} mt-1`} placeholder="8.8 / 10.9 / A2-70" />
+                </label>
+                <label className="block text-xs text-soft">
+                  Finish offered
+                  <input name="offeredFinish" className={`${inputClass} mt-1`} placeholder="ZINC_PLATED / HOT_DIP_GALVANIZED" />
+                </label>
               </div>
               <p className="mt-1 text-[11px] text-muted">
                 Leave a field blank if the supplier did not confirm it. A blank required specification is never treated as an exact match.
@@ -577,6 +619,7 @@ export default async function SourcingDetailPage({
           </form>
         </details>
       </Card>
+      ) : null}
     </div>
   );
 }

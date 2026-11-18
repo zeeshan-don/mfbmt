@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
 import { timeAgo, truncate } from "@/lib/format";
 import { ENQUIRY_STATUS_LABELS, label } from "@/lib/constants";
+import { queueStats, workerLiveness } from "@/lib/workflow/jobs";
 import { Badge, Card, CardHeader, DataTable, EmptyState, PageHeader, Td, Th, statusTone } from "@/components/ui";
 import { AlertTriangle, BadgeCheck, Boxes, Inbox, MessageSquare, Radar } from "lucide-react";
 
@@ -12,7 +13,7 @@ export const dynamic = "force-dynamic";
 export default async function OverviewPage() {
   const user = await requireUser();
 
-  const [needsReview, pendingSourcingApprovals, clarificationItems, quoteResponses, recentEnquiries, recentSessions, pendingQuoteRequests] =
+  const [needsReview, pendingSourcingApprovals, clarificationItems, quoteResponses, recentEnquiries, recentSessions, pendingQuoteRequests, pendingQuoteApprovals, shortLines, overdueResponses, queue, worker] =
     await Promise.all([
       db.enquiry.count({ where: { status: "NEEDS_REVIEW" } }),
       db.approval.count({ where: { status: "PENDING", type: "SOURCING" } }),
@@ -34,6 +35,13 @@ export default async function OverviewPage() {
         take: 5,
         include: { supplier: { select: { name: true } }, enquiryItem: { select: { description: true } } },
       }),
+      db.approval.count({ where: { status: "PENDING", type: "CUSTOMER_QUOTATION" } }),
+      db.enquiryItem.count({ where: { sourcingStatus: { in: ["NOT_STARTED", "QUEUED", "SEARCHING", "NO_RESULTS"] }, quantityToSource: { gt: 0 } } }),
+      db.supplierQuote.count({
+        where: { status: "SENT", sentAt: { lt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } },
+      }),
+      queueStats(),
+      workerLiveness(),
     ]);
 
   const attention = [
@@ -65,6 +73,27 @@ export default async function OverviewPage() {
       href: "/sourcing?tab=responses",
       icon: MessageSquare,
     },
+    {
+      count: shortLines,
+      title: "lines are short and need sourcing",
+      detail: "Stock does not cover these lines yet.",
+      href: "/sourcing",
+      icon: Boxes,
+    },
+    {
+      count: overdueResponses,
+      title: "supplier replies are overdue",
+      detail: "Requests sent more than 3 days ago with no answer.",
+      href: "/sourcing?tab=responses",
+      icon: MessageSquare,
+    },
+    {
+      count: pendingQuoteApprovals,
+      title: "customer quotations need your approval",
+      detail: "A separate decision from approving the supplier.",
+      href: "/approvals",
+      icon: BadgeCheck,
+    },
   ].filter((item) => item.count > 0);
 
   const enquiryIds = recentEnquiries.map((e) => e.id);
@@ -94,7 +123,7 @@ export default async function OverviewPage() {
           <h2 id="attention-heading" className="text-sm font-semibold text-ink">
             Needs your attention
           </h2>
-          <span className="text-[11px] text-muted">Updated just now</span>
+          <span className="text-[11px] text-muted">Live from the database</span>
         </div>
         <Card>
           {attention.length === 0 ? (
@@ -273,6 +302,37 @@ export default async function OverviewPage() {
             <p className="border-t border-line px-4 py-2.5 text-[11px] text-muted">
               Stock is checked before any supplier is contacted. Products are only bought after you approve a supplier.
             </p>
+          </Card>
+
+          <Card>
+            <CardHeader title="System status" description="Verified now, not a decorative indicator." />
+            <ul className="divide-y divide-line text-xs">
+              <li className="flex items-center justify-between px-4 py-2.5">
+                <span className="text-soft">Background worker</span>
+                {worker.status === "HEALTHY" ? (
+                  <Badge tone="ok">Active</Badge>
+                ) : worker.status === "STALE" ? (
+                  <Badge tone="warn">Not responding</Badge>
+                ) : (
+                  <Badge tone="neutral">Unknown</Badge>
+                )}
+              </li>
+              <li className="flex items-center justify-between px-4 py-2.5">
+                <span className="text-soft">Jobs waiting / running</span>
+                <span className="tabular text-ink">{queue.queued} / {queue.processing}</span>
+              </li>
+              <li className="flex items-center justify-between px-4 py-2.5">
+                <span className="text-soft">Failed jobs</span>
+                <Link href="/activity" className={queue.failed > 0 ? "tabular text-danger hover:underline" : "tabular text-ink"}>
+                  {queue.failed}
+                </Link>
+              </li>
+            </ul>
+            {worker.status !== "HEALTHY" ? (
+              <p className="border-t border-line px-4 py-2.5 text-[11px] text-warn">
+                Queued work will not move until <code className="rounded bg-elevated px-1">npm run worker</code> is running.
+              </p>
+            ) : null}
           </Card>
         </div>
       </div>

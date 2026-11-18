@@ -1,5 +1,6 @@
 import { db } from "../db";
 import { parseJson, stringifyJson } from "../json";
+import { parseFastenerSpecJson } from "../fasteners/spec";
 import {
   availableQuantity,
   isStockStale,
@@ -155,6 +156,7 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
           pressureRating: item.pressureRating,
           schedule: item.schedule,
           standard: item.standard,
+          fastenerSpec: parseFastenerSpecJson(item.fastenerSpecJson),
         },
         {
           description: product.name,
@@ -166,6 +168,7 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
           pressureRating: product.pressureRating,
           schedule: product.schedule,
           standard: product.standard,
+          fastenerSpec: parseFastenerSpecJson(product.fastenerSpecJson),
         },
         { equivalences },
       );

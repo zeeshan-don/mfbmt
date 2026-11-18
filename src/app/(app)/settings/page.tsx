@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
-import { env, integrationEnv, whatsAppSignupConfig } from "@/lib/env";
+import { env, integrationEnv, whatsAppSignupConfig, MAX_UPLOAD_MB } from "@/lib/env";
 import { aiStatus } from "@/lib/ai/provider";
 import { getWhatsAppConnection } from "@/lib/integrations/whatsapp";
 import { emailSyncState } from "@/lib/email/sync";
@@ -123,7 +123,7 @@ export default async function SettingsPage({
       detail:
         storageDriver === "s3"
           ? `Object storage: ${env.S3_BUCKET || "bucket not set"}${env.S3_ENDPOINT ? ` at ${env.S3_ENDPOINT}` : ""}.`
-          : `Local folder: ${env.STORAGE_ROOT}. Max upload ${env.MAX_UPLOAD_MB} MB.`,
+          : `Local folder: ${env.STORAGE_ROOT}. Max upload ${MAX_UPLOAD_MB} MB (also the Server Action limit).`,
       lastCheckedAt: storage?.lastCheckedAt,
       lastError: storage?.lastError,
       setup:

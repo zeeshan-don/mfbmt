@@ -3,13 +3,14 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { authorize, authorizeOwner } from "@/lib/auth";
+import { authorizeOwner } from "@/lib/auth";
 import { writeAudit } from "@/lib/audit";
 import { stringifyJson } from "@/lib/json";
 import { recomputeOffersForItem } from "@/lib/costing/evaluate";
 import { ensureSourcingApproval, decideApproval, requestAnotherSearch } from "@/lib/workflow/approvals";
 import { createSupplierQuoteRequest } from "@/lib/workflow/supplierQuotes";
 import { matchProduct } from "@/lib/inventory/matching";
+import { parseFastenerSpec, parseFastenerSpecJson } from "@/lib/fasteners/spec";
 
 function num(value: FormDataEntryValue | null): number | null {
   const text = String(value ?? "").replace(/,/g, "").trim();
@@ -24,7 +25,9 @@ function str(value: FormDataEntryValue | null): string | null {
 }
 
 export async function recordManualOfferAction(formData: FormData) {
-  const user = await authorize("sourcing.view");
+  // Supplier prices are owner-only: a view permission must not allow entering or
+  // exposing commercial data.
+  const user = await authorizeOwner();
   if (!user) redirect("/login");
   const itemId = String(formData.get("itemId") ?? "");
   const item = await db.enquiryItem.findUnique({ where: { id: itemId }, include: { enquiry: true } });
@@ -42,6 +45,25 @@ export async function recordManualOfferAction(formData: FormData) {
     ? await db.supplier.findUnique({ where: { id: supplierId } })
     : await db.supplier.findFirst({ where: { name: { contains: supplierName } } });
 
+  const offeredDescription = str(formData.get("productTitle")) ?? item.description;
+  const offeredSpec = parseFastenerSpec({
+    description: [
+      offeredDescription,
+      str(formData.get("offeredFastenerType")),
+      str(formData.get("offeredThread")),
+      str(formData.get("offeredPropertyClass")),
+      str(formData.get("offeredFinish")),
+    ]
+      .filter(Boolean)
+      .join(" "),
+    size: str(formData.get("offeredSize")),
+    material: str(formData.get("offeredMaterial")),
+    grade: str(formData.get("offeredGrade")),
+    standard: str(formData.get("offeredStandard")),
+  });
+  if (num(formData.get("offeredPitch")) != null) offeredSpec.pitchMm = num(formData.get("offeredPitch"));
+  if (num(formData.get("offeredLength")) != null) offeredSpec.lengthMm = num(formData.get("offeredLength"));
+
   const match = matchProduct(
     {
       description: item.description,
@@ -53,15 +75,17 @@ export async function recordManualOfferAction(formData: FormData) {
       pressureRating: item.pressureRating,
       schedule: item.schedule,
       standard: item.standard,
+      fastenerSpec: parseFastenerSpecJson(item.fastenerSpecJson),
     },
     {
-      description: `${str(formData.get("productTitle")) ?? item.description}`,
+      description: offeredDescription,
       size: str(formData.get("offeredSize")),
       material: str(formData.get("offeredMaterial")),
       grade: str(formData.get("offeredGrade")),
       pressureRating: str(formData.get("offeredPressure")),
       standard: str(formData.get("offeredStandard")),
       brand: str(formData.get("offeredBrand")),
+      fastenerSpec: offeredSpec,
     },
     { strictStandard: Boolean(item.standard) },
   );
@@ -74,7 +98,7 @@ export async function recordManualOfferAction(formData: FormData) {
       supplierId: supplier?.id ?? null,
       supplierName: supplier?.name ?? supplierName,
       productTitle: str(formData.get("productTitle")) ?? item.description,
-      matchStatus: match.status === "NO_MATCH" ? "POSSIBLE" : match.status,
+      matchStatus: match.status,
       unitPrice,
       currency,
       moq: num(formData.get("moq")),
@@ -95,8 +119,11 @@ export async function recordManualOfferAction(formData: FormData) {
         enteredAt: new Date().toISOString(),
         reference,
         match,
+        supplierConfirmedSpec: true,
+        confirmedAt: new Date().toISOString(),
         note: "Price entered by MFBMT from a supplier communication.",
       }),
+      offeredSpecJson: stringifyJson(offeredSpec),
     },
   });
 

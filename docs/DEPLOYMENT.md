@@ -21,7 +21,7 @@ Edit `.env`. At minimum in production:
 
 | Variable | Value |
 |---|---|
-| `DATABASE_URL` | `file:./prod.db` (or a PostgreSQL URL) |
+| `DATABASE_URL` | `postgresql://user:password@host:5432/mfbmt?schema=public` |
 | `AUTH_SECRET` | 32+ random bytes (`openssl rand -base64 32`) |
 | `CREDENTIAL_ENCRYPTION_KEY` | 32-byte base64 key, **kept with the backups** |
 | `APP_URL` | `https://procurement.example.com` |
@@ -40,7 +40,7 @@ npx prisma migrate deploy
 npm run build
 ```
 
-Do **not** run `db:seed` on a production database unless you intend to create the demo owner, sample suppliers and demo enquiries. If you do, sign in and immediately change the password and remove the demo data.
+**Never run `db:seed` in production.** It refuses to run when `NODE_ENV`, `APP_ENV` or `VERCEL_ENV` is `production`, and it also requires both `DEMO_MODE=true` and `SEED_DEMO_DATA=true`. Use `npm run provision:owner` to create the first real owner.
 
 ## 3. Run
 
@@ -92,7 +92,7 @@ User=mfbmt
 WantedBy=multi-user.target
 ```
 
-Both units need write access to `STORAGE_ROOT` and the SQLite file's directory.
+Both units need write access to `STORAGE_ROOT`. The database is a separate PostgreSQL service.
 
 ### Docker sketch
 
@@ -135,7 +135,7 @@ TLS terminates at the proxy; the app expects `X-Forwarded-Proto` to be set so se
 curl -fsS https://procurement.example.com/api/health
 ```
 
-Expected: `{"status":"ok",...}`. Then:
+Expected: `{"status":"ok","checks":{"database":"reachable","worker":"healthy"},...}` or `degraded` when no worker heartbeat is fresh. `?deep=1` requires the `x-health-token` header to equal `WORKER_SECRET`. Then:
 
 1. Sign in as owner.
 2. **Settings → Connections**: every integration shows its real state. Do not consider deployment complete while a required integration says **Needs attention**.
@@ -157,7 +157,8 @@ Back up before migrating (see `BACKUP.md`). Migrations are forward-only; keep th
 ## Operational notes
 
 - **Time zone**: the server runs in UTC; business dates in the UI are displayed in the configured timezone (`BUSINESS_TIMEZONE`, default `Asia/Dubai`).
-- **Process count**: run exactly one web process per SQLite file. Horizontal scaling needs PostgreSQL (see `DATABASE.md`).
+- **Process count**: the web app can run multiple instances against PostgreSQL; the worker can also be scaled, because jobs are claimed with `FOR UPDATE SKIP LOCKED`.
+- **Worker liveness**: each worker writes `WorkerHeartbeat`. `/api/health` reports `degraded`/`unknown` if no heartbeat is fresh; it does not infer health from an empty queue.
 - **Logs**: Next writes request logs to stdout; the worker logs job ids and failures. Ship them to your log collector; do not log request bodies.
 - **Health checks**: `/api/health` is safe for load balancers and does not reveal configuration.
 - **Disk**: attachments are never deleted automatically. Monitor `STORAGE_ROOT` and archive quotation PDFs if needed.

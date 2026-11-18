@@ -1,7 +1,7 @@
 import { env, assertProductionConfig } from "./lib/env";
 import { db } from "./lib/db";
 import { runNextJob } from "./lib/workflow/process";
-import { enqueueJob } from "./lib/workflow/jobs";
+import { enqueueJob, recordWorkerHeartbeat } from "./lib/workflow/jobs";
 import { JOB_TYPES } from "./lib/constants";
 import { activeEmailProvider } from "./lib/email/send";
 
@@ -52,13 +52,20 @@ async function main() {
   while (!stopping) {
     let didWork = false;
     try {
+      // Durable liveness: the health endpoint and the app shell read this row.
+      await recordWorkerHeartbeat(workerId, { status: "polling", pollMs: env.WORKER_POLL_MS });
       if (Date.now() - lastRecurring > 60_000) {
         lastRecurring = Date.now();
         await ensureRecurringJobs();
       }
       didWork = await runNextJob(workerId);
+      await recordWorkerHeartbeat(workerId, {
+        status: didWork ? "working" : "idle",
+        pollMs: env.WORKER_POLL_MS,
+      });
     } catch (error) {
       console.error("[worker] loop error", error instanceof Error ? error.message : error);
+      await recordWorkerHeartbeat(workerId, { status: "error", pollMs: env.WORKER_POLL_MS }).catch(() => undefined);
     }
     if (!didWork) {
       await new Promise((resolve) => setTimeout(resolve, env.WORKER_POLL_MS));

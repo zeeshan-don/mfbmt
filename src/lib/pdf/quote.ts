@@ -91,21 +91,29 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
       const tableTop = topY + 70;
       doc.moveTo(doc.page.margins.left, tableTop).lineTo(doc.page.margins.left + pageWidth, tableTop).lineWidth(0.8).strokeColor(LINE).stroke();
 
+      // Fixed widths keep the money columns from overlapping on A4. The amount
+      // column ends exactly at the right margin.
+      const left = doc.page.margins.left;
+      const descriptionWidth = 245;
+      const qtyWidth = 42;
+      const unitWidth = 32;
+      const unitPriceWidth = 82;
+      const amountWidth = pageWidth - descriptionWidth - qtyWidth - unitWidth - unitPriceWidth - 18;
       const columns = {
-        item: doc.page.margins.left,
-        qty: doc.page.margins.left + pageWidth * 0.58,
-        unit: doc.page.margins.left + pageWidth * 0.7,
-        unitPrice: doc.page.margins.left + pageWidth * 0.78,
-        total: doc.page.margins.left + pageWidth * 0.9,
+        item: left,
+        qty: left + descriptionWidth + 4,
+        unit: left + descriptionWidth + qtyWidth + 8,
+        unitPrice: left + descriptionWidth + qtyWidth + unitWidth + 14,
+        total: left + descriptionWidth + qtyWidth + unitWidth + unitPriceWidth + 18,
       };
 
       let y = tableTop + 10;
       doc.fillColor(MUTED).fontSize(7.5).font("Helvetica-Bold");
-      doc.text("DESCRIPTION", columns.item, y);
-      doc.text("QTY", columns.qty, y, { width: 40, align: "right" });
-      doc.text("UNIT", columns.unit, y, { width: 40 });
-      doc.text("UNIT PRICE", columns.unitPrice, y, { width: 70, align: "right" });
-      doc.text("AMOUNT", columns.total, y, { width: pageWidth - (columns.total - doc.page.margins.left), align: "right" });
+      doc.text("DESCRIPTION", columns.item, y, { width: descriptionWidth });
+      doc.text("QTY", columns.qty, y, { width: qtyWidth, align: "right" });
+      doc.text("UNIT", columns.unit, y, { width: unitWidth });
+      doc.text("UNIT PRICE", columns.unitPrice, y, { width: unitPriceWidth, align: "right" });
+      doc.text("AMOUNT", columns.total, y, { width: amountWidth, align: "right" });
       y += 16;
 
       for (const item of quotation.items) {
@@ -115,23 +123,23 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
         }
         doc.moveTo(doc.page.margins.left, y).lineTo(doc.page.margins.left + pageWidth, y).lineWidth(0.4).strokeColor(LINE).stroke();
         y += 6;
-        doc.fillColor(INK).fontSize(9).font("Helvetica-Bold").text(item.description.slice(0, 120), columns.item, y, {
-          width: pageWidth * 0.55,
+        doc.fillColor(INK).fontSize(8.5).font("Helvetica-Bold").text(item.description.slice(0, 120), columns.item, y, {
+          width: descriptionWidth,
         });
-        const itemHeight = doc.heightOfString(item.description.slice(0, 120), { width: pageWidth * 0.55 });
+        const itemHeight = doc.heightOfString(item.description.slice(0, 120), { width: descriptionWidth });
         let specHeight = 0;
         if (item.specs && item.specs !== item.description) {
-          doc.font("Helvetica").fontSize(7.8).fillColor(MUTED);
+          doc.font("Helvetica").fontSize(7.5).fillColor(MUTED);
           const specs = item.specs.slice(0, 220);
-          doc.text(specs, columns.item, y + itemHeight + 1, { width: pageWidth * 0.55 });
-          specHeight = doc.heightOfString(specs, { width: pageWidth * 0.55 });
+          doc.text(specs, columns.item, y + itemHeight + 1, { width: descriptionWidth });
+          specHeight = doc.heightOfString(specs, { width: descriptionWidth });
         }
-        doc.fillColor(INK).fontSize(9).font("Helvetica");
-        doc.text(String(item.quantity), columns.qty, y, { width: 40, align: "right" });
-        doc.text(item.unit, columns.unit, y, { width: 40 });
-        doc.text(fmt(item.unitPrice, quotation.currency), columns.unitPrice, y, { width: 70, align: "right" });
+        doc.fillColor(INK).fontSize(8.5).font("Helvetica");
+        doc.text(String(item.quantity), columns.qty, y, { width: qtyWidth, align: "right" });
+        doc.text(item.unit, columns.unit, y, { width: unitWidth });
+        doc.text(fmt(item.unitPrice, quotation.currency), columns.unitPrice, y, { width: unitPriceWidth, align: "right" });
         doc.text(fmt(item.lineTotal, quotation.currency), columns.total, y, {
-          width: pageWidth - (columns.total - doc.page.margins.left),
+          width: amountWidth,
           align: "right",
         });
         y += Math.max(22, itemHeight + specHeight + 12);
@@ -146,8 +154,11 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
       doc.text("Subtotal", totalsX, y, { width: totalsWidth * 0.5 });
       doc.text(fmt(quotation.subtotal, quotation.currency), totalsX, y, { width: totalsWidth, align: "right" });
       y += 14;
-      if (quotation.taxAmount > 0 && org.taxEnabled) {
-        doc.text(org.taxLabel, totalsX, y, { width: totalsWidth * 0.5 });
+      // Print tax whenever the quotation actually contains tax, even if the
+      // organisation later turns the setting off. Otherwise the total would not
+      // reconcile with the subtotal.
+      if (quotation.taxAmount > 0) {
+        doc.text(org.taxLabel || "Tax", totalsX, y, { width: totalsWidth * 0.5 });
         doc.text(fmt(quotation.taxAmount, quotation.currency), totalsX, y, { width: totalsWidth, align: "right" });
         y += 14;
       }
@@ -176,11 +187,13 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
       const pages = doc.bufferedPageRange();
       for (let i = 0; i < pages.count; i += 1) {
         doc.switchToPage(i);
+        // Keep the footer inside the bottom margin and disable wrapping: text
+        // below the margin makes PDFKit add a blank page.
         doc.font("Helvetica").fontSize(7.5).fillColor(MUTED).text(
           `${org.name} · ${quotation.quoteNumber} · Page ${i + 1} of ${pages.count}`,
           doc.page.margins.left,
-          doc.page.height - 34,
-          { width: pageWidth, align: "center" },
+          doc.page.height - 64,
+          { width: pageWidth, align: "center", lineBreak: false },
         );
       }
 

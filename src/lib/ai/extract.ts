@@ -5,6 +5,7 @@ import {
 } from "../validation/extraction";
 import { completeJson, aiStatus, DATA_ONLY_RULE } from "./provider";
 import { inferCategoryFromDescription, ATTRIBUTE_LABELS, type AttributeKey } from "../catalog/categories";
+import { isFastenerCategory, missingFastenerFields, parseFastenerSpec } from "../fasteners/spec";
 import {
   normalizeGrade,
   normalizeMaterial,
@@ -12,7 +13,6 @@ import {
   normalizeSchedule,
   normalizeSize,
   normalizeUnit,
-  parseQuantity,
 } from "../catalog/normalize";
 
 export type SourceDocument = {
@@ -142,6 +142,7 @@ function categoryFor(item: ExtractedItem) {
 export function finalizeItems(items: ExtractedItem[]): ItemDraft[] {
   return items.map((item) => {
     const category = categoryFor(item);
+    const fastenerCategory = isFastenerCategory(category?.name) || isFastenerCategory(item.category);
     const normalized: ExtractedItem = {
       ...item,
       description: item.description.trim().replace(/\s{2,}/g, " "),
@@ -154,13 +155,30 @@ export function finalizeItems(items: ExtractedItem[]): ItemDraft[] {
       standard: (item.standard ?? extractAttributes(item.description).standard)?.toUpperCase() ?? null,
       category: category?.name ?? item.category ?? "Other Industrial Supplies",
       otherSpecs: item.otherSpecs ?? {},
+      fastenerSpec: fastenerCategory
+        ? (item.fastenerSpec ??
+          parseFastenerSpec({
+            description: item.description,
+            size: item.size,
+            material: item.material,
+            grade: item.grade,
+            standard: item.standard,
+            rawText: item.description,
+          }))
+        : item.fastenerSpec,
     };
 
-    const missing = new Set<string>(item.missingFields ?? []);
+    // For fasteners only the structured requirements decide what is missing; stale
+    // generic extraction labels must not linger once the field is known.
+    const missing = new Set<string>(fastenerCategory ? [] : (item.missingFields ?? []));
     if (normalized.quantity == null || !(normalized.quantity > 0)) missing.add("quantity");
     if (normalized.quantity != null && !normalized.unit) missing.add("unit");
 
-    if (category) {
+    if (fastenerCategory && normalized.fastenerSpec) {
+      // Fasteners have their own required attributes. Generic size/material/grade
+      // labels are replaced so the owner sees the exact missing engineering field.
+      for (const field of missingFastenerFields(normalized.fastenerSpec)) missing.add(field);
+    } else if (category) {
       for (const key of category.required) {
         if (!attributeValue(normalized, key)) missing.add(ATTRIBUTE_LABELS[key]);
       }

@@ -54,7 +54,24 @@ npm run dev        # http://localhost:3000
 npm run worker     # reading, stock checks, supplier searches, mailbox sync
 ```
 
-A clean installation shows empty states and points the owner at **/onboarding**. Demo data exists only for local development (`DEMO_MODE=true` + `npm run db:seed`) and cannot be seeded in production.
+A clean installation shows empty states and points the owner at **/onboarding**. Demo data exists only for local development: it requires **both** `DEMO_MODE=true` and `SEED_DEMO_DATA=true`, and the seed refuses to run when `NODE_ENV`, `APP_ENV` or `VERCEL_ENV` is `production`.
+
+### Fastener owner demo
+
+```bash
+# .env (local demo only)
+#   DEMO_MODE=true
+#   SEED_DEMO_DATA=true
+#   NODE_ENV=development
+npm run db:seed
+npm run dev
+```
+
+Sign in with the demo accounts shown on `/login` (only displayed in demo mode) and open **/demo**. The
+walkthrough is separate from the original sample enquiries and can be restored from that page; restoring
+touches only the two records marked `ENQ-DEMO-FASTENER-01/02`. All prices, suppliers and contacts are
+illustrative sample data, not live market quotations. Demo sending is simulated: no e-mail, WhatsApp,
+purchase order or payment is created.
 
 ## What is implemented
 
@@ -64,7 +81,7 @@ A clean installation shows empty states and points the owner at **/onboarding**.
 | Personal/family numbers | Exclusion list checked on canonical E.164/email **before** any body, subject, attachment or job is written; excluded content is never sent to an AI provider |
 | Email intake | Gmail (history + optional Pub/Sub push) and Microsoft Graph (delta + subscription renewal), or the authenticated forwarding endpoint; persistent cursors, pagination, dedupe, no manual sync required |
 | Documents | Text, text PDF, **scanned PDF via page render + Tesseract OCR**, Excel (multi-sheet, header detection) and CSV, JPEG/PNG/WebP and HEIC (converted); page/sheet/row references preserved |
-| Inventory | Catalogue + locations, stock import with preview/mapping/validation, stock states (not configured / not found / zero / partial / full), sourcing-first policy, MOQ-aware shortage |
+| Fastener specification | Structured, versioned model (type, diameter, thread/pitch, length, head/drive, material, property class, finish, standard, certification, pack basis). Deterministic matching: conflicts are `NO_MATCH`, unstated required fields are `INSUFFICIENT`. Other categories keep the generic matcher |\n| Inventory | Catalogue + locations, stock import with preview/mapping/validation (including fastener columns), stock states (not configured / not found / zero / partial / full), sourcing-first policy, MOQ-aware shortage |
 | Supplier discovery | Internal directory, recorded supplier products, configured web-search APIs (Tavily/Serper/Brave), permitted public pages with robots.txt, SSRF-hardened fetching; coverage report per search |
 | Supplier quotes | RFQ drafted from the specification, explicit send approval, email/WhatsApp delivery, expiring response links, server-validated responses stored as **unverified** evidence |
 | Landed cost | Product + freight + other charges + tax + FX, MOQ overbuy disclosed, unknown components keep the total null, unknown currency never assumed to be AED |
@@ -97,6 +114,7 @@ npm run db:seed        # local demo data only (refuses in production)
 - [Owner onboarding](docs/ONBOARDING.md)
 - [Inventory import](docs/INVENTORY_IMPORT.md) · [Supplier discovery](docs/SUPPLIERS.md)
 - [Security](docs/SECURITY.md) · [Known limitations](docs/LIMITATIONS.md) · [Test report](docs/TEST_REPORT.md)
+- [Production hardening audit](docs/IMPLEMENTATION_AUDIT.md)
 
 ## Honest status
 

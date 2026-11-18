@@ -10,7 +10,7 @@ This is a small internal tool for one company, but it holds supplier costs, cust
 - **Sign-in throttling**: failed attempts are written to the audit log and counted per email address and per IP over 15 minutes. At 8 failures for an email or 30 for an IP, sign-in is refused for the rest of the window. Because the counter lives in the database it survives restarts.
 - The login error message is identical for unknown email, wrong password and deactivated account.
 
-Create the first owner with `npm run db:seed` (local demonstration data) or by inserting a user with a bcrypt hash into the `User` table. There is no public sign-up page. Demo credentials are printed in the README and must not exist in production.
+Create the first owner with `npm run provision:owner`. Demo data requires `DEMO_MODE=true` + `SEED_DEMO_DATA=true` outside production and is refused in production regardless of flags. Demo credentials are shown only on the demo sign-in page, never in README, logs, health responses or production builds.
 
 ## Authorisation
 
@@ -36,7 +36,7 @@ Create the first owner with `npm run db:seed` (local demonstration data) or by i
 `/api/jobs/tick` | `WORKER_SECRET` bearer token; 503 when unset.
 `/api/files/[id]` | Signed-in user, or an HMAC token with expiry bound to the file id.
 `/api/quotations/[id]/pdf` | Signed-in owner or staff with access; internal cost is excluded from the PDF.
-`/api/health` | Public, returns status, database reachability, pending job count and a timestamp — no version, configuration values, secrets or tenant data.
+`/api/health` | Public, returns database reachability, verified worker liveness (healthy/stale/unknown) and a timestamp. Queue/storage detail requires `?deep=1` plus the `x-health-token` header matching `WORKER_SECRET`. No secrets or tenant data.
 `/supplier-response/<token>` | Token-scoped public page; 24-byte random token; expired/used tokens refused; response writes only to that quote.
 
 Webhook routes are excluded from session checks but are never able to act as a logged-in user. All actions they trigger are recorded with actor `system` plus the provider message id.

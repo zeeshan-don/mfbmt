@@ -107,6 +107,25 @@ export const EXCLUDED_CATEGORIES = {
 /** Categories whose messages are never retained, classified by AI or sourced. */
 export const PRIVATE_CATEGORIES = ["FAMILY", "PERSONAL", "OTHER"] as const;
 
+/** The only durable queue states. UI, health and the worker share this list. */
+export const JOB_STATUS = {
+  QUEUED: "QUEUED",
+  PROCESSING: "PROCESSING",
+  COMPLETED: "COMPLETED",
+  FAILED: "FAILED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type JobStatus = (typeof JOB_STATUS)[keyof typeof JOB_STATUS];
+export const ACTIVE_JOB_STATUSES: JobStatus[] = [JOB_STATUS.QUEUED, JOB_STATUS.PROCESSING];
+
+export const JOB_STATUS_LABELS: Record<string, string> = {
+  QUEUED: "Waiting to run",
+  PROCESSING: "Running",
+  COMPLETED: "Completed",
+  FAILED: "Failed",
+  CANCELLED: "Cancelled",
+};
+
 export const JOB_TYPES = {
   INGEST_MESSAGE: "INGEST_MESSAGE",
   EXTRACT_ENQUIRY: "EXTRACT_ENQUIRY",

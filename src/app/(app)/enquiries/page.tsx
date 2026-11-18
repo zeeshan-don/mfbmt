@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
 import { ENQUIRY_STATUS_LABELS, SOURCING_STATUS_LABELS, label } from "@/lib/constants";
 import { timeAgo, truncate } from "@/lib/format";
@@ -22,7 +22,7 @@ export default async function EnquiriesPage({
 }: {
   searchParams: Promise<{ status?: string; q?: string; filter?: string }>;
 }) {
-  await requireUser();
+  await requirePermission("enquiries.view");
   const params = await searchParams;
   const status = params.status && params.status !== "all" ? params.status : undefined;
   const query = params.q?.trim();
@@ -110,7 +110,7 @@ export default async function EnquiriesPage({
                 ? "Try clearing the filter or searching for a different customer."
                 : "Connect WhatsApp or email in Settings, or add a request manually. Every new request will appear here with its products and sourcing progress."
             }
-            action={<ButtonLink href="/settings/integrations">Connect a channel</ButtonLink>}
+            action={<ButtonLink href="/settings">Connect a channel</ButtonLink>}
           />
         ) : (
           <DataTable minWidth={860}>

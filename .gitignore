@@ -17,4 +17,12 @@ next-env.d.ts
 tsconfig.tsbuildinfo
 
 # Verification build output
-.next-verify
+.next-verify/
+tmp-verify/
+*.tsbuildinfo
+
+# Local runtime artifacts
+tsconfig.tsbuildinfo
+.eslintcache
+pg-data/
+backups/

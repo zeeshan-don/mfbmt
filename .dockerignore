@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+.env
+storage
+storage-test
+tmp-verify
+test-results
+*.log

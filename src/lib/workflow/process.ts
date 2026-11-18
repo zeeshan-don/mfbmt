@@ -99,12 +99,15 @@ export async function runNextJob(workerId: string): Promise<boolean> {
   try {
     const result = await withHeartbeat(job.id, workerId, () => processJob(job.id, workerId));
     if (result.ok) {
-      await completeJob(job.id, workerId, result.message);
+      const completed = await completeJob(job.id, workerId, result.message);
+      if (!completed) console.warn(`[worker] lost the lease for job ${job.id}; result was not written.`);
     } else {
-      await failJob(job.id, workerId, result.message);
+      const outcome = await failJob(job.id, workerId, result.message);
+      if (outcome === "lost") console.warn(`[worker] lost the lease for job ${job.id}; failure was not recorded.`);
     }
   } catch (error) {
-    await failJob(job.id, workerId, error instanceof Error ? error.message : "Unknown job error");
+    const outcome = await failJob(job.id, workerId, error instanceof Error ? error.message : "Unknown job error");
+    if (outcome === "lost") console.warn(`[worker] lost the lease for job ${job.id} while handling an error.`);
   }
   return true;
 }

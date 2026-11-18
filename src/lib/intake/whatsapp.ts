@@ -1,4 +1,4 @@
-import { env } from "../env";
+import { env, isDemoMode, MAX_UPLOAD_MB } from "../env";
 import { verifyHmacSignature } from "../crypto";
 import { getWhatsAppCredentials } from "../integrations/whatsapp";
 
@@ -179,8 +179,8 @@ export async function downloadWhatsAppMedia(mediaId: string): Promise<Buffer> {
   if (!metaResponse.ok) throw new Error(`Meta media lookup failed with HTTP ${metaResponse.status}.`);
   const meta = (await metaResponse.json()) as { url?: string; file_size?: number };
   if (!meta.url) throw new Error("Meta did not return a media URL.");
-  if (meta.file_size && meta.file_size > env.MAX_UPLOAD_MB * 1024 * 1024) {
-    throw new Error(`Media is larger than the ${env.MAX_UPLOAD_MB} MB limit.`);
+  if (meta.file_size && meta.file_size > MAX_UPLOAD_MB * 1024 * 1024) {
+    throw new Error(`Media is larger than the ${MAX_UPLOAD_MB} MB limit.`);
   }
   const fileResponse = await fetch(meta.url, {
     headers: { Authorization: `Bearer ${credentials.accessToken}` },
@@ -188,8 +188,8 @@ export async function downloadWhatsAppMedia(mediaId: string): Promise<Buffer> {
   });
   if (!fileResponse.ok) throw new Error(`Media download failed with HTTP ${fileResponse.status}.`);
   const buffer = Buffer.from(await fileResponse.arrayBuffer());
-  if (buffer.length > env.MAX_UPLOAD_MB * 1024 * 1024) {
-    throw new Error(`Media is larger than the ${env.MAX_UPLOAD_MB} MB limit.`);
+  if (buffer.length > MAX_UPLOAD_MB * 1024 * 1024) {
+    throw new Error(`Media is larger than the ${MAX_UPLOAD_MB} MB limit.`);
   }
   return buffer;
 }
@@ -219,6 +219,8 @@ export type SendResult = {
   ok: boolean;
   detail: string;
   messageId?: string;
+  /** True when no provider call was made because this is the demo environment. */
+  simulated?: boolean;
   /** True when Meta rejected a free-form message outside the 24-hour service window. */
   outsideServiceWindow?: boolean;
 };
@@ -232,6 +234,9 @@ export type SendResult = {
  * function reports that instead of pretending the message was delivered.
  */
 export async function sendWhatsAppText(to: string, body: string): Promise<SendResult> {
+  if (isDemoMode) {
+    return { ok: true, simulated: true, detail: "Demo simulation — no WhatsApp message was sent.", messageId: "demo-simulated" };
+  }
   const credentials = await getWhatsAppCredentials();
   if (!credentials) {
     return { ok: false, detail: "WhatsApp is not connected. Connect the business account in Settings." };
@@ -295,6 +300,9 @@ export async function sendWhatsAppDocument(input: {
   caption?: string;
   mimeType?: string;
 }): Promise<SendResult> {
+  if (isDemoMode) {
+    return { ok: true, simulated: true, detail: "Demo simulation — no WhatsApp document was sent.", messageId: "demo-simulated" };
+  }
   const credentials = await getWhatsAppCredentials();
   if (!credentials) {
     return { ok: false, detail: "WhatsApp is not connected. Connect the business account in Settings." };

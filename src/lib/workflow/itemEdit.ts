@@ -3,6 +3,14 @@ import { stringifyJson, parseJson } from "../json";
 import { finalizeItems } from "../ai/extract";
 import { inferCategoryFromDescription } from "../catalog/categories";
 import { normalizeUnit, parseQuantity } from "../catalog/normalize";
+import {
+  isFastenerCategory,
+  normalizeFinishValue,
+  normalizeThreadSeriesValue,
+  parseFastenerSpec,
+  parseFastenerSpecJson,
+  type FastenerSpec,
+} from "../fasteners/spec";
 
 /**
  * Applies an owner correction to a product line and recomputes what is still
@@ -22,7 +30,11 @@ export async function updateEnquiryItemValues(input: {
     pressureRating?: string | null;
     schedule?: string | null;
     standard?: string | null;
+    /** Explicit structured fastener values entered/corrected by the owner. */
+    fastenerSpec?: Partial<FastenerSpec> | null;
   };
+  /** Set when the owner has reviewed and confirmed the line. */
+  confirm?: boolean;
 }) {
   const existing = await db.enquiryItem.findUnique({ where: { id: input.itemId } });
   if (!existing) throw new Error("Product line not found");
@@ -44,10 +56,49 @@ export async function updateEnquiryItemValues(input: {
     missingFields: [] as string[],
     confidence: parseJson<Record<string, number>>(existing.confidence, {}),
     sourceRef: existing.sourceRef,
+    fastenerSpec:
+      parseFastenerSpecJson(existing.fastenerSpecJson) ??
+      (isFastenerCategory(existing.category)
+        ? parseFastenerSpec({
+            description: (input.values.description ?? existing.description).trim(),
+            size: input.values.size !== undefined ? input.values.size : existing.size,
+            material: input.values.material !== undefined ? input.values.material : existing.material,
+            grade: input.values.grade !== undefined ? input.values.grade : existing.grade,
+            standard: input.values.standard !== undefined ? input.values.standard : existing.standard,
+          })
+        : null),
   };
 
-  const [finalized] = finalizeItems([merged]);
+  // An owner correction is authoritative for the fields supplied; unfilled fields
+  // keep the structured values the line already had.
+  if (input.values.fastenerSpec) {
+    const parsed = parseFastenerSpec({
+      description: merged.description,
+      size: merged.size,
+      material: merged.material,
+      grade: merged.grade,
+      standard: merged.standard,
+    });
+    const supplied = Object.fromEntries(
+      Object.entries(input.values.fastenerSpec).filter(([, value]) => value != null && value !== ""),
+    ) as Partial<FastenerSpec>;
+    if (supplied.finish) supplied.finish = normalizeFinishValue(supplied.finish) as never;
+    if (supplied.threadSeries) supplied.threadSeries = normalizeThreadSeriesValue(supplied.threadSeries) as never;
+    merged.fastenerSpec = { ...(merged.fastenerSpec ?? parsed), ...supplied, version: parsed.version };
+  } else if (merged.fastenerSpec && !existing.fastenerSpecJson) {
+    // A correction to description/size/material can complete a fastener line.
+    merged.fastenerSpec = parseFastenerSpec({
+      description: merged.description,
+      size: merged.size,
+      material: merged.material,
+      grade: merged.grade,
+      standard: merged.standard,
+    });
+  }
+
+  const [finalized] = finalizeItems([{ ...merged, fastenerSpec: merged.fastenerSpec ?? undefined }]);
   const missing = finalized?.missingFields ?? [];
+  const spec = finalized?.fastenerSpec ?? merged.fastenerSpec ?? null;
 
   const updated = await db.enquiryItem.update({
     where: { id: existing.id },
@@ -66,6 +117,21 @@ export async function updateEnquiryItemValues(input: {
       missingFields: stringifyJson(missing),
       clarificationQuestion: finalized?.clarificationQuestion ?? null,
       reviewStatus: missing.length > 0 ? "NEEDS_CLARIFICATION" : "CONFIRMED",
+      fastenerSpecJson: spec ? stringifyJson(spec) : null,
+      fastenerType: spec?.type ?? null,
+      diameter: spec?.diameter ?? null,
+      threadSeries: spec?.threadSeries ?? null,
+      pitchMm: spec?.pitchMm ?? null,
+      lengthMm: spec?.lengthMm ?? null,
+      propertyClass: spec?.propertyClass ?? null,
+      finish: spec?.finish ?? null,
+      specSource:
+        input.values.fastenerSpec || input.confirm
+          ? "MANUAL"
+          : missing.length === 0
+            ? existing.specSource
+            : existing.specSource,
+      specConfirmedAt: input.confirm ? new Date() : existing.specConfirmedAt,
     },
   });
 

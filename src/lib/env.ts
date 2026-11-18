@@ -103,6 +103,14 @@ export const env = parsed.data;
 export const isDemoMode = env.DEMO_MODE === "true";
 export const isProd = env.NODE_ENV === "production";
 
+/**
+ * The effective upload cap. Server Actions are limited to 12 MB in
+ * next.config.ts, so advertising or accepting more would fail at the transport
+ * layer with a confusing error. One number is used by the form, the storage
+ * validator and the documentation.
+ */
+export const MAX_UPLOAD_MB = Math.min(12, Math.max(1, env.MAX_UPLOAD_MB));
+
 const INSECURE_SECRETS = new Set([
   "insecure-development-secret-change-me",
   "replace-with-64-hex-characters",

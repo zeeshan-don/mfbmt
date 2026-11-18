@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { supplierReliability } from "@/lib/suppliers/reliability";
 import { parseStringArray } from "@/lib/json";
 import { formatDate, formatMoney, timeAgo, truncate } from "@/lib/format";
@@ -18,7 +18,7 @@ export default async function SupplierDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ saved?: string; error?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("suppliers.view");
   const { id } = await params;
   const flags = await searchParams;
 

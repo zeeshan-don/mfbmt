@@ -1,4 +1,4 @@
-import { env } from "../env";
+import { env, isDemoMode } from "../env";
 import { getAccessToken } from "./oauth";
 import { getIntegration } from "../integrations/store";
 
@@ -83,7 +83,9 @@ export async function sendEmail(input: {
   subject: string;
   text: string;
   attachments?: OutgoingAttachment[];
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<{ ok: true; simulated?: boolean } | { ok: false; error: string }> {
+  // Demo mode is an adapter, not a warning: no provider request is made.
+  if (isDemoMode) return { ok: true, simulated: true };
   const provider = await activeEmailProvider();
   if (provider === "none") {
     return { ok: false, error: "No company email account is connected. Connect Gmail or Microsoft 365 in Settings." };

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FastenerSpecSchema } from "../fasteners/spec";
 
 export const CLASSIFICATION_VALUES = [
   "RFQ",
@@ -34,6 +35,8 @@ export const ExtractedItemSchema = z.object({
   schedule: z.string().max(40).nullable().optional(),
   standard: z.string().max(80).nullable().optional(),
   otherSpecs: z.record(z.string(), z.string()).optional(),
+  /** Structured fastener fields. Optional: the deterministic parser fills gaps from the text. */
+  fastenerSpec: FastenerSpecSchema.optional(),
   sourceRef: z.string().max(120).nullable().optional(),
   missingFields: z.array(z.string()).default([]),
   confidence: z.record(z.number().min(0).max(1)).default({}),

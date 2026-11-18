@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mfbmt
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: mfbmt
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mfbmt -d mfbmt"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mfbmt:change-me@db:5432/mfbmt?schema=public
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - storage_data:/var/lib/mfbmt/storage
+
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mfbmt:change-me@db:5432/mfbmt?schema=public
+      NODE_ENV: production
+    command: npm run worker
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - storage_data:/var/lib/mfbmt/storage
+
+volumes:
+  postgres_data:
+  storage_data:

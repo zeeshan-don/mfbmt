@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { env } from "./env";
+import { env, MAX_UPLOAD_MB } from "./env";
 
 /**
  * File storage with two drivers:
@@ -89,10 +89,10 @@ export function assertAllowedUpload(
   buffer: Buffer,
   declaredName: string,
 ): { ok: true; mime: string; family: FileFamily; filename: string } | { ok: false; error: string } {
-  const maxBytes = env.MAX_UPLOAD_MB * 1024 * 1024;
+  const maxBytes = MAX_UPLOAD_MB * 1024 * 1024;
   if (buffer.length === 0) return { ok: false, error: "The file is empty." };
   if (buffer.length > maxBytes) {
-    return { ok: false, error: `The file is larger than ${env.MAX_UPLOAD_MB} MB.` };
+    return { ok: false, error: `The file is larger than ${MAX_UPLOAD_MB} MB.` };
   }
   const sniffed = sniffType(buffer);
   const allowedFamilies: FileFamily[] = ["pdf", "excel", "csv", "text", "image"];

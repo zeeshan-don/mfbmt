@@ -1,10 +1,13 @@
 # Database
 
 - ORM: Prisma 6
-- Default provider: SQLite (`DATABASE_URL="file:./dev.db"`), migrations in `prisma/migrations`
-- PostgreSQL is supported by changing `datasource.db.provider` and `DATABASE_URL`, then creating a fresh migration baseline.
+- Provider: **PostgreSQL 14+** (`prisma/schema.prisma`, `DATABASE_URL="postgresql://…"`)
+- Migrations: `prisma/migrations` (forward-only). `prisma/migrations-sqlite-legacy` is old history and is
+  **not** used by the active datasource.
 
-Because SQLite has no native enums or JSON columns, statuses are validated strings (constants live in `src/lib/constants.ts`) and structured payloads are JSON text parsed through typed helpers (`src/lib/json.ts`). This is intentional: the same code runs on PostgreSQL after converting those columns to `jsonb`/enums.
+Statuses are validated strings (constants in `src/lib/constants.ts`) and structured payloads are JSON text
+parsed through typed helpers (`src/lib/json.ts`) or zod schemas. That keeps migrations additive and avoids
+enum rewrites when workflow states are added.
 
 ## Entity map
 
@@ -17,103 +20,100 @@ erDiagram
   Message ||--o{ Attachment : carries
   Message ||--o| Enquiry : creates
   Enquiry ||--o{ EnquiryItem : requests
-  Enquiry ||--o{ Attachment : holds
-  Enquiry ||--o{ Approval : needs
-  Enquiry ||--o{ CustomerQuotation : quotes
   EnquiryItem ||--o{ SearchSession : searches
   EnquiryItem ||--o{ SupplierOffer : compares
   EnquiryItem ||--o{ SupplierQuote : requests
-  SearchSession ||--o{ SearchQuery : runs
-  SearchSession ||--o{ SearchResult : finds
-  SearchResult ||--o| SupplierOffer : becomes
-  Supplier ||--o{ SupplierProduct : lists
   Supplier ||--o{ SupplierOffer : offers
-  Supplier ||--o{ SupplierQuote : receives
   SupplierQuote ||--o{ SupplierQuoteItem : details
   CustomerQuotation ||--o{ CustomerQuotationItem : lines
   Product ||--o{ InventoryStock : stocked
-  Product ||--o{ InventoryMovement : moves
   Product ||--o{ ProductSpecification : attributes
-  InventoryLocation ||--o{ InventoryStock : holds
+  WorkerHeartbeat
 ```
 
 ## Key models
 
 ### People and access
-- **User** — owner or staff, bcrypt password hash, JSON permission list for staff.
-- **Session** — hashed bearer token, expiry, IP/user-agent. Sessions are revoked on deactivation.
-- **AuditLog** — append-only record (`actorLabel`, action, entity, metadata, time).
+- **User** — owner or staff, bcrypt hash, JSON permission list for staff.
+- **Session** — hashed bearer token, expiry (`AUTH_SESSION_DAYS`), IP/user-agent.
+- **AuditLog** — append-only record of decisions, sends, edits and demo simulations.
 
 ### Intake
-- **Contact** — a customer/supplier family/personal person, matched by phone or email.
-- **ExcludedContact** — normalised phone/email plus category. Checked *before* message storage.
-- **Conversation** / **Message** — provider threads; `externalMessageId` is unique (the dedupe guarantee).
-  `bodyRetained=false` records that a personal message body was deliberately not kept.
-- **Attachment** — content-sniffed MIME, size, SHA-256, storage path, extraction status/note.
-  Unique on `(messageId, sha256)` so the same file cannot be processed twice for one message.
+- **Contact / ExcludedContact** — identity is canonical E.164/email; exclusions are checked before storage.
+- **Conversation / Message** — `externalMessageId` unique (provider retries are idempotent).
+  `bodyRetained=false` records a deliberately unretained personal message.
+- **Attachment** — content-sniffed MIME, size, SHA-256, private storage key, extraction status.
 
-### Enquiry
-- **Enquiry** — source channel, customer snapshot, raw text, classification + confidence, workflow status
-  (`NEW → EXTRACTING → NEEDS_REVIEW/READY → SOURCING → AWAITING_APPROVAL → APPROVED → QUOTED → CLOSED`),
-  `extractedJson` (immutable original), `isDemo`.
-- **EnquiryItem** — one requested product: raw and corrected attributes, quantity/unit, `missingFields`,
-  `clarificationQuestion`, stock split (`quantityFromStock`, `quantityToSource`), `inventoryStatus`,
-  `sourcingStatus`, `approvedOfferId`, `extractedJson`, stock-check snapshot.
+### Enquiry and specification
+- **Enquiry** — channel, customer snapshot, raw text, classification, workflow status, immutable
+  `extractedJson`, `isDemo`.
+- **EnquiryItem** — corrected attributes, quantity/unit, `missingFields`, clarification question,
+  stock split, sourcing state, `approvedOfferId`.
+  Fastener lines additionally store a validated `fastenerSpecJson` plus indexed columns
+  (`fastenerType`, `diameter`, `threadSeries`, `pitchMm`, `lengthMm`, `propertyClass`, `finish`) and
+  provenance (`specSource` = EXTRACTED | MANUAL | SUPPLIER_CONFIRMED, `specConfirmedAt`).
+  The JSON shape lives in `src/lib/fasteners/spec.ts` and is versioned.
 
 ### Inventory
-- **Product** — SKU, category, technical attributes, flexible `specs` JSON, demo flag.
-- **ProductSpecification** — key/value extras for categories with unusual attributes.
-- **InventoryLocation**, **InventoryStock** (on hand + reserved, unique per product/location, `lastUpdatedAt`),
-  **InventoryMovement** (audit of every change, with reason and actor).
+- **Product** — SKU, category, attributes, flexible `specs`, and `fastenerSpecJson` for fasteners.
+- **ProductSpecification**, **InventoryLocation**, **InventoryStock** (on hand + reserved),
+  **InventoryMovement** (audit of every change).
 
 ### Suppliers and sourcing
-- **Supplier** — identity, contacts, categories/brands JSON, status (`ACTIVE/PAUSED/BLOCKED/UNVERIFIED`), notes.
-- **SupplierContact**, **SupplierProduct** (recorded catalogue prices with date and source URL).
-- **SearchSession** — one discovery run per item: status, per-adapter coverage JSON, summary JSON.
-- **SearchQuery** — each phrase per adapter with result count and error.
-- **SearchResult** — evidence: URL, supplier, title, snippet, price text, MOQ, availability,
-  retrieval timestamp, match status/confidence, evidence JSON. Never overwritten.
-- **SupplierOffer** — comparable offer: supplier, product title, match status, price/currency, MOQ,
-  shipping/other/taxes, lead time, validity, source type, verification status,
-  `landedCostJson` snapshot (cost + eligibility + rank), eligibility reason, demo flag.
-  Unique `searchResultId` prevents the same result becoming two offers.
-- **SupplierQuote** / **SupplierQuoteItem** — outbound RFQ with secure token, expiry and the supplier's submitted price.
-  A submitted quote creates a new `SupplierOffer` with `sourceType=SUPPLIER_QUOTE`.
+- **Supplier**, **SupplierContact**, **SupplierProduct** (recorded catalogue prices).
+- **SearchSession / SearchQuery / SearchResult** — one discovery run and its evidence.
+- **SupplierOffer** — comparable offer, match status, price/currency, MOQ, freight/other/taxes,
+  lead time, validity, source type, verification status, `landedCostJson` snapshot,
+  `offeredSpecJson` (validated supplier-stated fastener specification), eligibility reason.
+- **SupplierQuote / SupplierQuoteItem** — outbound RFQ with single-use expiring token and response.
 
 ### Commercial control
-- **Approval** — `SOURCING | SUPPLIER_QUOTE_SEND | CUSTOMER_QUOTATION | PRICING_OVERRIDE`,
-  target entity, payload snapshot, decision, decider, reason, timestamps. Decisions are single-shot.
-- **PricingRule** — scope (`GLOBAL`/`CATEGORY`), type (`PERCENT_MARKUP`/`FIXED_MARKUP`/`MANUAL`), value, priority, active.
-- **CustomerQuotation** / **CustomerQuotationItem** — number, version, totals, internal cost, terms, validity,
-  approval record, PDF path. Lines keep the supplier offer they came from and the cost price (internal only).
-- **Integration** — status, non-secret config, AES-256-GCM encrypted secrets, last check/error.
-- **BackgroundJob** — queue (see architecture), unique idempotency key.
-- **Notification**, **ExchangeRate** (rate + source + timestamp), **AppSetting**.
+- **Approval** — `SOURCING | SUPPLIER_QUOTE_SEND | CUSTOMER_QUOTATION | PRICING_OVERRIDE`. Decisions are
+  single-shot (`updateMany … WHERE status='PENDING'`).
+- **PricingRule**, **CustomerQuotation / CustomerQuotationItem** — customer totals, internal cost
+  (owner-only), approval and PDF path.
+- **BackgroundJob** — durable queue with leases and per-job `maxAttempts`.
+- **WorkerHeartbeat** — one row per running worker process; `lastSeenAt` drives liveness. It is never
+  inferred from `BackgroundJob.heartbeatAt`, which is cleared when a job completes.
+- **Integration**, **Notification**, **ExchangeRate**, **AppSetting**, **NumberSequence**.
 
 ## Invariants enforced in code
 
 1. `Message.externalMessageId` unique → a provider retry cannot create a second enquiry.
-2. Stock is only consumed by an `EXACT`/`EQUIVALENT` match; available quantity is never negative.
-3. An offer is eligible only with a matching specification, sufficient quantity, acceptable MOQ,
-   valid quote date and supplier not blocked.
-4. Ranking uses only eligible offers with a complete landed cost. Incomplete or ineligible offers stay visible.
-5. `Approval.status` can leave `PENDING` once. The decision, decider and reason are persisted.
-6. A quotation line records its supplier offer and internal cost; customer documents never include them.
-7. A supplier quote response is accepted once and only before expiry.
+2. Stock is used only by an `EXACT`/`EQUIVALENT` match; available quantity is never negative.
+3. Fastener matching is deterministic: a conflict in type, diameter, thread/pitch, length, material,
+   property class, finish or a customer-specified standard is `NO_MATCH`; an unstated required attribute
+   is `INSUFFICIENT`. Text similarity never overrides either.
+4. Ranking uses only eligible offers with a complete landed cost. Incomplete or ineligible offers remain
+   visible with the reason.
+5. An `Approval` leaves `PENDING` once.
+6. Quotation lines may keep an internal supplier cost; customer records and PDFs never include it.
+7. Queue transitions are compare-and-set on `(id, status, lockedBy, unexpired lease)`.
 
 ## Migrations
 
 ```bash
 npx prisma migrate dev --name describe_change   # development
-npx prisma migrate deploy                       # production
-npx prisma migrate status                       # verify applied migrations
+npx prisma migrate deploy                       # demo/staging/production
+npx prisma migrate status
 ```
 
-The test suite builds a separate database with `prisma db push --force-reset` (never the development database).
+Migrations are additive. Never run `prisma migrate reset`, `db push --force-reset`, `DROP TABLE` or
+`TRUNCATE` against a database containing demo or production data.
+
+The most recent migration (`20261118120000_fastener_specs_and_worker_heartbeat`) only adds nullable
+columns, two indexes and the `WorkerHeartbeat` table, so existing IDs, quantities and relationships are
+preserved.
+
+## Tests
+
+Tests use a dedicated database (`mfbmt_test` by default, `TEST_DATABASE_URL` to override). The global
+setup refuses a URL that looks like the development or production database and applies committed
+migrations with `prisma migrate deploy`. It never resets the development database.
 
 ## Indexing notes
 
-- `Message(conversationId, receivedAt)`, `Enquiry(status)`, `EnquiryItem(sourcingStatus)`, `SupplierOffer(enquiryItemId)`,
-  `SearchSession(enquiryItemId)`, `BackgroundJob(status, runAfter)`, `AuditLog(entityType, entityId)` support the
-  dashboard and worker queries.
-- Offer evidence and extraction payloads are text JSON; if you move to PostgreSQL, add GIN indexes as needed.
+- `Message(conversationId, receivedAt)`, `Enquiry(status)`, `EnquiryItem(sourcingStatus)`,
+  `EnquiryItem(fastenerType, diameter)`, `SupplierOffer(enquiryItemId)`, `SearchSession(enquiryItemId)`,
+  `BackgroundJob(status, runAfter)`, `BackgroundJob(status, leaseExpiresAt)`,
+  `WorkerHeartbeat(lastSeenAt)`, `AuditLog(entityType, entityId)`.

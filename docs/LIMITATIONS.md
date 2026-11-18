@@ -7,7 +7,7 @@ Everything below is a known, deliberate limit of this build. None of it is disgu
 - **WhatsApp Cloud API only.** The app cannot read an existing personal WhatsApp inbox, chat history or groups. Coexistence between the WhatsApp Business app and the Cloud API is controlled by Meta and varies by account — confirm eligibility in Business Manager before promising it. A dedicated business number is the reliable path. No unofficial clients, session hijacking or scraping.
 - **Business-initiated WhatsApp messages** are subject to Meta's 24-hour window/templates. A failed send is reported; it is not retried forever or silently downgraded.
 - **Gmail / Microsoft 365** require OAuth app approval. While a Google OAuth app is in testing mode, refresh tokens may expire after 7 days and only test users can connect. Microsoft needs admin consent for `Mail.Read`/`Mail.Send`.
-- **Email intake is polling**, not push. Gmail Pub/Sub and Graph change notifications are not implemented; the interval is whatever you schedule (`npm run worker` processes what was queued).
+- **Email intake** supports polling, Gmail Pub/Sub push and Microsoft Graph change notifications. Push endpoints must be reachable over HTTPS and their shared secrets configured; without credentials only the error paths can be exercised.
 - **Forwarded email** requires a provider that can POST JSON with a shared secret; a plain mail rule that only forwards to an address will not work without that bridge.
 - **Attachments**: PDF, XLSX, CSV, JPEG, PNG, WebP and plain text. `.xls`, `.xlsb`, `.doc`, `.docx` and archives are not parsed. HEIC/HEIF photos from iPhones are not decoded — re-send as JPEG.
 
@@ -46,21 +46,23 @@ Everything below is a known, deliberate limit of this build. None of it is disgu
 
 ## Platform
 
-- **Default database is SQLite** (`file:./dev.db`). It suits one server and a small team. It does not support concurrent writers well and must not be shared over a network filesystem. PostgreSQL is documented and supported by the schema, but this build has only been exercised on SQLite.
-- **Sessions are cookie-based** with a 7-day lifetime. No SSO, SAML, OIDC or MFA.
-- **Account management is minimal**: the owner can create staff accounts, grant areas and deactivate them in Settings. There is no password reset flow (no email link, no "change my password" screen) and no forced password change on first sign-in — reset a password by updating the user's bcrypt hash.
-- **No field-level encryption** in the database. Integration tokens are encrypted; business data at rest relies on disk/database encryption.
+- **Database**: PostgreSQL 14+ is required. The schema uses text JSON payloads rather than `jsonb`; add GIN indexes if you need JSON query performance.
+- **Sessions are cookie-based** with a configurable lifetime (`AUTH_SESSION_DAYS`, 1–90). No SSO, SAML, OIDC or MFA.
+- **Account management**: owner-created staff accounts, permissions, deactivation, password change and reset links exist. There is no e-mail delivery guarantee for reset links when no mailbox is connected.
+- **No field-level encryption** for business data. Integration tokens and secrets are AES-256-GCM encrypted; business data at rest relies on PostgreSQL/disk encryption.
 - **No malware scanning** of uploaded files. Treat attachments as untrusted.
-- **No strict CSP with nonces**; other security headers are set. Add CSP at the proxy if required.
+- **CSP** is set in `next.config.ts` (Meta domains allowed for Embedded Signup). It uses `'unsafe-inline'` for Next bootstrap and the Meta SDK; a nonce-based policy would require removing the inline Meta handlers.
 - **Notifications are in-app only**; no email/SMS alerts when an approval is waiting.
-- **Local disk storage** only. S3/Azure Blob is not implemented; the storage module is the seam for it.
-- **Background jobs** run in one process. There is no distributed lock beyond the job table; run a single worker.
-- **Observability** is logs and the audit log. No metrics, tracing, or error-tracking service integration.
+- **Storage**: local disk or any S3-compatible private bucket (R2, S3, MinIO). Azure Blob is not implemented.
+- **Background jobs**: safe to run more than one worker thanks to `FOR UPDATE SKIP LOCKED` and compare-and-set leases. There is no external scheduler; run the worker as a service.
+- **Observability** is structured console logs, the audit log, `/api/health` and the Activity screen. No metrics, tracing or error-tracking integration.
 
 ## Data and demo content
 
-- The seed creates clearly marked **demo** users, suppliers, products and enquiries. They are not automatically removed. Do not run the seed against production data.
-- Supplier names, prices and URLs in demo records are fictional or illustrative.
+- The seed creates clearly marked **demo** users, suppliers, products and enquiries. It is fail-closed: production is always rejected and both `DEMO_MODE=true` and `SEED_DEMO_DATA=true` are required. Re-running it is idempotent and never resets stock or owner edits.
+- The fastener walkthrough (`/demo`) can be restored without touching the original demo records; it rebuilds only `ENQ-DEMO-FASTENER-01/02`.
+- Supplier names, contacts and prices in demo records are fictional or illustrative; e-mail addresses use the non-deliverable `.test` domain. They are not live market quotations.
+- Demo mode routes e-mail/WhatsApp through a simulation adapter: no provider call, order or payment is made.
 - Audit log retention is unlimited; there is no archival or purge policy configured.
 
 ## Not tested here
