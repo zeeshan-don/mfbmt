@@ -93,7 +93,7 @@ export function WhatsAppConnect({
       } catch {
         return;
       }
-      if (payload?.type === "WA_EMBEDDED_SIGNUP" && payload.event === "FINISH") {
+      if (payload?.type === "WA_EMBEDDED_SIGNUP" && (payload.event === "FINISH" || payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING")) {
         setSignupData(payload.data ?? {});
       }
     }
