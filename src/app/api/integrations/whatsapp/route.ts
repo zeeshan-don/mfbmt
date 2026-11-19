@@ -76,6 +76,7 @@ export async function POST(request: Request) {
       phoneNumberId: body.phoneNumberId ? String(body.phoneNumberId) : null,
       businessId: body.businessId ? String(body.businessId) : null,
       state: String(body.state ?? ""),
+      event: body.event ? String(body.event) : null,
     });
     if (!result.ok) {
       await writeAudit({

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Notice } from "./ui";
 
 /**
@@ -12,6 +12,15 @@ import { Button, Notice } from "./ui";
  */
 type Launch = { appId: string; configId: string; apiVersion: string; state: string };
 
+type SignupSession = {
+  code: string | null;
+  wabaId: string | null;
+  phoneNumberId: string | null;
+  businessId: string | null;
+  event: string | null;
+  sessionInfoVersion: string | null;
+};
+
 type SignupMessage = {
   type?: string;
   event?: string;
@@ -20,6 +29,7 @@ type SignupMessage = {
     waba_id?: string;
     business_id?: string;
   };
+  session_info_version?: string;
 };
 
 declare global {
@@ -57,6 +67,12 @@ function loadSdk(appId: string, apiVersion: string): Promise<void> {
   });
 }
 
+const FINISH_EVENTS = new Set([
+  "FINISH",
+  "FINISH_ONLY_WABA",
+  "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING",
+]);
+
 export function WhatsAppConnect({
   connected,
   businessName,
@@ -74,29 +90,84 @@ export function WhatsAppConnect({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "warn" | "danger"; text: string } | null>(null);
-  const [signupData, setSignupData] = useState<SignupMessage["data"] | null>(null);
+
+  // Single session state using refs to avoid React async state timing issues.
+  // Both the postMessage handler and FB.login callback write to this ref.
+  const sessionRef = useRef<SignupSession>({
+    code: null,
+    wabaId: null,
+    phoneNumberId: null,
+    businessId: null,
+    event: null,
+    sessionInfoVersion: null,
+  });
+
+  // Resolver that fires when both code and wabaId are available.
+  const sessionResolverRef = useRef<((session: SignupSession) => void) | null>(null);
+  const sessionRejecterRef = useRef<((error: Error) => void) | null>(null);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
-      // Log ALL messages for debugging
-      console.log("[WA Signup] message from", event.origin, JSON.stringify(event.data));
-      // Accept messages from any origin for now (debugging)
+      // Validate origin
       try {
         const hostname = new URL(event.origin).hostname;
-        if (!hostname.includes("facebook")) return;
+        if (!hostname.endsWith("facebook.com") && !hostname.endsWith("facebook.net")) return;
       } catch {
         return;
       }
+
       let payload: SignupMessage | null = null;
       try {
         payload = (typeof event.data === "string" ? JSON.parse(event.data) : event.data) as SignupMessage;
       } catch {
         return;
       }
-      if (payload?.type === "WA_EMBEDDED_SIGNUP" && (payload.event === "FINISH" || payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING")) {
-        setSignupData(payload.data ?? {});
+
+      if (payload?.type !== "WA_EMBEDDED_SIGNUP") return;
+
+      const evt = payload.event ?? "";
+
+      // Handle CANCEL
+      if (evt === "CANCEL") {
+        sessionRef.current.event = "CANCEL";
+        if (sessionRejecterRef.current) {
+          sessionRejecterRef.current(new Error("Signup was cancelled by the user."));
+          sessionResolverRef.current = null;
+          sessionRejecterRef.current = null;
+        }
+        return;
+      }
+
+      // Handle ERROR
+      if (evt === "ERROR") {
+        const errDetail = (payload as Record<string, unknown>).error ?? "Unknown error";
+        sessionRef.current.event = "ERROR";
+        if (sessionRejecterRef.current) {
+          sessionRejecterRef.current(new Error(`Meta signup error: ${String(errDetail)}`));
+          sessionResolverRef.current = null;
+          sessionRejecterRef.current = null;
+        }
+        return;
+      }
+
+      // Handle FINISH events
+      if (FINISH_EVENTS.has(evt)) {
+        const data = payload.data ?? {};
+        sessionRef.current.wabaId = data.waba_id ?? sessionRef.current.wabaId;
+        sessionRef.current.phoneNumberId = data.phone_number_id ?? sessionRef.current.phoneNumberId;
+        sessionRef.current.businessId = data.business_id ?? sessionRef.current.businessId;
+        sessionRef.current.event = evt;
+        sessionRef.current.sessionInfoVersion = payload.session_info_version ?? sessionRef.current.sessionInfoVersion;
+
+        // If we already have the code, resolve now
+        if (sessionRef.current.code && sessionRef.current.wabaId && sessionResolverRef.current) {
+          sessionResolverRef.current({ ...sessionRef.current });
+          sessionResolverRef.current = null;
+          sessionRejecterRef.current = null;
+        }
       }
     }
+
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
@@ -113,7 +184,17 @@ export function WhatsAppConnect({
   async function connect() {
     setBusy("connect");
     setMessage(null);
-    setSignupData(null);
+
+    // Reset session
+    sessionRef.current = {
+      code: null,
+      wabaId: null,
+      phoneNumberId: null,
+      businessId: null,
+      event: null,
+      sessionInfoVersion: null,
+    };
+
     try {
       const launch = (await post("initiate", { coexistence: true })) as unknown as Launch & { error?: string };
       if (launch.error) {
@@ -122,38 +203,75 @@ export function WhatsAppConnect({
       }
       await loadSdk(launch.appId, launch.apiVersion);
 
-      const authCode = await new Promise<string | null>((resolve) => {
-        window.FB?.login(
-          (response) => resolve(response.authResponse?.code ?? null),
-          {
-            config_id: launch.configId,
-            response_type: "code",
-            override_default_response_type: true,
-            extras: { setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" },
-          },
-        );
+      // Create a promise that resolves when both code and wabaId are available
+      const sessionPromise = new Promise<SignupSession>((resolve, reject) => {
+        sessionResolverRef.current = resolve;
+        sessionRejecterRef.current = reject;
+
+        // Timeout after 5 minutes
+        setTimeout(() => {
+          if (sessionResolverRef.current) {
+            sessionResolverRef.current = null;
+            sessionRejecterRef.current = null;
+            reject(new Error("Signup timed out. Please try again."));
+          }
+        }, 5 * 60 * 1000);
       });
 
-      if (!authCode) {
+      window.FB?.login(
+        (response) => {
+          const code = response.authResponse?.code ?? null;
+          if (!code) {
+            if (sessionRejecterRef.current) {
+              sessionRejecterRef.current(new Error("The Meta signup window was closed before completing. Nothing was saved."));
+              sessionResolverRef.current = null;
+              sessionRejecterRef.current = null;
+            }
+            return;
+          }
+          sessionRef.current.code = code;
+
+          // Resolve only when both code and wabaId are available
+          if (sessionRef.current.code && sessionRef.current.wabaId && sessionResolverRef.current) {
+            sessionResolverRef.current({ ...sessionRef.current });
+            sessionResolverRef.current = null;
+            sessionRejecterRef.current = null;
+          }
+        },
+        {
+          config_id: launch.configId,
+          response_type: "code",
+          override_default_response_type: true,
+          extras: { setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" },
+        },
+      );
+
+      // Wait for both code and wabaId
+      const session = await sessionPromise;
+
+      if (session.event === "CANCEL") {
         setMessage({ tone: "warn", text: "The Meta signup window was closed before completing. Nothing was saved." });
         return;
       }
 
-      // The asset ids normally arrive in the WA_EMBEDDED_SIGNUP message event.
-      let data = signupData;
-      if (!data?.waba_id) {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        data = signupData;
+      if (!session.code) {
+        setMessage({ tone: "warn", text: "The Meta signup window was closed before completing. Nothing was saved." });
+        return;
       }
-      console.log("[WA Signup] final data:", JSON.stringify(data));
+
+      if (!session.wabaId) {
+        setMessage({ tone: "danger", text: "Meta did not return a WhatsApp Business Account ID. Please try again." });
+        return;
+      }
 
       const result = await post("complete", {
-        code: authCode,
+        code: session.code,
         state: launch.state,
-        wabaId: data?.waba_id ?? "",
-        phoneNumberId: data?.phone_number_id ?? null,
-        businessId: data?.business_id ?? null,
-        coexistence: !data?.phone_number_id,
+        wabaId: session.wabaId,
+        phoneNumberId: session.phoneNumberId,
+        businessId: session.businessId,
+        event: session.event,
+        coexistence: !session.phoneNumberId,
       });
 
       if (result.error) {
@@ -166,13 +284,15 @@ export function WhatsAppConnect({
         text:
           notes.length > 0
             ? `WhatsApp linked, but: ${notes.join(" ")}`
-            : "WhatsApp connected. Run “Test connection” to confirm the number.",
+            : "WhatsApp connected. Run \"Test connection\" to confirm the number.",
       });
       window.location.href = "/settings?wa=connected#whatsapp";
     } catch (error) {
       setMessage({ tone: "danger", text: error instanceof Error ? error.message : "Signup failed." });
     } finally {
       setBusy(null);
+      sessionResolverRef.current = null;
+      sessionRejecterRef.current = null;
     }
   }
 

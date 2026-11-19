@@ -241,6 +241,7 @@ export type CompleteSignupInput = {
   phoneNumberId?: string | null;
   businessId?: string | null;
   state: string;
+  event?: string | null;
 };
 
 export type CompleteSignupResult =
@@ -256,50 +257,36 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
   const state = verifySignupState(input.state);
   if (!state.ok) return { ok: false, error: state.error, code: "invalid_state" };
   if (!input.code) return { ok: false, error: "Meta did not return an authorisation code.", code: "missing_code" };
-  // WABA ID may be missing in coexistence flows. We'll resolve it after token exchange if needed.
+  if (!input.wabaId) return { ok: false, error: "Meta did not return a WhatsApp Business Account ID.", code: "missing_waba" };
+
   let resolvedWabaId = input.wabaId;
 
-  const coexistence = state.coexistence || !input.phoneNumberId;
+  console.log("[whatsapp] completeSignup started", {
+    event: input.event ?? "unknown",
+    hasCode: Boolean(input.code),
+    hasWabaId: Boolean(input.wabaId),
+    hasPhoneId: Boolean(input.phoneNumberId),
+    hasBusinessId: Boolean(input.businessId),
+  });
+
+  const isCoexistenceEvent = input.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING";
+  const coexistence = state.coexistence || isCoexistenceEvent || !input.phoneNumberId;
+
+  console.log("[whatsapp] coexistence mode:", coexistence, { stateCoexistence: state.coexistence, isCoexistenceEvent, hasPhoneId: Boolean(input.phoneNumberId) });
   const notes: string[] = [];
 
   const exchanged = await exchangeCodeForToken(input.code);
-  if (!exchanged.ok) return { ok: false, error: exchanged.error, code: "token_exchange_failed" };
+  if (!exchanged.ok) {
+    console.error("[whatsapp] token exchange failed", { error: exchanged.error });
+    return { ok: false, error: exchanged.error, code: "token_exchange_failed" };
+  }
+  console.log("[whatsapp] token exchanged successfully");
 
   const extended = await extendToken(exchanged.accessToken);
   const accessToken = extended.accessToken;
 
-  // If WABA ID wasn't returned by Meta's message event, try to resolve it
-  // from the token. This handles coexistence flows where the WABA ID arrives
-  // differently or not at all.
   if (!resolvedWabaId) {
-    // Try using business_id if available
-    if (input.businessId) {
-      const bizResult = await graphJson<{ owned_whatsapp_business_accounts?: { data?: Array<{ id?: string }> } }>(
-        `${graphUrl(input.businessId)}?fields=owned_whatsapp_business_accounts{id}&access_token=${encodeURIComponent(accessToken)}`,
-      );
-      if (bizResult.ok) {
-        const wabas = bizResult.data.owned_whatsapp_business_accounts?.data ?? [];
-        if (wabas.length > 0 && wabas[0].id) {
-          resolvedWabaId = wabas[0].id;
-        }
-      }
-    }
-    // Fallback: try /me/whatsapp_business_accounts
-    if (!resolvedWabaId) {
-      const meResult = await graphJson<{ whatsapp_business_accounts?: { data?: Array<{ id?: string }> } }>(
-        `${graphUrl("me")}?fields=whatsapp_business_accounts{id}&access_token=${encodeURIComponent(accessToken)}`,
-      );
-      if (meResult.ok) {
-        const wabas = meResult.data.whatsapp_business_accounts?.data ?? [];
-        if (wabas.length > 0 && wabas[0].id) {
-          resolvedWabaId = wabas[0].id;
-        }
-      }
-    }
-  }
-
-  if (!resolvedWabaId) {
-    return { ok: false, error: "Meta did not return a WhatsApp Business Account. Check that your Meta app has WhatsApp Business permissions.", code: "missing_waba" };
+    return { ok: false, error: "Meta did not return a WhatsApp Business Account.", code: "missing_waba" };
   }
 
   const profile = await fetchBusinessProfile(accessToken);
@@ -336,6 +323,7 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
 
   const wabaSubscribed = await subscribeWabaWebhook(resolvedWabaId, accessToken);
   const phoneSubscribed = await subscribePhoneWebhook(phoneNumberId, accessToken);
+  console.log("[whatsapp] webhook subscription", { wabaSubscribed, phoneSubscribed });
   if (!wabaSubscribed || !phoneSubscribed) {
     notes.push(
       "Inbound webhooks could not be fully subscribed. Messages will not arrive until the subscription succeeds — use “Test connection” to retry.",
