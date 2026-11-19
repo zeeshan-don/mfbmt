@@ -61,6 +61,24 @@ export async function POST(request: Request) {
   const payloadHash = sha256(raw);
   const results: Array<{ id: string; outcome: string }> = [];
 
+  // Log coexistence-specific webhook events for debugging and audit.
+  const rawPayload = payload as { entry?: Array<{ changes?: Array<{ field?: string }> }> };
+  for (const entry of rawPayload.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      const field = change.field ?? "unknown";
+      if (field !== "messages" && field !== "message_template_status_update") {
+        console.log("[whatsapp] coexistence webhook field:", field);
+        await writeAudit({
+          action: `whatsapp.webhook_${field}`,
+          entityType: "Integration",
+          entityId: "WHATSAPP",
+          actorLabel: "system",
+          meta: { field },
+        }).catch(() => undefined);
+      }
+    }
+  }
+
   for (const status of parsed.statuses) {
     try {
       await db.webhookEvent.create({
