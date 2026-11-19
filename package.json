@@ -12,6 +12,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
+    "db:verify:staging": "tsx src/scripts/verify-staging-db.ts",
+    "db:deploy:staging": "tsx src/scripts/verify-staging-db.ts && prisma migrate deploy",
     "db:seed": "tsx src/scripts/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "provision:owner": "tsx src/scripts/provision-owner.ts",

@@ -1,5 +1,6 @@
 import "./load-env";
 import { z } from "zod";
+import { stagingDatabaseProblem } from "./db-target";
 
 /**
  * Central environment access. Server-only. Values are validated once; optional
@@ -177,6 +178,34 @@ export function productionConfigProblems(input: typeof env = env): ConfigProblem
     }
   }
   return problems;
+}
+
+/**
+ * Preview is a staging environment, never a second production runtime. Refuse
+ * to start a Preview deployment unless DATABASE_URL is the explicitly
+ * configured staging branch and not any known production endpoint.
+ */
+export function previewConfigProblems(input: typeof env = env): ConfigProblem[] {
+  if (process.env.VERCEL_ENV !== "preview") return [];
+  const problem = stagingDatabaseProblem(input.DATABASE_URL);
+  return problem
+    ? [
+        {
+          variable: "DATABASE_URL",
+          problem: `${problem} Preview deployments must use the isolated staging Neon branch.`,
+        },
+      ]
+    : [];
+}
+
+export function assertRuntimeConfig(): void {
+  const problems = [...productionConfigProblems(), ...previewConfigProblems()];
+  if (problems.length === 0) return;
+  throw new Error(
+    `Refusing to start with an unsafe configuration:\n${problems
+      .map((p) => `  - ${p.variable} ${p.problem}`)
+      .join("\n")}`,
+  );
 }
 
 export function assertProductionConfig(): void {
