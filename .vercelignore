@@ -1,0 +1,4 @@
+# Local environment files contain secrets. Never upload them to a Vercel build.
+# Vercel configuration must come from project environment variables.
+.env
+.env.*

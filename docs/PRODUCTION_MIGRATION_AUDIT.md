@@ -235,6 +235,14 @@ Preview also needs its own runtime configuration to start and to exercise login:
 
 Do not change any Production variable.
 
+### Vercel CLI upload exclusion
+
+`vercel deploy` does not honor `.gitignore` for arbitrary files. The first Preview created during this audit loaded the local `.env` in the remote build (Next.js reported `Environments: .env`), so that deployment contained the local Production database URL and other local secrets. The guard refused to start it, and the deployment was removed immediately.
+
+`.vercelignore` now excludes `.env` and `.env.*`. Never run a Vercel CLI deployment without this file, and verify the build log does **not** contain `Environments: .env`.
+
+Treat the credentials that were present in `.env` as exposed to the Vercel build source, including the Production database URL, `AUTH_SECRET`, `CREDENTIAL_ENCRYPTION_KEY`, provider API keys, and webhook secrets. Rotating Production credentials is a separate Production change and was not performed here. Rotate them under explicit authorization; changing `CREDENTIAL_ENCRYPTION_KEY` requires re-encrypting stored integration tokens.
+
 ### Vercel Neon integration warning
 
 The Neon marketplace resource `mfbmt` (`store_yJMj7iUWcX2X4kOs`) is still connected to the project for both Preview and Production. Removing all Preview database variables stops the current Preview runtime from using Production, but the integration may re-inject `DATABASE_URL` and `POSTGRES_*` on a later deployment.
