@@ -78,7 +78,17 @@ export function WhatsAppConnect({
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
-      if (!/facebook\.com$/.test(new URL(event.origin).hostname) && event.origin !== "https://www.facebook.com") return;
+      // Log all messages from Facebook for debugging
+      if (event.origin.includes("facebook")) {
+        console.log("[WA Signup] message from", event.origin, event.data);
+      }
+      // Accept messages from any facebook.com origin
+      try {
+        const hostname = new URL(event.origin).hostname;
+        if (!hostname.endsWith("facebook.com") && !hostname.endsWith("facebook.net")) return;
+      } catch {
+        return;
+      }
       let payload: SignupMessage | null = null;
       try {
         payload = (typeof event.data === "string" ? JSON.parse(event.data) : event.data) as SignupMessage;
@@ -134,7 +144,7 @@ export function WhatsAppConnect({
       // The asset ids normally arrive in the WA_EMBEDDED_SIGNUP message event.
       let data = signupData;
       if (!data?.waba_id) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, 3000));
         data = signupData;
       }
 
