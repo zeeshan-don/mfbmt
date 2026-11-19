@@ -107,7 +107,7 @@ export function WhatsAppConnect({
     setMessage(null);
     setSignupData(null);
     try {
-      const launch = (await post("initiate")) as unknown as Launch & { error?: string };
+      const launch = (await post("initiate", { coexistence: true })) as unknown as Launch & { error?: string };
       if (launch.error) {
         setMessage({ tone: "danger", text: launch.error });
         return;
@@ -121,7 +121,7 @@ export function WhatsAppConnect({
             config_id: launch.configId,
             response_type: "code",
             override_default_response_type: true,
-            extras: { setup: {}, featureType: "", sessionInfoVersion: "3" },
+            extras: { setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" },
           },
         );
       });
