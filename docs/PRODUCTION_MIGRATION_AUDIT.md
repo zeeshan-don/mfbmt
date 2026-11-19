@@ -7,8 +7,9 @@
 - `vercel --prod` was **not** run.
 - No database reset, deletion, or data overwrite was performed.
 - No migration history was modified.
-- The audit itself was read-only. A later, separate Preview-isolation change removed only Preview-scoped database environment variables; no Production variable, database row, migration or deployment was changed.
-- This report stops after Preview preparation. Production deployment and the Production migration still require explicit authorization.
+- The audit itself was read-only. A later, separate Preview-isolation change removed only Preview-scoped database environment variables; no Production variable, database row, migration or Production deployment was changed.
+- Preview-only deployments were created during the isolation work; none used `vercel --prod`, and no Production deployment was created. The first deployment accidentally included the local `.env`; it and a later deployment that restored its build cache were removed. The remaining clean Preview is intentionally fail-closed.
+- This report stops after Preview deployment preparation. Production deployment and the Production migration still require explicit authorization.
 
 ## 1. Target database and environment
 
@@ -18,11 +19,11 @@
 | Host | `ep-royal-recipe-bag133h2-pooler.c-8.eu-central-1.aws.neon.tech` |
 | Database | `neondb` |
 | Schema | `public` |
-| Vercel environments using `DATABASE_URL` | **Production only** as of the 2026-11-19 Preview isolation change. All Preview database variables were removed. |
+| Vercel-stored `DATABASE_URL` | **Production only** as of the 2026-11-19 Preview isolation change. All Preview-scoped database variables were removed. The Neon integration still injects a Production `DATABASE_URL` into Preview at runtime; the fail-closed guard refuses it. |
 | Neon branch | Not exposed by the connection string. Confirm in the Neon console; do **not** assume the branch is named `main` or `production`. |
 | Other Vercel DB env vars | `DATABASE_URL_UNPOOLED`, `POSTGRES_PRISMA_URL`, `POSTGRES_URL`, `POSTGRES_URL_NON_POOLING`, `PGHOST`, `PGHOST_UNPOOLED`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DATABASE`, `NEON_PROJECT_ID`, `NEON_AUTH_BASE_URL` — Production scope only after the isolation change |
 
-Historical observation: Preview and Production originally shared the same Neon database endpoint. That is no longer true for Preview: every database-related Preview variable was removed and Preview is now fail-closed until the staging branch is configured. Production was not changed.
+Historical observation: Preview and Production originally shared the same Neon database endpoint. Every database-related Preview variable stored in Vercel was removed, but the Neon integration still injects the Production endpoint into Preview at runtime. The fail-closed guard prevents any connection, so Preview is non-functional until the integration's Preview binding is disabled or pointed at the staging branch. Production was not changed.
 
 ## 2. Migration status
 
@@ -87,7 +88,7 @@ The migration is **not backward-compatible** with the currently deployed product
 - The currently deployed code expects the old schema: no `organizationId` columns and single-column primary keys on `NumberSequence` and `AppSetting`.
 - The new application code expects the migrated schema: `organizationId` columns, composite primary keys, and organization-scoped unique indexes.
 - Before Preview isolation, Preview returned HTTP 500 because the new code was running against the old schema.
-- Preview now has no database configuration and is intentionally fail-closed until `tenancy-staging-20261119` is supplied. This does not affect Production.
+- Preview still receives the Production database URL from the Neon integration at runtime, but the fail-closed guard refuses to start rather than connect. Preview remains non-functional until the integration's Preview binding is removed or pointed at `tenancy-staging-20261119`. This does not affect Production.
 - Therefore, code deployment and database migration must be coordinated in a maintenance window. Do not apply the migration alone while old code is serving traffic, and do not deploy new code alone against the old database.
 
 ## 6. Current production data profile (read-only audit)
@@ -159,7 +160,7 @@ Preview is no longer allowed to share the production database.
 | `STAGING_DATABASE_HOST` | New staging guard | Non-secret hostname of the isolated staging branch. Required for Preview startup and staging migrations. |
 | `PRODUCTION_DATABASE_HOSTS` | New staging guard | Optional comma-separated override. Defaults to the known production pooled **and** unpooled Neon hosts. |
 
-Verification: `vercel env ls` now shows **no** `DATABASE_URL`, `POSTGRES_*`, `PG*` or `NEON_*` variables in Preview. Production still has its original `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `POSTGRES_PRISMA_URL`, `PGHOST`, `PGHOST_UNPOOLED`, `NEON_PROJECT_ID` and related values.
+Verification: `vercel env ls preview` shows **no** `DATABASE_URL`, `POSTGRES_*`, `PG*` or `NEON_*` variables. However, a clean `--force` Preview deployment still received the Production `DATABASE_URL` at runtime from the Neon marketplace integration, proving that `vercel env ls` does not list integration-injected variables. The guard rejected the host. Production still has its original `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `POSTGRES_PRISMA_URL`, `PGHOST`, `PGHOST_UNPOOLED`, `NEON_PROJECT_ID` and related values.
 
 ### Automatic migrations: none
 
@@ -208,7 +209,7 @@ Limitation: a raw `npx prisma migrate deploy` invocation bypasses the npm guard.
 
 ### Preview environment configuration
 
-Before staging is connected, Preview has no database configuration and will refuse to start. This is intentional fail-closed behaviour.
+Before staging is connected, Preview receives a Production `DATABASE_URL` from the Neon integration and refuses to start. This is intentional fail-closed behaviour. Do not weaken the guard to make this deployment usable; remove the integration's Preview binding instead.
 
 Once the staging branch exists, add **Preview-only** values:
 
@@ -243,11 +244,23 @@ Do not change any Production variable.
 
 Treat the credentials that were present in `.env` as exposed to the Vercel build source, including the Production database URL, `AUTH_SECRET`, `CREDENTIAL_ENCRYPTION_KEY`, provider API keys, and webhook secrets. Rotating Production credentials is a separate Production change and was not performed here. Rotate them under explicit authorization; changing `CREDENTIAL_ENCRYPTION_KEY` requires re-encrypting stored integration tokens.
 
+### Preview deployment result (2026-11-19)
+
+Three Preview deployments were created; none was a Production deployment.
+
+| Deployment | Build source | Result | Action |
+|---|---|---|---|
+| `dpl_7btqUEaKrRWktq2h7rdwWb5Q7zXc` | 515 files; loaded local `.env` | Guard refused Production database; local secrets reached the build source | Removed |
+| `dpl_FECqA6j1PhSMvPCkrA2jWCe56Qnh` | 510 files; no `.env`, but restored build cache from the exposed deployment | Guard refused Production database; contaminated cache | Removed |
+| `dpl_2WA6buMvjbRDzJSDm8cHL3MXz3q7` | 510 files; no `.env`; `--force` skipped build cache | Build log has no `Environments: .env`; runtime guard still rejects the Production host injected by Neon | Remains live, intentionally fail-closed |
+
+Clean Preview URL: `https://mfbmt-93bgnm0n4-zeesh.vercel.app` (protected by Vercel Authentication).
+
 ### Vercel Neon integration warning
 
-The Neon marketplace resource `mfbmt` (`store_yJMj7iUWcX2X4kOs`) is still connected to the project for both Preview and Production. Removing all Preview database variables stops the current Preview runtime from using Production, but the integration may re-inject `DATABASE_URL` and `POSTGRES_*` on a later deployment.
+The Neon marketplace resource `mfbmt` (`store_yJMj7iUWcX2X4kOs`) is still connected to the project for both Preview and Production. **Confirmed:** even after all Preview database variables were removed and a `--force` deployment was built with no `.env` and no build cache, the Preview runtime still received the Production `DATABASE_URL` from this integration. The guard refused to start. `vercel env ls preview` does not show integration-injected variables, so its output alone is not proof that Preview is isolated.
 
-Do not run `vercel integration resource disconnect mfbmt` — it disconnects the whole project and would affect Production. In the Vercel dashboard, open the Neon integration settings for this project and either disable its Preview environment or bind Preview to `tenancy-staging-20261119`. Leave the Production binding untouched. After any Neon integration change, re-run `vercel env ls` and confirm Preview still has no production database host.
+Do not run `vercel integration resource disconnect mfbmt` — it disconnects the whole project and would affect Production. In the Vercel dashboard, open the Neon integration settings for this project and either disable its Preview environment or bind Preview to `tenancy-staging-20261119`. Leave the Production binding untouched. After any Neon integration change, redeploy a clean Preview and check `/api/health` for the absence of the Production host, not just `vercel env ls`.
 
 ## 8b. Exact Neon branch instructions
 
@@ -345,7 +358,7 @@ Use the staging branch URL and its exact host. Then redeploy a Preview (never `v
 
 ## 8c. Staging verification status
 
-**Blocked: no staging connection was supplied.** No Neon API key or console session is available, `neonctl` is not installed, and no staging branch exists yet. Therefore:
+**Blocked: no staging connection was supplied.** No Neon API key or console session is available, `neonctl` is not installed, and no staging branch exists yet. The clean Preview deployment is live but fail-closed, so no application verification is possible. Therefore:
 
 - No branch was created.
 - No migration was applied to staging.
@@ -384,8 +397,8 @@ Do not claim these tests passed until they are actually run against the staging 
 - No verified production backup; the backup branch is not created yet.
 - No staging branch or staging migration yet; Neon credentials are unavailable.
 - No post-migration row-count comparison exists.
-- The Vercel Neon integration is still project-wide and may re-inject Preview database variables; this must be checked in the Vercel dashboard.
-- Preview has no database configuration until the staging branch is supplied, so Preview is intentionally non-functional.
+- The Vercel Neon integration is still project-wide and injects the Production `DATABASE_URL` into Preview; the Preview binding must be disabled in the Vercel dashboard.
+- Preview is intentionally non-functional: the guard refuses the injected Production database host until the staging branch is supplied.
 - Migration and code deployment must be coordinated.
 - Live provider credentials are not configured, and copied integration tokens may not decrypt under a new Preview encryption key.
 - OGS extraction-screen wiring and automatic supplier email reply matching remain unimplemented.
@@ -397,9 +410,10 @@ Do not apply the migration or deploy production yet.
 
 Completed for Preview:
 
-1. All Preview database variables removed; Production variables unchanged.
+1. All Preview-stored database variables removed; Production variables unchanged.
 2. No automatic migration runs on build, install, start or deploy.
 3. A fail-closed staging target guard and Preview runtime check were added.
+4. A clean Preview was deployed with `.vercelignore` excluding local env files. It intentionally fails closed because the Neon integration still injects the Production database host.
 
 Still required before Production migration:
 
