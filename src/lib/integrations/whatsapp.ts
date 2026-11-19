@@ -256,7 +256,8 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
   const state = verifySignupState(input.state);
   if (!state.ok) return { ok: false, error: state.error, code: "invalid_state" };
   if (!input.code) return { ok: false, error: "Meta did not return an authorisation code.", code: "missing_code" };
-  if (!input.wabaId) return { ok: false, error: "Meta did not return a WhatsApp Business Account.", code: "missing_waba" };
+  // WABA ID may be missing in coexistence flows. We'll resolve it after token exchange if needed.
+  let resolvedWabaId = input.wabaId;
 
   const coexistence = state.coexistence || !input.phoneNumberId;
   const notes: string[] = [];
@@ -267,12 +268,46 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
   const extended = await extendToken(exchanged.accessToken);
   const accessToken = extended.accessToken;
 
+  // If WABA ID wasn't returned by Meta's message event, try to resolve it
+  // from the token. This handles coexistence flows where the WABA ID arrives
+  // differently or not at all.
+  if (!resolvedWabaId) {
+    // Try using business_id if available
+    if (input.businessId) {
+      const bizResult = await graphJson<{ owned_whatsapp_business_accounts?: { data?: Array<{ id?: string }> } }>(
+        `${graphUrl(input.businessId)}?fields=owned_whatsapp_business_accounts{id}&access_token=${encodeURIComponent(accessToken)}`,
+      );
+      if (bizResult.ok) {
+        const wabas = bizResult.data.owned_whatsapp_business_accounts?.data ?? [];
+        if (wabas.length > 0 && wabas[0].id) {
+          resolvedWabaId = wabas[0].id;
+        }
+      }
+    }
+    // Fallback: try /me/whatsapp_business_accounts
+    if (!resolvedWabaId) {
+      const meResult = await graphJson<{ whatsapp_business_accounts?: { data?: Array<{ id?: string }> } }>(
+        `${graphUrl("me")}?fields=whatsapp_business_accounts{id}&access_token=${encodeURIComponent(accessToken)}`,
+      );
+      if (meResult.ok) {
+        const wabas = meResult.data.whatsapp_business_accounts?.data ?? [];
+        if (wabas.length > 0 && wabas[0].id) {
+          resolvedWabaId = wabas[0].id;
+        }
+      }
+    }
+  }
+
+  if (!resolvedWabaId) {
+    return { ok: false, error: "Meta did not return a WhatsApp Business Account. Check that your Meta app has WhatsApp Business permissions.", code: "missing_waba" };
+  }
+
   const profile = await fetchBusinessProfile(accessToken);
   let phoneInfo = null;
   let phoneNumberId = input.phoneNumberId ?? null;
 
   if (coexistence && !phoneNumberId) {
-    const resolved = await resolveWabaPrimaryPhone(input.wabaId, accessToken);
+    const resolved = await resolveWabaPrimaryPhone(resolvedWabaId, accessToken);
     if (!resolved?.phoneNumberId) {
       return {
         ok: false,
@@ -299,7 +334,7 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
     return { ok: false, code: "missing_phone", error: "No WhatsApp phone number was returned by Meta." };
   }
 
-  const wabaSubscribed = await subscribeWabaWebhook(input.wabaId, accessToken);
+  const wabaSubscribed = await subscribeWabaWebhook(resolvedWabaId, accessToken);
   const phoneSubscribed = await subscribePhoneWebhook(phoneNumberId, accessToken);
   if (!wabaSubscribed || !phoneSubscribed) {
     notes.push(
@@ -334,7 +369,7 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
     markSuccess: wabaSubscribed && phoneSubscribed,
     secrets: {
       ACCESS_TOKEN: accessToken,
-      WABA_ID: input.wabaId,
+      WABA_ID: resolvedWabaId,
       PHONE_NUMBER_ID: phoneNumberId,
       REGISTER_PIN: pin ?? "",
     },
