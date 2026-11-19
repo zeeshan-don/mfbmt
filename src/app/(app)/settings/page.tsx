@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { getCurrentOrganization } from "@/lib/organization";
 import { requireOwner } from "@/lib/auth";
 import { env, integrationEnv, whatsAppSignupConfig, MAX_UPLOAD_MB } from "@/lib/env";
 import { aiStatus } from "@/lib/ai/provider";
@@ -59,16 +60,16 @@ export default async function SettingsPage({
   const [integrations, org, exclusions, rules, users, gmail, microsoft, whatsapp, storage, aiIntegration, webIntegration] =
     await Promise.all([
       db.integration.findMany(),
-      db.organization.findFirst(),
+      getCurrentOrganization(),
       db.excludedContact.findMany({ orderBy: { createdAt: "desc" } }),
       db.pricingRule.findMany({ orderBy: [{ scope: "asc" }, { priority: "asc" }] }),
       db.user.findMany({ orderBy: { createdAt: "asc" } }),
-      db.integration.findUnique({ where: { key: "GMAIL" } }),
-      db.integration.findUnique({ where: { key: "MICROSOFT365" } }),
+      db.integration.findFirst({ where: { key: "GMAIL" } }),
+      db.integration.findFirst({ where: { key: "MICROSOFT365" } }),
       getWhatsAppConnection(),
-      db.integration.findUnique({ where: { key: "STORAGE" } }),
-      db.integration.findUnique({ where: { key: "AI_PROVIDER" } }),
-      db.integration.findUnique({ where: { key: "WEB_SEARCH" } }),
+      db.integration.findFirst({ where: { key: "STORAGE" } }),
+      db.integration.findFirst({ where: { key: "AI_PROVIDER" } }),
+      db.integration.findFirst({ where: { key: "WEB_SEARCH" } }),
     ]);
 
   const ai = aiStatus();
@@ -202,8 +203,8 @@ export default async function SettingsPage({
       <section id="whatsapp" className="space-y-3">
         <h2 className="text-sm font-semibold text-ink">WhatsApp Business</h2>
         <p className="text-xs text-muted">
-          Connect MFBMT&apos;s own WhatsApp Business number with Meta&apos;s Embedded Signup. Credentials are stored encrypted for
-          this account only.
+          Connect this company&apos;s own WhatsApp Business number with Meta&apos;s Embedded Signup. Credentials are stored
+          encrypted for this company only.
         </p>
         <Card>
           <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
@@ -221,8 +222,8 @@ export default async function SettingsPage({
           {!waSignup.configured ? (
             <div className="px-4 py-3">
               <Notice tone="warn" title="Meta app setup is incomplete">
-                The platform administrator must set {waSignup.missing.join(", ")} before WhatsApp can be connected. Everything else
-                in MFBMT keeps working without it.
+                The platform administrator must set {waSignup.missing.join(", ")} before WhatsApp can be connected. The rest of
+                the workspace keeps working without it.
               </Notice>
             </div>
           ) : (
@@ -436,7 +437,7 @@ export default async function SettingsPage({
             </label>
             <label className="block text-xs text-soft">
               TRN
-              <input name="trn" defaultValue={org?.trn ?? ""} className={`${inputClass} mt-1`} />
+              <input name="taxRegistrationNumber" defaultValue={org?.taxRegistrationNumber ?? ""} className={`${inputClass} mt-1`} />
             </label>
             <label className="block text-xs text-soft">
               Email
@@ -466,7 +467,7 @@ export default async function SettingsPage({
               Inventory policy
               <select name="inventoryMode" defaultValue={org?.inventoryMode ?? "STOCK_FIRST"} className={`${inputClass} mt-1`}>
                 <option value="STOCK_FIRST">Check stock first, then source the shortage</option>
-                <option value="SOURCING_FIRST">Sourcing-first (MFBMT mostly outsources goods)</option>
+                <option value="SOURCING_FIRST">Sourcing-first (the company mostly outsources goods)</option>
               </select>
             </label>
             <label className="flex items-center gap-2 pt-5 text-xs text-soft">

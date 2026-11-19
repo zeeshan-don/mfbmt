@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { getCurrentOrganization } from "../organization";
 import { stringifyJson } from "../json";
 import { getRate } from "./fx";
 import { computeLandedCost } from "./landed";
@@ -28,7 +29,7 @@ export async function recomputeOffersForItem(enquiryItemId: string) {
   });
   if (!item) throw new Error("Enquiry item not found");
 
-  const org = await db.organization.findFirst();
+  const org = await getCurrentOrganization();
   const targetCurrency = (item.enquiry.currency || org?.defaultCurrency || "AED").toUpperCase();
   const requiredQuantity = item.quantityToSource > 0 ? item.quantityToSource : item.quantity;
 

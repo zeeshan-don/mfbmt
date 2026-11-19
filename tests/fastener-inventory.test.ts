@@ -22,7 +22,7 @@ async function makeProduct(description: string, onHand: number) {
     },
   });
   const location = await db.inventoryLocation.upsert({
-    where: { code: "FST-TEST" },
+    where: { organizationId_code: { organizationId: "org_mfbmt", code: "FST-TEST" } },
     update: {},
     create: { code: "FST-TEST", name: "Fastener test store" },
   });

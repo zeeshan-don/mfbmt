@@ -1,12 +1,18 @@
 import { db } from "../db";
+import { rawDb } from "../db-base";
 import { stringifyJson } from "../json";
 import { env } from "../env";
 import { JOB_STATUS, JOB_TYPES } from "../constants";
+import { getTenantId, requireTenantId } from "../tenant";
 
 export type JobType = (typeof JOB_TYPES)[keyof typeof JOB_TYPES];
 
 /**
  * Durable job queue with leases.
+ *
+ * Every job belongs to an organization. The worker claims work across tenants
+ * through the unscoped client, then executes it inside the owning tenant's
+ * context so every query, integration lookup and audit entry is scoped.
  *
  * A job is claimed atomically (SELECT … FOR UPDATE SKIP LOCKED), receives a
  * lease, and must renew that lease while it runs. Every terminal transition is
@@ -23,11 +29,14 @@ export async function enqueueJob(input: {
   runAfter?: Date;
   maxAttempts?: number;
 }): Promise<{ id: string; created: boolean }> {
-  // ON CONFLICT DO NOTHING on the idempotency key is the only duplicate path.
-  // Any connection/write failure still throws instead of looking like an existing job.
+  const organizationId = await requireTenantId();
+  // ON CONFLICT DO NOTHING on (organizationId, idempotencyKey) is the only
+  // duplicate path. Any connection/write failure still throws instead of
+  // looking like an existing job.
   const inserted = await db.backgroundJob.createMany({
     data: [
       {
+        organizationId,
         type: input.type,
         payloadJson: stringifyJson(input.payload),
         idempotencyKey: input.idempotencyKey,
@@ -37,7 +46,9 @@ export async function enqueueJob(input: {
     ],
     skipDuplicates: true,
   });
-  const job = await db.backgroundJob.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+  const job = await db.backgroundJob.findUnique({
+    where: { organizationId_idempotencyKey: { organizationId, idempotencyKey: input.idempotencyKey } },
+  });
   if (!job) throw new Error("Could not enqueue the background job.");
   return { id: job.id, created: inserted.count > 0 };
 }
@@ -45,9 +56,10 @@ export async function enqueueJob(input: {
 /**
  * Recovers jobs whose worker died. The per-job `maxAttempts` is authoritative;
  * there is no second hard-coded retry count. Exhausted jobs are dead-lettered.
+ * This is a system-wide sweep, so it intentionally uses the unscoped client.
  */
 export async function releaseExpiredJobs(): Promise<{ requeued: number; failed: number }> {
-  const requeued = await db.$executeRaw`
+  const requeued = await rawDb.$executeRaw`
     UPDATE "BackgroundJob"
        SET status = 'QUEUED',
            "lockedAt" = NULL,
@@ -59,7 +71,7 @@ export async function releaseExpiredJobs(): Promise<{ requeued: number; failed: 
        AND attempts < "maxAttempts"
        AND COALESCE("leaseExpiresAt", "lockedAt" + make_interval(secs => ${Math.round(LEASE_MS() / 1000)})) < now()
   `;
-  const failed = await db.$executeRaw`
+  const failed = await rawDb.$executeRaw`
     UPDATE "BackgroundJob"
        SET status = 'FAILED',
            "deadLetteredAt" = now(),
@@ -78,6 +90,7 @@ export async function releaseExpiredJobs(): Promise<{ requeued: number; failed: 
 
 export type ClaimedJob = {
   id: string;
+  organizationId: string;
   type: string;
   payloadJson: string;
   attempts: number;
@@ -85,10 +98,10 @@ export type ClaimedJob = {
   lockedBy: string;
 };
 
-/** Atomically claims the next due job and gives this worker the lease. */
+/** Atomically claims the next due job across all organizations. */
 export async function claimJob(workerId: string): Promise<ClaimedJob | null> {
   const leaseSeconds = Math.round(LEASE_MS() / 1000);
-  const rows = await db.$queryRaw<Array<{ id: string }>>`
+  const rows = await rawDb.$queryRaw<Array<{ id: string }>>`
     UPDATE "BackgroundJob"
        SET status = 'PROCESSING',
            "lockedBy" = ${workerId},
@@ -107,10 +120,11 @@ export async function claimJob(workerId: string): Promise<ClaimedJob | null> {
   `;
   const id = rows[0]?.id;
   if (!id) return null;
-  const job = await db.backgroundJob.findUnique({ where: { id } });
+  const job = await rawDb.backgroundJob.findUnique({ where: { id } });
   if (!job) return null;
   return {
     id: job.id,
+    organizationId: job.organizationId,
     type: job.type,
     payloadJson: job.payloadJson,
     attempts: job.attempts,
@@ -122,7 +136,7 @@ export async function claimJob(workerId: string): Promise<ClaimedJob | null> {
 /** Extends the lease. Returns false when this worker no longer owns the job. */
 export async function heartbeatJob(jobId: string, workerId: string): Promise<boolean> {
   const leaseSeconds = Math.round(LEASE_MS() / 1000);
-  const result = await db.$executeRaw`
+  const result = await rawDb.$executeRaw`
     UPDATE "BackgroundJob"
        SET "heartbeatAt" = now(),
            "leaseExpiresAt" = now() + make_interval(secs => ${leaseSeconds})
@@ -136,7 +150,7 @@ export async function heartbeatJob(jobId: string, workerId: string): Promise<boo
 
 /** Marks the job complete only if this worker still owns an unexpired lease. */
 export async function completeJob(jobId: string, workerId: string, progress?: string): Promise<boolean> {
-  const result = await db.backgroundJob.updateMany({
+  const result = await rawDb.backgroundJob.updateMany({
     where: {
       id: jobId,
       status: JOB_STATUS.PROCESSING,
@@ -162,7 +176,7 @@ export async function completeJob(jobId: string, workerId: string, progress?: st
  * nothing, so the new owner's state is preserved.
  */
 export async function failJob(jobId: string, workerId: string, error: string): Promise<"retry" | "failed" | "lost"> {
-  const rows = await db.$queryRaw<Array<{ status: string }>>`
+  const rows = await rawDb.$queryRaw<Array<{ status: string }>>`
     UPDATE "BackgroundJob"
        SET status = CASE WHEN attempts >= "maxAttempts" THEN 'FAILED' ELSE 'QUEUED' END,
            "lastError" = ${error.slice(0, 900)},
@@ -190,16 +204,17 @@ export async function failJob(jobId: string, workerId: string, error: string): P
   return status === JOB_STATUS.FAILED ? "failed" : "retry";
 }
 
-/** Owner-initiated retry of a dead-lettered job. Completed/cancelled jobs are not requeued. */
+/** Owner-initiated retry of a dead-lettered job within the owner's company. */
 export async function retryJob(jobId: string, actor: string) {
-  const job = await db.backgroundJob.findUnique({ where: { id: jobId } });
+  const organizationId = await requireTenantId();
+  const job = await db.backgroundJob.findFirst({ where: { id: jobId, organizationId } });
   if (!job) throw new Error("Job not found");
   if (job.status === JOB_STATUS.PROCESSING) throw new Error("This job is currently running.");
   if (job.status === JOB_STATUS.COMPLETED) throw new Error("This job already completed; there is nothing to retry.");
   if (job.status === JOB_STATUS.CANCELLED) throw new Error("This job was cancelled. Queue a new job instead.");
   if (job.status !== JOB_STATUS.FAILED) throw new Error("Only a failed job can be retried.");
   const result = await db.backgroundJob.updateMany({
-    where: { id: jobId, status: JOB_STATUS.FAILED },
+    where: { id: jobId, organizationId, status: JOB_STATUS.FAILED },
     data: {
       status: JOB_STATUS.QUEUED,
       attempts: 0,
@@ -217,8 +232,9 @@ export async function retryJob(jobId: string, actor: string) {
 }
 
 export async function cancelJob(jobId: string) {
+  const organizationId = await requireTenantId();
   await db.backgroundJob.updateMany({
-    where: { id: jobId, status: { in: [JOB_STATUS.QUEUED, JOB_STATUS.FAILED] } },
+    where: { id: jobId, organizationId, status: { in: [JOB_STATUS.QUEUED, JOB_STATUS.FAILED] } },
     data: {
       status: JOB_STATUS.CANCELLED,
       lockedAt: null,
@@ -250,7 +266,7 @@ export async function recentJobs(limit = 40) {
 /** Written by the worker on every poll and while a job runs. */
 export async function recordWorkerHeartbeat(workerId: string, meta: Record<string, unknown> = {}) {
   const now = new Date();
-  await db.workerHeartbeat.upsert({
+  await rawDb.workerHeartbeat.upsert({
     where: { workerId },
     update: { lastSeenAt: now, metaJson: stringifyJson(meta) },
     create: {
@@ -274,9 +290,9 @@ export type WorkerLiveness = {
  * (which is cleared when a job completes). An empty registry is UNKNOWN, not healthy.
  */
 export async function workerLiveness(staleAfterMs = env.WORKER_STALE_MS): Promise<WorkerLiveness> {
-  const latest = await db.workerHeartbeat.findFirst({ orderBy: { lastSeenAt: "desc" } });
+  const latest = await rawDb.workerHeartbeat.findFirst({ orderBy: { lastSeenAt: "desc" } });
   if (!latest) return { status: "UNKNOWN", lastSeenAt: null, staleAfterMs, workersSeen: 0 };
-  const workersSeen = await db.workerHeartbeat.count({
+  const workersSeen = await rawDb.workerHeartbeat.count({
     where: { lastSeenAt: { gte: new Date(Date.now() - staleAfterMs) } },
   });
   const age = Date.now() - latest.lastSeenAt.getTime();
@@ -286,4 +302,18 @@ export async function workerLiveness(staleAfterMs = env.WORKER_STALE_MS): Promis
     staleAfterMs,
     workersSeen,
   };
+}
+
+/** Tenants with queued work, used by the worker's recurring-job planner. */
+export async function activeTenantIds(): Promise<string[]> {
+  const organizations = await rawDb.organization.findMany({
+    where: { status: "ACTIVE" },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
+  return organizations.map((organization) => organization.id);
+}
+
+export function hasTenantContext(): boolean {
+  return Boolean(getTenantId());
 }

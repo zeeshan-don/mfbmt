@@ -56,7 +56,7 @@ export default async function InventoryPage({
     <div className="space-y-5">
       <PageHeader
         title="Inventory"
-        description="What MFBMT has on hand. Stock is checked before any supplier is contacted."
+        description="What your company has on hand. Stock is checked before any supplier is contacted."
         actions={
           isOwner ? (
             <ButtonLink href="/inventory/import" variant="primary">
@@ -228,7 +228,7 @@ export default async function InventoryPage({
       ) : null}
 
       <p className="text-[11px] text-muted">
-        Stock data is only what MFBMT has recorded. The system never assumes a product is available because its code exists.
+        Stock data is only what your company has recorded. The system never assumes a product is available because its code exists.
       </p>
     </div>
   );

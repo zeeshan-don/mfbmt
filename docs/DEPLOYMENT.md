@@ -163,3 +163,12 @@ Back up before migrating (see `BACKUP.md`). Migrations are forward-only; keep th
 - **Health checks**: `/api/health` is safe for load balancers and does not reveal configuration.
 - **Disk**: attachments are never deleted automatically. Monitor `STORAGE_ROOT` and archive quotation PDFs if needed.
 - **Node modules**: `serverExternalPackages` lists `pdfkit`, `pdf-parse`, `exceljs`, `tesseract.js` and `sharp`. Keep the platform's native builds consistent between machines.
+
+## Multi-company update (2026-11-19)
+
+Before deploying, take a verified backup, run `npx prisma migrate deploy` (never reset), then build
+and restart web and worker. Each worker claim carries the job's `organizationId` into
+`runWithTenant`. Configure separate provider credentials per company in Settings. Gmail push uses the
+mailbox-bound routing; Graph subscriptions must be renewed to carry the per-organization clientState;
+inbound email forwarders must send `x-organization-slug`. Health checks and queue/worker checks are
+unchanged. Roll back by restoring the pre-migration backup; the migration is forward-only.

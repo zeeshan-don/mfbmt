@@ -101,7 +101,7 @@ async function resolveContact(input: {
  * never persisted, never queued, and never sent to an AI provider.
  */
 export async function ingestInboundMessage(input: IngestInput): Promise<IngestResult> {
-  const existing = await db.message.findUnique({ where: { externalMessageId: input.externalMessageId } });
+  const existing = await db.message.findFirst({ where: { externalMessageId: input.externalMessageId } });
   if (existing) {
     return { messageId: existing.id, duplicate: true, ignored: existing.processingStatus === "IGNORED", warnings: [] };
   }
@@ -132,8 +132,8 @@ export async function ingestInboundMessage(input: IngestInput): Promise<IngestRe
     (identity.phone || input.from).toLowerCase();
 
   const conversation =
-    (await db.conversation.findUnique({
-      where: { channel_externalId: { channel: input.channel, externalId: conversationKey } },
+    (await db.conversation.findFirst({
+      where: { channel: input.channel, externalId: conversationKey },
     })) ??
     (await db.conversation.create({
       data: {

@@ -34,7 +34,7 @@ export default async function SuppliersPage({
     <div className="space-y-5">
       <PageHeader
         title="Suppliers"
-        description="The suppliers MFBMT knows about. Saved suppliers are searched first for every shortage."
+        description="The suppliers your company knows about. Saved suppliers are searched first for every shortage."
       />
 
       {params.error ? <Notice tone="danger" title="Could not save">{params.error}</Notice> : null}
@@ -153,7 +153,7 @@ export default async function SuppliersPage({
       ) : null}
 
       <p className="text-[11px] text-muted">
-        Supplier reliability is shown only from MFBMT&apos;s own records — quotations requested, replies received and prices confirmed.
+        Supplier reliability is shown only from your company&apos;s own records — quotations requested, replies received and prices confirmed.
         No public ratings are invented. <Link href="/settings" className="text-accent hover:underline">Manage contact exclusions</Link>
       </p>
     </div>

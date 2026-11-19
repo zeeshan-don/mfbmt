@@ -126,7 +126,7 @@ export async function recordManualOfferAction(formData: FormData) {
         match,
         supplierConfirmedSpec: true,
         confirmedAt: new Date().toISOString(),
-        note: "Price entered by MFBMT from a supplier communication.",
+        note: "Price entered by your company from a supplier communication.",
       }),
       offeredSpecJson: stringifyJson(offeredSpec),
     },

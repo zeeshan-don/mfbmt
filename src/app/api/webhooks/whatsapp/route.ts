@@ -4,8 +4,9 @@ import { env } from "@/lib/env";
 import { sha256 } from "@/lib/crypto";
 import { parseWhatsAppWebhook, verifyWhatsAppSignature } from "@/lib/intake/whatsapp";
 import { ingestInboundMessage, isSenderExcluded } from "@/lib/workflow/enquiry";
-import { getWhatsAppCredentials } from "@/lib/integrations/whatsapp";
+import { resolveWhatsAppOrganization } from "@/lib/integrations/whatsapp";
 import { writeAudit } from "@/lib/audit";
+import { runWithTenant } from "@/lib/tenant";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,12 +28,16 @@ export async function GET(request: Request) {
 }
 
 /**
- * Inbound WhatsApp messages.
+ * Inbound WhatsApp messages for every connected company.
  *
- * The raw body is verified before parsing. A message is acknowledged only after
- * its durable receipt row exists; media is downloaded by the worker, not inside
- * the webhook request. If durable intake fails the webhook returns 503 so Meta
- * retries instead of losing the message.
+ * The raw body is verified with Meta's app secret before parsing. Each delivery
+ * is then routed by the receiving Phone Number ID to the owning organization;
+ * an unconnected number is acknowledged so Meta stops retrying, but nothing is
+ * ingested and no other company's account is used.
+ *
+ * A message is acknowledged only after its durable receipt row exists. Media is
+ * downloaded by the worker, not inside the webhook request. If durable intake
+ * fails the webhook returns 503 so Meta retries instead of losing the message.
  */
 export async function POST(request: Request) {
   const raw = await request.text();
@@ -57,130 +62,137 @@ export async function POST(request: Request) {
   }
 
   const parsed = parseWhatsAppWebhook(payload as Parameters<typeof parseWhatsAppWebhook>[0]);
-  const credentials = await getWhatsAppCredentials();
   const payloadHash = sha256(raw);
-  const results: Array<{ id: string; outcome: string }> = [];
+  const results: Array<{ id: string; outcome: string; organizationId?: string }> = [];
+  const orgCache = new Map<string, string | null>();
 
-  // Log coexistence-specific webhook events for debugging and audit.
+  const organizationFor = async (phoneNumberId: string | null | undefined): Promise<string | null> => {
+    if (!phoneNumberId) return null;
+    if (!orgCache.has(phoneNumberId)) {
+      orgCache.set(phoneNumberId, await resolveWhatsAppOrganization(phoneNumberId));
+    }
+    return orgCache.get(phoneNumberId) ?? null;
+  };
+
+  for (const status of parsed.statuses) {
+    const organizationId = await organizationFor(status.phoneNumberId);
+    if (!organizationId) {
+      console.warn("[whatsapp] status for an unconnected number", { phoneNumberId: status.phoneNumberId });
+      continue;
+    }
+    await runWithTenant({ organizationId, source: "webhook" }, async () => {
+      try {
+        await db.webhookEvent.create({
+          data: {
+            provider: "WHATSAPP",
+            externalId: `status:${status.messageId}:${status.status}`,
+            payloadHash,
+            status: "PROCESSED",
+            processedAt: new Date(),
+            error: status.errorMessage ?? null,
+          },
+        });
+      } catch {
+        return; // Duplicate status delivery; nothing to do.
+      }
+      await writeAudit({
+        action: `whatsapp.status_${status.status}`,
+        entityType: "Message",
+        entityId: status.messageId,
+        actorLabel: "system",
+        meta: { recipient: status.recipient, errorCode: status.errorCode, error: status.errorMessage ?? null },
+      });
+    });
+  }
+
+  // Log coexistence-specific webhook fields once per affected tenant.
   const rawPayload = payload as { entry?: Array<{ changes?: Array<{ field?: string }> }> };
+  const extraFields = new Set<string>();
   for (const entry of rawPayload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const field = change.field ?? "unknown";
-      if (field !== "messages" && field !== "message_template_status_update") {
-        console.log("[whatsapp] coexistence webhook field:", field);
-        await writeAudit({
-          action: `whatsapp.webhook_${field}`,
-          entityType: "Integration",
-          entityId: "WHATSAPP",
-          actorLabel: "system",
-          meta: { field },
-        }).catch(() => undefined);
-      }
+      if (field !== "messages" && field !== "message_template_status_update") extraFields.add(field);
     }
-  }
-
-  for (const status of parsed.statuses) {
-    try {
-      await db.webhookEvent.create({
-        data: {
-          provider: "WHATSAPP",
-          externalId: `status:${status.messageId}:${status.status}`,
-          payloadHash,
-          status: "PROCESSED",
-          processedAt: new Date(),
-          error: status.errorMessage ?? null,
-        },
-      });
-    } catch {
-      // Duplicate status delivery; nothing to do.
-      continue;
-    }
-    await writeAudit({
-      action: `whatsapp.status_${status.status}`,
-      entityType: "Message",
-      entityId: status.messageId,
-      actorLabel: "system",
-      meta: { recipient: status.recipient, errorCode: status.errorCode, error: status.errorMessage ?? null },
-    });
   }
 
   for (const message of parsed.messages) {
-    // 1. Durable receipt. A unique (provider, externalId) makes Meta retries
-    //    idempotent. Checking first avoids logging a constraint error on every
-    //    legitimate Meta retry; the catch still covers the concurrent case.
-    const seen = await db.webhookEvent.findUnique({
-      where: { provider_externalId: { provider: "WHATSAPP", externalId: message.externalId } },
-    });
-    if (seen) {
-      results.push({ id: message.externalId, outcome: "duplicate" });
+    const organizationId = await organizationFor(message.toPhoneNumberId);
+    if (!organizationId) {
+      console.warn("[whatsapp] message for an unconnected number", { phoneNumberId: message.toPhoneNumberId });
+      results.push({ id: message.externalId, outcome: "unrouted_number" });
       continue;
     }
-    try {
-      await db.webhookEvent.create({
-        data: {
-          provider: "WHATSAPP",
-          externalId: message.externalId,
-          payloadHash,
-          status: "RECEIVED",
-        },
-      });
-    } catch {
-      results.push({ id: message.externalId, outcome: "duplicate" });
-      continue;
-    }
-
-    // 2. Route by receiving number. A message for another WABA/number is not
-    //    silently mis-attributed to this account.
-    if (
-      credentials?.phoneNumberId &&
-      message.toPhoneNumberId &&
-      message.toPhoneNumberId !== credentials.phoneNumberId
-    ) {
-      await db.webhookEvent.updateMany({
-        where: { provider: "WHATSAPP", externalId: message.externalId },
-        data: { status: "FAILED", error: "Received for a phone number that is not connected.", processedAt: new Date() },
-      });
-      results.push({ id: message.externalId, outcome: "wrong_number" });
-      continue;
-    }
-
-    // 3. An excluded contact's content is never fetched: no media download, no body storage.
-    const exclusion = await isSenderExcluded({ channel: "WHATSAPP", from: message.from });
 
     try {
-      const result = await ingestInboundMessage({
-        channel: "WHATSAPP",
-        externalMessageId: message.externalId,
-        from: message.from,
-        fromName: message.fromName ?? null,
-        to: credentials?.phoneNumberId ?? null,
-        toPhoneNumberId: message.toPhoneNumberId ?? null,
-        body: exclusion.excluded ? "" : message.text,
-        receivedAt: message.timestamp,
-        mediaRefs: exclusion.excluded ? [] : message.media ? [message.media] : [],
-      });
+      const outcome = await runWithTenant({ organizationId, source: "webhook" }, async () => {
+        // 1. Durable receipt. The unique (organization, provider, externalId)
+        //    makes Meta retries idempotent. Checking first avoids logging a
+        //    constraint error on every legitimate retry.
+        const seen = await db.webhookEvent.findFirst({
+          where: { provider: "WHATSAPP", externalId: message.externalId },
+        });
+        if (seen) return "duplicate";
+        try {
+          await db.webhookEvent.create({
+            data: {
+              provider: "WHATSAPP",
+              externalId: message.externalId,
+              payloadHash,
+              status: "RECEIVED",
+            },
+          });
+        } catch {
+          return "duplicate";
+        }
 
-      await db.webhookEvent.updateMany({
-        where: { provider: "WHATSAPP", externalId: message.externalId },
-        data: {
-          status: result.duplicate ? "PROCESSED" : "QUEUED",
-          processedAt: new Date(),
-        },
+        for (const field of extraFields) {
+          await writeAudit({
+            action: `whatsapp.webhook_${field}`,
+            entityType: "Integration",
+            entityId: "WHATSAPP",
+            actorLabel: "system",
+            meta: { field, phoneNumberId: message.toPhoneNumberId },
+          });
+        }
+
+        // 2. An excluded contact's content is never fetched: no media download,
+        //    no body storage.
+        const exclusion = await isSenderExcluded({ channel: "WHATSAPP", from: message.from });
+
+        const result = await ingestInboundMessage({
+          channel: "WHATSAPP",
+          externalMessageId: message.externalId,
+          from: message.from,
+          fromName: message.fromName ?? null,
+          to: message.toPhoneNumberId ?? null,
+          toPhoneNumberId: message.toPhoneNumberId ?? null,
+          body: exclusion.excluded ? "" : message.text,
+          receivedAt: message.timestamp,
+          mediaRefs: exclusion.excluded ? [] : message.media ? [message.media] : [],
+        });
+
+        await db.webhookEvent.updateMany({
+          where: { provider: "WHATSAPP", externalId: message.externalId },
+          data: {
+            status: result.duplicate ? "PROCESSED" : "QUEUED",
+            processedAt: new Date(),
+          },
+        });
+        return result.duplicate ? "duplicate" : result.ignored ? "excluded" : "accepted";
       });
-      results.push({
-        id: message.externalId,
-        outcome: result.duplicate ? "duplicate" : result.ignored ? "excluded" : "accepted",
-      });
+      results.push({ id: message.externalId, outcome, organizationId });
     } catch (error) {
       // Durable intake failed: keep the receipt so a retry is still deduplicated,
       // record the failure, and ask Meta to retry.
       const detail = error instanceof Error ? error.message : "Ingest failed";
-      await db.webhookEvent
-        .updateMany({
-          where: { provider: "WHATSAPP", externalId: message.externalId },
-          data: { status: "FAILED", error: detail.slice(0, 500) },
-        })
-        .catch(() => undefined);
+      await runWithTenant({ organizationId, source: "webhook" }, async () => {
+        await db.webhookEvent
+          .updateMany({
+            where: { provider: "WHATSAPP", externalId: message.externalId },
+            data: { status: "FAILED", error: detail.slice(0, 500) },
+          })
+          .catch(() => undefined);
+      }).catch(() => undefined);
       console.error("[whatsapp] durable intake failed", { externalId: message.externalId, detail });
       return NextResponse.json({ error: "Intake failed; retry." }, { status: 503 });
     }

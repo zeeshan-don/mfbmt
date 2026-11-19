@@ -4,6 +4,7 @@ import { normalizeGrade, normalizeMaterial, normalizePressure, normalizeSchedule
 import { inferCategoryFromDescription } from "../catalog/categories";
 import { isFastenerCategory, parseFastenerSpec } from "../fasteners/spec";
 import { stringifyJson } from "../json";
+import { requireTenantId } from "../tenant";
 
 export const MAPPABLE_FIELDS = [
   { key: "sku", label: "Product code / SKU", required: false },
@@ -137,10 +138,11 @@ export async function importInventory(options: {
     const key = code.trim().toUpperCase();
     const cached = locations.get(key);
     if (cached) return cached;
+    const organizationId = await requireTenantId();
     const location = await db.inventoryLocation.upsert({
-      where: { code: key },
+      where: { organizationId_code: { organizationId, code: key } },
       update: {},
-      create: { code: key, name: name.trim() || key },
+      create: { organizationId, code: key, name: name.trim() || key },
     });
     locations.set(key, location.id);
     return location.id;
@@ -237,10 +239,10 @@ export async function importInventory(options: {
       if (Number.isFinite(length) && length > 0) fastenerSpec.lengthMm = length;
     }
 
-    const existing = await db.product.findUnique({ where: { sku } });
+    const existing = await db.product.findFirst({ where: { sku } });
     const product = existing
       ? await db.product.update({
-          where: { sku },
+          where: { id: existing.id },
           data: { ...attributes, ...(fastenerSpec ? { fastenerSpecJson: stringifyJson(fastenerSpec) } : {}) },
         })
       : await db.product.create({

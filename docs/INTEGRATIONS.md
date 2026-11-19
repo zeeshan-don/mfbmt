@@ -188,3 +188,11 @@ Attachments and quotation PDFs are stored under `STORAGE_ROOT`. Downloads go thr
 | **Needs attention** | Credentials exist but the test failed; the reason is shown |
 | **Not connected** | Missing configuration — setup guidance is displayed |
 | **Disconnected** | Credentials were removed (e.g. mailbox disconnected) |
+
+## Multi-company update (2026-11-19)
+
+Every integration row is organization-scoped, with a composite unique `(organizationId, key)` and
+per-company encrypted credentials. Application-level provider app credentials may be shared; customer
+WhatsApp/mailbox credentials are never shared. Attendance routing: WhatsApp by Phone Number ID, Gmail
+push by the saved mailbox address, Microsoft Graph by signed per-organization `clientState`, inbound
+email forwarding by explicit `x-organization-slug`. See `docs/MULTITENANCY.md`.

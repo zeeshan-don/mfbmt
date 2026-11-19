@@ -86,3 +86,13 @@ Entries include actor, action, entity, timestamp, IP and a JSON snapshot. The au
 ## Known gaps
 
 See `LIMITATIONS.md`. The important ones: no SSO/MFA, no per-field encryption at rest, no built-in malware scanning of attachments, and no third-party penetration test has been performed. Before exposing the app publicly, put it behind a VPN or an authenticating reverse proxy.
+
+## Multi-company update (2026-11-19)
+
+A fail-closed tenant guard now applies `organizationId` to every tenant read, aggregate, update and
+delete, and stamps every create, including nested writes. Tenant context comes only from the session
+row or trusted server-side evidence (provider phone ID, mailbox, signed OAuth/Graph state, supplier
+token, job row). Browser-supplied organization IDs are ignored. Integration secrets remain
+AES-256-GCM encrypted per organization. `tests/tenant-isolation.test.ts` proves cross-company reads
+return nothing and credentials do not cross tenants. Platform operators cannot read customer data
+through the provisioning CLI.

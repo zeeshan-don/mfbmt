@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { getCurrentOrganization } from "../organization";
 import { writeAudit, notifyOwner } from "../audit";
 import { parseJson, stringifyJson } from "../json";
 import { resolvePricingRule, sellingPriceFromCost } from "../pricing/rules";
@@ -78,7 +79,7 @@ export async function createQuotationDraft(input: {
   const existing = enquiry.quotations.find((q) => q.status === "DRAFT" || q.status === "AWAITING_APPROVAL");
   if (existing) return { ok: true, quotationId: existing.id, unpriced: [] };
 
-  const org = await db.organization.findFirst();
+  const org = await getCurrentOrganization();
   const rules = await db.pricingRule.findMany();
   const currency = (enquiry.currency || org?.defaultCurrency || "AED").toUpperCase();
 
@@ -167,7 +168,7 @@ export async function createQuotationDraft(input: {
   const quotation = await db.customerQuotation.create({
     data: {
       enquiryId: enquiry.id,
-      quoteNumber: await nextQuoteNumber(),
+      quoteNumber: await nextQuoteNumber(org?.quotationPrefix || "QT"),
       version,
       customerName: enquiry.customerName ?? "Customer",
       customerPhone: enquiry.customerPhone,
@@ -235,7 +236,7 @@ async function recalculateTotals(quotationId: string) {
     include: { items: true },
   });
   if (!quotation) return null;
-  const org = await db.organization.findFirst();
+  const org = await getCurrentOrganization();
   const subtotal = round2(
     quotation.items.reduce((sum, item) => sum + (item.lineTotal ?? 0), 0),
   );
@@ -371,17 +372,19 @@ export async function generateAndStoreQuotationPdf(
     return { ok: false, error: "Approve the quotation before generating the customer PDF." };
   }
 
-  const org = await db.organization.findFirst();
+  const org = await db.organization.findUnique({ where: { id: quotation.organizationId } });
+  if (!org) return { ok: false, error: "The company profile could not be loaded for this quotation." };
   const buffer = await generateQuotationPdf({
     org: {
-      name: org?.name ?? "Multi Fasteners Building Materials Trading LLC",
-      legalName: org?.legalName,
-      trn: org?.trn,
-      email: org?.email,
-      phone: org?.phone,
-      address: org?.address,
-      taxLabel: org?.taxLabel ?? "VAT",
-      taxEnabled: org?.taxEnabled ?? false,
+      name: org.name,
+      legalName: org.legalName,
+      taxRegistrationNumber: org.taxRegistrationNumber,
+      brandLabel: org.name,
+      email: org.email,
+      phone: org.phone,
+      address: org.address,
+      taxLabel: org.taxLabel,
+      taxEnabled: org.taxEnabled,
     },
     quotation: {
       quoteNumber: quotation.quoteNumber,

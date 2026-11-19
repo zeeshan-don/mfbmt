@@ -109,7 +109,7 @@ export default async function ApprovalDetailPage({
         }
         description={
           approval.type === "SOURCING"
-            ? "Compare all options, then approve the one MFBMT should use when quoting the customer."
+            ? "Compare all options, then approve the one your company should use when quoting the customer."
             : approval.type === "CUSTOMER_QUOTATION"
               ? "The quotation is not sent to the customer until you approve it."
               : "This message is not sent until you approve it."
@@ -154,7 +154,7 @@ export default async function ApprovalDetailPage({
       ) : null}
 
       {top && approval.type === "SOURCING" ? (
-        <Notice tone="ok" title="MFBMT recommendation">
+        <Notice tone="ok" title="Our recommendation">
           {top.supplierName} at an estimated total of {formatMoney(top.snapshot.landed?.total ?? null, currency)}.
           {(top.snapshot.evaluation?.reasons ?? []).slice(0, 2).join(" ")}
           {top.verificationStatus !== "VERIFIED" ? " The price came from a listing and should be confirmed with the supplier." : ""}

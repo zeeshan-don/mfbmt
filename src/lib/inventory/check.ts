@@ -69,7 +69,7 @@ async function inventoryConfigured(): Promise<{ configured: boolean; sourcingFir
 }
 
 /**
- * Checks MFBMT stock for one enquiry item. Only an exact (or explicitly
+ * Checks your company's stock for one enquiry item. Only an exact (or explicitly
  * approved equivalent) match with a current stock record may fulfil stock;
  * anything weaker is reported and left to the owner.
  */
@@ -124,7 +124,7 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
       matchedProductId: null,
       matchStatus: null,
       stale: false,
-      note: "No inventory has been imported, so MFBMT stock is unknown — this does not mean the item is out of stock. Import your stock file in Settings, or confirm that MFBMT works sourcing-first.",
+      note: "No inventory has been imported, so your company's stock is unknown — this does not mean the item is out of stock. Import your stock file in Settings, or confirm that your company works sourcing-first.",
       candidates: [],
     };
   }
@@ -230,12 +230,12 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
       matchStatus: null,
       stale: false,
       note: sourcingFirst
-        ? "MFBMT is configured to source first, so nothing was taken from stock for this item."
+        ? "The company is configured to source first, so nothing was taken from stock for this item."
         : possible
           ? `No exact stock match. ${possible.sku} looks similar but does not fully match the requested specification, so it was not used.`
           : rejected
             ? `A similar stock item (${rejected.product.sku}) does not match the requested specification and was not used. ${rejected.match.mismatches.slice(0, 2).join("; ")}`
-            : "No matching product was found in MFBMT inventory.",
+            : "No matching product was found in your company's inventory.",
       candidates,
     };
   }
@@ -252,9 +252,9 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
       stale: false,
       note:
         usable.available <= 0
-          ? `${usable.product.sku} matches the request and MFBMT stock is confirmed at zero.`
+          ? `${usable.product.sku} matches the request and your company's stock is confirmed at zero.`
           : sourcingFirst
-            ? "MFBMT is configured to source first, so nothing was taken from stock for this item."
+            ? "The company is configured to source first, so nothing was taken from stock for this item."
             : null,
       candidates,
     };

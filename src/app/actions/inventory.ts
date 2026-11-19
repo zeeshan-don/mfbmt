@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
+import { requireTenantId } from "@/lib/tenant";
 import { authorize, authorizeOwner } from "@/lib/auth";
 import { writeAudit } from "@/lib/audit";
 import { readTabular, guessMapping, importInventory, MAPPABLE_FIELDS, type ColumnMapping } from "@/lib/inventory/import";
@@ -41,7 +42,7 @@ export async function runInventoryImportAction(formData: FormData) {
   if (!user) redirect("/login");
 
   const token = String(formData.get("token") ?? "");
-  const setting = await db.appSetting.findUnique({ where: { key: token } });
+  const setting = await db.appSetting.findFirst({ where: { key: token } });
   if (!setting) redirect("/inventory/import?error=This+import+has+expired.+Upload+the+file+again.");
 
   const parsed = JSON.parse(setting.value) as { headers: string[]; rows: string[][]; filename: string };
@@ -108,10 +109,11 @@ export async function createProductAction(formData: FormData) {
         unit: normalizeUnit(String(formData.get("unit") ?? "pcs")),
       },
     });
+    const organizationId = await requireTenantId();
     const location = await db.inventoryLocation.upsert({
-      where: { code: "MAIN" },
+      where: { organizationId_code: { organizationId, code: "MAIN" } },
       update: {},
-      create: { code: "MAIN", name: "Main warehouse" },
+      create: { organizationId, code: "MAIN", name: "Main warehouse" },
     });
     const quantity = Number(String(formData.get("quantity") ?? "0").replace(/,/g, "")) || 0;
     await db.inventoryStock.create({
@@ -144,10 +146,11 @@ export async function adjustStockAction(formData: FormData) {
   const delta = Number(String(formData.get("delta") ?? "").replace(/,/g, ""));
   if (!productId || !Number.isFinite(delta) || delta === 0) redirect("/inventory?error=Enter+a+stock+quantity+change");
 
+  const organizationId = await requireTenantId();
   const location = await db.inventoryLocation.upsert({
-    where: { code: "MAIN" },
+    where: { organizationId_code: { organizationId, code: "MAIN" } },
     update: {},
-    create: { code: "MAIN", name: "Main warehouse" },
+    create: { organizationId, code: "MAIN", name: "Main warehouse" },
   });
   const stock = await db.inventoryStock.findUnique({
     where: { productId_locationId: { productId, locationId: location.id } },

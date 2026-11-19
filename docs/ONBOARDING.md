@@ -34,3 +34,12 @@ If the worker is not running:
 `DEMO_MODE=true` + `SEED_DEMO_DATA=true` + `npm run db:seed` creates demo accounts, suppliers, products and
 two walkthrough enquiries. The password is displayed only on the demo sign-in page; it is never printed by
 the seed and never available in production builds. Replace the demo accounts and password before real use.
+
+## Multi-company update (2026-11-19)
+
+Provision the tenant first with `ORG_ACTION=create ORG_SLUG=<slug> ORG_NAME="<legal name>" npm run
+provision:org`, then invite the owner with `ORG_SLUG=<slug> npm run provision:owner`. The owner signs
+in at `/login?org=<slug>` and completes legal identity, TRN, address, currency, timezone, tax, terms,
+quotation prefix, categories, inventory, suppliers, WhatsApp, email, AI/search and pricing. Nothing is
+pre-filled with fake data and no integration is marked connected without a successful provider test.
+A full checklist and the operator-only provisioning limits are in `docs/MULTITENANCY.md`.

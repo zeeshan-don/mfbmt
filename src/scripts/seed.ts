@@ -1,5 +1,7 @@
 import bcrypt from "bcryptjs";
-import { PrismaClient } from "@prisma/client";
+import { db } from "../lib/db";
+import { rawDb } from "../lib/db-base";
+import { runWithTenant, requireTenantId } from "../lib/tenant";
 import { ingestInboundMessage, processInboundMessage, extractEnquiryById } from "../lib/workflow/enquiry";
 import { runNextJob } from "../lib/workflow/process";
 import { recomputeOffersForItem } from "../lib/costing/evaluate";
@@ -8,55 +10,36 @@ import { writeAudit } from "../lib/audit";
 import { seedFastenerWalkthrough } from "./demo-fasteners";
 import { demoSeedProblem } from "../lib/demo-guard";
 
-const db = new PrismaClient();
-
 const DEMO_PASSWORD = "ChangeMe123!";
 
-async function main() {
-  // Hard production guard. Demo data is only allowed in local development and
-  // automated tests, and only when the operator has explicitly opted in.
-  const problem = demoSeedProblem(process.env);
-  if (problem) throw new Error(problem);
-
+async function seedInside() {
+  const organizationId = await requireTenantId();
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
 
-  const owner = await db.user.upsert({
-    where: { email: "owner@mfbmt.local" },
-    update: {},
-    create: {
-      email: "owner@mfbmt.local",
-      name: "MFBMT Owner",
-      passwordHash,
-      role: "OWNER",
-      isActive: true,
-    },
-  });
-
-  await db.user.upsert({
-    where: { email: "staff@mfbmt.local" },
-    update: {},
-    create: {
-      email: "staff@mfbmt.local",
-      name: "Procurement Assistant",
-      passwordHash,
-      role: "STAFF",
-      permissions: JSON.stringify(["enquiries.view", "enquiries.review", "sourcing.view", "inventory.view", "suppliers.view"]),
-      isActive: true,
-    },
-  });
-
-  const org = await db.organization.findFirst();
-  if (!org) {
-    await db.organization.create({
+  const existingOwner = await db.user.findFirst({ where: { email: "owner@mfbmt.local" } });
+  const owner =
+    existingOwner ??
+    (await db.user.create({
       data: {
-        name: "Multi Fasteners Building Materials Trading LLC",
-        legalName: "Multi Fasteners Building Materials Trading LLC",
-        address: "Industrial Area, Dubai, United Arab Emirates",
-        defaultCurrency: "AED",
-        quotationValidityDays: 14,
-        taxEnabled: true,
-        taxRatePct: 5,
-        taxLabel: "VAT",
+        organizationId,
+        email: "owner@mfbmt.local",
+        name: "MFBMT Owner",
+        passwordHash,
+        role: "OWNER",
+        isActive: true,
+      },
+    }));
+
+  if (!(await db.user.findFirst({ where: { email: "staff@mfbmt.local" } }))) {
+    await db.user.create({
+      data: {
+        organizationId,
+        email: "staff@mfbmt.local",
+        name: "Procurement Assistant",
+        passwordHash,
+        role: "STAFF",
+        permissions: JSON.stringify(["enquiries.view", "enquiries.review", "sourcing.view", "inventory.view", "suppliers.view"]),
+        isActive: true,
       },
     });
   }
@@ -70,13 +53,13 @@ async function main() {
   }
 
   const main = await db.inventoryLocation.upsert({
-    where: { code: "MAIN" },
+    where: { organizationId_code: { organizationId, code: "MAIN" } },
     update: {},
-    create: { code: "MAIN", name: "Main warehouse (sample)", isDemo: true },
+    create: { organizationId, code: "MAIN", name: "Main warehouse (sample)", isDemo: true },
   });
 
   const hammer = await db.product.upsert({
-    where: { sku: "DEMO-HAMMER-001" },
+    where: { organizationId_sku: { organizationId, sku: "DEMO-HAMMER-001" } },
     update: {},
     create: {
       sku: "DEMO-HAMMER-001",
@@ -88,7 +71,7 @@ async function main() {
     },
   });
   const elbow = await db.product.upsert({
-    where: { sku: "DEMO-SS316-ELB-1" },
+    where: { organizationId_sku: { organizationId, sku: "DEMO-SS316-ELB-1" } },
     update: {},
     create: {
       sku: "DEMO-SS316-ELB-1",
@@ -101,7 +84,7 @@ async function main() {
     },
   });
   const valveStock = await db.product.upsert({
-    where: { sku: "DEMO-VALVE-1-316" },
+    where: { organizationId_sku: { organizationId, sku: "DEMO-VALVE-1-316" } },
     update: {},
     create: {
       sku: "DEMO-VALVE-1-316",
@@ -228,7 +211,7 @@ async function main() {
   }
 
   await db.excludedContact.upsert({
-    where: { identifier: "+971500000099" },
+    where: { organizationId_identifier: { organizationId, identifier: "+971500000099" } },
     update: {},
     create: {
       identifier: "+971500000099",
@@ -244,7 +227,7 @@ async function main() {
 
   // Each classic demo record is checked by its stable identity, so re-running the
   // seed never duplicates it and never skips one that is missing.
-  if (!(await db.message.findUnique({ where: { externalMessageId: classicMessageId } }))) {
+  if (!(await db.message.findFirst({ where: { externalMessageId: classicMessageId } }))) {
     // Enquiry A — the exact scenario from the brief (ambiguous hammer and valve).
     const messageA = await ingestInboundMessage({
       channel: "WHATSAPP",
@@ -255,7 +238,7 @@ async function main() {
       receivedAt: new Date(Date.now() - 45 * 60 * 1000),
     });
     await processInboundMessage(messageA.messageId);
-    const enquiryA = await db.message.findUnique({ where: { id: messageA.messageId }, select: { enquiryId: true } });
+    const enquiryA = await db.message.findFirst({ where: { id: messageA.messageId }, select: { enquiryId: true } });
     if (enquiryA?.enquiryId) {
       await db.enquiry.update({ where: { id: enquiryA.enquiryId }, data: { isDemo: true } });
       await extractEnquiryById(enquiryA.enquiryId);
@@ -264,7 +247,7 @@ async function main() {
 
   }
 
-  if (!(await db.enquiry.findUnique({ where: { publicRef: classicEnquiryRef } }))) {
+  if (!(await db.enquiry.findFirst({ where: { publicRef: classicEnquiryRef } }))) {
     // Enquiry B — a complete specification so the supplier comparison has data.
     const enquiryB = await db.enquiry.create({
       data: {
@@ -406,6 +389,19 @@ async function main() {
   console.log("Seed complete.");
   console.log("Demo accounts: owner@mfbmt.local and staff@mfbmt.local (password is shown only on the demo sign-in page).");
   console.log("All demo records are marked as sample data. Replace these accounts before real use.");
+}
+
+async function main() {
+  // Hard production guard. Demo data is only allowed in local development and
+  // automated tests, and only when the operator has explicitly opted in.
+  const problem = demoSeedProblem(process.env);
+  if (problem) throw new Error(problem);
+
+  const organization = await rawDb.organization.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!organization) {
+    throw new Error("No organization exists. Provision a tenant before seeding demo data.");
+  }
+  await runWithTenant({ organizationId: organization.id, source: "internal" }, seedInside);
 }
 
 main()

@@ -15,7 +15,7 @@ export default async function InventoryImportPage({
   await requireOwner();
   const params = await searchParams;
 
-  const setting = params.token ? await db.appSetting.findUnique({ where: { key: params.token } }) : null;
+  const setting = params.token ? await db.appSetting.findFirst({ where: { key: params.token } }) : null;
   const parsed = setting
     ? parseJson<{ headers: string[]; rows: string[][]; sheetName: string; filename: string }>(setting.value, {
         headers: [],

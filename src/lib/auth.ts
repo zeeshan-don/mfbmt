@@ -3,12 +3,13 @@ import { writeAudit } from "./audit";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { randomBytes, createHash } from "node:crypto";
-import { db } from "./db";
+import { rawDb } from "./db-base";
 import { PERMISSIONS, type Permission, type Role } from "./constants";
 import { parseStringArray } from "./json";
 import { env } from "./env";
+import { SESSION_COOKIE, clearTenantSessionCache } from "./tenant";
 
-const COOKIE_NAME = "mfbmt_session";
+const COOKIE_NAME = SESSION_COOKIE;
 /** One validated setting drives both the cookie and the database expiry. */
 const SESSION_DAYS = Math.max(1, Math.min(90, env.AUTH_SESSION_DAYS));
 
@@ -18,6 +19,10 @@ export type SessionUser = {
   name: string;
   role: Role;
   permissions: Permission[];
+  organizationId: string;
+  organizationSlug: string;
+  organizationName: string;
+  organizationStatus: string;
 };
 
 export async function hashPassword(password: string): Promise<string> {
@@ -32,18 +37,23 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function createSession(userId: string, meta?: { ip?: string; userAgent?: string }) {
+export async function createSession(
+  user: { id: string; organizationId: string },
+  meta?: { ip?: string; userAgent?: string },
+) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
-  await db.session.create({
+  await rawDb.session.create({
     data: {
       tokenHash: hashToken(token),
-      userId,
+      userId: user.id,
+      organizationId: user.organizationId,
       expiresAt,
       ip: meta?.ip?.slice(0, 60),
       userAgent: meta?.userAgent?.slice(0, 240),
     },
   });
+  clearTenantSessionCache();
   const store = await cookies();
   store.set(COOKIE_NAME, token, {
     httpOnly: true,
@@ -58,8 +68,9 @@ export async function destroySession() {
   const store = await cookies();
   const token = store.get(COOKIE_NAME)?.value;
   if (token) {
-    await db.session.deleteMany({ where: { tokenHash: hashToken(token) } });
+    await rawDb.session.deleteMany({ where: { tokenHash: hashToken(token) } });
   }
+  clearTenantSessionCache();
   store.delete(COOKIE_NAME);
 }
 
@@ -67,11 +78,14 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const store = await cookies();
   const token = store.get(COOKIE_NAME)?.value;
   if (!token) return null;
-  const session = await db.session.findUnique({
+  const session = await rawDb.session.findUnique({
     where: { tokenHash: hashToken(token) },
-    include: { user: true },
+    include: { user: { include: { organization: true } } },
   });
   if (!session || session.expiresAt < new Date() || !session.user.isActive) return null;
+  if (session.user.organizationId !== session.organizationId) return null;
+  const organization = session.user.organization;
+  if (!organization || organization.status !== "ACTIVE") return null;
   const role = session.user.role as Role;
   return {
     id: session.user.id,
@@ -79,6 +93,10 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     name: session.user.name,
     role,
     permissions: role === "OWNER" ? [...PERMISSIONS] : (parseStringArray(session.user.permissions) as Permission[]),
+    organizationId: organization.id,
+    organizationSlug: organization.slug,
+    organizationName: organization.name,
+    organizationStatus: organization.status,
   };
 }
 
@@ -130,16 +148,18 @@ const MAX_FAILURES_PER_IP = 30;
 
 /**
  * Counts recent failures in the audit log instead of keeping counters in memory, so the
- * limit survives restarts and works across processes. Returns true when the caller is locked out.
+ * limit survives restarts and works across processes. The email key includes the
+ * workspace slug when one is supplied, so one company's failures cannot lock the
+ * same address out in another company.
  */
 async function isLoginLocked(emailKey: string, ip?: string): Promise<boolean> {
   const since = new Date(Date.now() - LOGIN_WINDOW_MS);
-  const emailFailures = await db.auditLog.count({
+  const emailFailures = await rawDb.auditLog.count({
     where: { action: "auth.login_failed", entityId: emailKey, createdAt: { gte: since } },
   });
   if (emailFailures >= MAX_FAILURES_PER_EMAIL) return true;
   if (ip) {
-    const ipFailures = await db.auditLog.count({
+    const ipFailures = await rawDb.auditLog.count({
       where: { action: "auth.login_failed", ip, createdAt: { gte: since } },
     });
     if (ipFailures >= MAX_FAILURES_PER_IP) return true;
@@ -147,28 +167,70 @@ async function isLoginLocked(emailKey: string, ip?: string): Promise<boolean> {
   return false;
 }
 
-export async function login(email: string, password: string, meta?: { ip?: string; userAgent?: string }) {
+type LoginMeta = { ip?: string; userAgent?: string; workspace?: string };
+
+/**
+ * Signs a user in.
+ *
+ * The workspace slug is optional when an address exists in exactly one active
+ * company. If the same address exists in several companies, the slug is
+ * required and the sign-in is never guessed, so a person can never be logged
+ * into the wrong tenant.
+ */
+export async function login(email: string, password: string, meta?: LoginMeta) {
   const emailKey = email.trim().toLowerCase();
-  if (await isLoginLocked(emailKey, meta?.ip)) {
+  const workspace = meta?.workspace?.trim().toLowerCase() || null;
+  const auditKey = workspace ? `${workspace}:${emailKey}` : emailKey;
+
+  if (await isLoginLocked(auditKey, meta?.ip)) {
     return {
       ok: false as const,
       error: "Too many sign-in attempts. Wait 15 minutes or ask the owner to reset the password.",
     };
   }
 
-  const user = await db.user.findUnique({ where: { email: emailKey } });
+  const organization = workspace
+    ? await rawDb.organization.findUnique({ where: { slug: workspace } })
+    : null;
+
+  const candidates = workspace
+    ? organization
+      ? await rawDb.user.findMany({
+          where: { email: emailKey, organizationId: organization.id },
+          include: { organization: true },
+        })
+      : []
+    : await rawDb.user.findMany({
+        where: { email: emailKey },
+        include: { organization: true },
+      });
+
+  const usable = candidates.filter((candidate) => candidate.isActive && candidate.organization.status === "ACTIVE");
+  const distinctOrganizations = new Set(usable.map((candidate) => candidate.organizationId));
+
+  if (!workspace && distinctOrganizations.size > 1) {
+    return {
+      ok: false as const,
+      error:
+        "This email address is used by more than one company. Sign in with your workspace name, or use the link your company gave you.",
+    };
+  }
+
+  const user = usable.length === 1 ? usable[0] : null;
   const valid = Boolean(user && password && (await verifyPassword(password, user.passwordHash)));
-  if (!user || !user.isActive || !valid) {
+  if (!user || !valid) {
     await writeAudit({
+      organizationId: user?.organizationId ?? organization?.id ?? null,
       actorLabel: emailKey || "unknown",
       action: "auth.login_failed",
       entityType: "User",
-      entityId: emailKey,
+      entityId: auditKey,
       ip: meta?.ip ?? null,
     });
     return { ok: false as const, error: "Email or password is incorrect." };
   }
-  await createSession(user.id, meta);
-  await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+
+  await createSession({ id: user.id, organizationId: user.organizationId }, meta);
+  await rawDb.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   return { ok: true as const, user };
 }

@@ -3,12 +3,12 @@ import type { AdapterContext, AdapterResult, SearchAdapter, SourcingCandidate } 
 import { searchTokens } from "../../inventory/check";
 
 /**
- * MFBMT's own supplier directory and previously recorded supplier products.
+ * your company's own supplier directory and previously recorded supplier products.
  * This source needs no external access and always runs.
  */
 export const internalSupplierAdapter: SearchAdapter = {
   key: "INTERNAL_SUPPLIERS",
-  label: "MFBMT supplier records",
+  label: "your supplier records",
   available: () => true,
   async search(queries: string[], context: AdapterContext): Promise<AdapterResult> {
     const tokens = [...new Set(queries.flatMap((query) => searchTokens(query)))].slice(0, 10);

@@ -8,6 +8,7 @@ import { activeEmailProvider, sendEmail } from "../email/send";
 import { getWhatsAppCredentials } from "../integrations/whatsapp";
 import { buildSpecSummary } from "../catalog/normalize";
 import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
+import { getCurrentOrganization } from "../organization";
 
 function quoteLink(token: string): string {
   return `${env.APP_URL.replace(/\/$/, "")}/supplier-response/${token}`;
@@ -15,11 +16,12 @@ function quoteLink(token: string): string {
 
 export function draftSupplierMessage(input: {
   supplierName: string;
+  companyName: string;
   enquiryRef: string;
   items: Array<{ description: string; quantity: number; unit: string; specs?: string | null }>;
   link: string;
 }): { subject: string; body: string } {
-  const subject = `Quotation request ${input.enquiryRef} — MFBMT`;
+  const subject = `Quotation request ${input.enquiryRef} — ${input.companyName}`;
   const lines = input.items.map(
     (item, index) =>
       `${index + 1}. ${item.description} — ${item.quantity} ${item.unit}${
@@ -37,7 +39,7 @@ export function draftSupplierMessage(input: {
     `You can submit your quotation securely here: ${input.link}`,
     "",
     "Thank you,",
-    "Procurement — Multi Fasteners Building Materials Trading LLC",
+    `Procurement — ${input.companyName}`,
   ].join("\n");
   return { subject, body };
 }
@@ -92,8 +94,10 @@ export async function createSupplierQuoteRequest(input: {
     },
   });
 
+  const organization = await getCurrentOrganization();
   const message = draftSupplierMessage({
     supplierName: supplier.name,
+    companyName: organization?.name ?? "Procurement",
     enquiryRef: item.enquiry.publicRef,
     items: [
       {
@@ -164,7 +168,8 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
     return { ok: true, detail: "Already sent earlier." };
   }
 
-  const subject = quote.subject ?? "Quotation request — MFBMT";
+  const organization = await getCurrentOrganization();
+  const subject = quote.subject ?? `Quotation request — ${organization?.name ?? "Procurement"}`;
   const body = quote.messageBody ?? "";
 
   // Demo mode never reaches a provider. The activity log records the simulation.

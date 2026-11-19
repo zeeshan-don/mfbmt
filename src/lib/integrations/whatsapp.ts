@@ -1,5 +1,6 @@
 import { env } from "../env";
-import { signPayload, verifySignedPayload } from "../crypto";
+import { signPayload, verifySignedPayload, tryDecryptSecret } from "../crypto";
+import { rawDb } from "../db-base";
 import { getIntegration, readSecretsDetailed, saveIntegration, clearIntegration } from "./store";
 import { parseJson } from "../json";
 
@@ -11,7 +12,7 @@ import { parseJson } from "../json";
  *   → token exchange → long-lived token → WABA phone resolution → webhook
  *   subscription → encrypted per-account storage.
  *
- * MFBMT stores its own credentials in its own database. No CoolCare token, WABA
+ * your company stores its own credentials in its own database. No CoolCare token, WABA
  * id, phone number id or customer record is reused, and no unofficial client
  * (WhatsApp Web automation, session cookies, scraping) is involved.
  */
@@ -259,7 +260,7 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
   if (!input.code) return { ok: false, error: "Meta did not return an authorisation code.", code: "missing_code" };
   if (!input.wabaId) return { ok: false, error: "Meta did not return a WhatsApp Business Account ID.", code: "missing_waba" };
 
-  let resolvedWabaId = input.wabaId;
+  const resolvedWabaId = input.wabaId;
 
   console.log("[whatsapp] completeSignup started", {
     event: input.event ?? "unknown",
@@ -413,6 +414,31 @@ export async function getWhatsAppConnection(): Promise<WhatsAppConnection | null
           : integration.lastError,
     accountLabel: integration.accountLabel,
   };
+}
+
+/**
+ * Routes an inbound WhatsApp delivery to its owning organization by the
+ * receiving Phone Number ID. Each company's credentials are stored separately,
+ * so a message can never be processed with another company's access token.
+ * Returns null for a number that is not connected to any active tenant.
+ */
+export async function resolveWhatsAppOrganization(phoneNumberId: string): Promise<string | null> {
+  if (!phoneNumberId) return null;
+  const integrations = await rawDb.integration.findMany({
+    where: { key: "WHATSAPP" },
+    select: { organizationId: true, secretsJson: true },
+  });
+  for (const integration of integrations) {
+    const secrets = parseJson<Record<string, string>>(integration.secretsJson, {});
+    const stored = secrets.PHONE_NUMBER_ID ? tryDecryptSecret(secrets.PHONE_NUMBER_ID) : null;
+    if (!stored?.ok || stored.value !== phoneNumberId) continue;
+    const organization = await rawDb.organization.findUnique({
+      where: { id: integration.organizationId },
+      select: { status: true },
+    });
+    if (organization?.status === "ACTIVE") return integration.organizationId;
+  }
+  return null;
 }
 
 /** Runtime credentials for webhooks and sending. Null when the connection is unusable. */

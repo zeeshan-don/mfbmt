@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { env } from "../env";
 
-const USER_AGENT = "MFBMTProcurementBot/1.0 (+official supplier research; respects robots.txt)";
+const USER_AGENT = "OrchestratorProcurementBot/1.0 (+official supplier research; respects robots.txt)";
 const MAX_BYTES = 400_000;
 const MAX_REDIRECTS = 3;
 const robotsCache = new Map<string, { disallow: string[]; allowed: boolean }>();

@@ -61,7 +61,7 @@ export default async function SupplierDetailPage({
           <Card>
             <CardHeader
               title="Recorded reliability"
-              description="Built only from MFBMT records. No public ratings are invented."
+              description="Built only from your company's records. No public ratings are invented."
             />
             <div className="grid gap-4 px-4 py-4 sm:grid-cols-4">
               <div>

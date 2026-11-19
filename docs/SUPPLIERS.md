@@ -106,3 +106,11 @@ Staff can add an offer found by phone or email:
 ## Demo suppliers
 
 The seed creates three clearly-marked sample suppliers (Gulf Fasteners, Emirates Industrial Supply, Al Noor Trading) with different behaviours: a complete competitive offer, an offer whose MOQ makes it ineligible, and a wrong-material listing. They are for demonstration only; delete them before using the system commercially.
+
+## Multi-company update (2026-11-19)
+
+Suppliers, supplier contacts, supplier products, search sessions/results, offers, quotes and RFQ
+approvals are all organization-scoped. Supplier discovery and reliability evidence never cross
+companies. Supplier response tokens resolve their owning organization server-side; a token cannot
+read another company's enquiry or documents. RFQ sending still requires the separate outreach
+approval, is idempotent and records provider failures.

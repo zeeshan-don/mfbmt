@@ -91,3 +91,10 @@ The important boundary: **AI never computes commercial facts**. It reads text an
 - **Single organisation** is assumed; the `Organization` row holds quotation identity and defaults.
 - **Currency**: prices keep their original currency. Comparison uses the enquiry currency (or the organisation default).
 - **No scraping behind controls**: page fetching checks robots.txt, blocks private hosts, caps size and timeout.
+
+## Multi-company update (2026-11-19)
+
+The application is now tenant-aware end to end. `src/lib/db.ts` scopes every tenant query in the
+caller's async context (not inside a Prisma extension, which loses `AsyncLocalStorage`). Explicit
+webhook, supplier-token and job work runs inside `runWithTenant`. `Organization` is global; every
+business model carries `organizationId`. See `docs/MULTITENANCY.md`.

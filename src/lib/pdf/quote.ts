@@ -3,7 +3,9 @@ import PDFDocument from "pdfkit";
 type Org = {
   name: string;
   legalName?: string | null;
-  trn?: string | null;
+  taxRegistrationNumber?: string | null;
+  /** Short brand line shown above the company name. Defaults to the name. */
+  brandLabel?: string | null;
   email?: string | null;
   phone?: string | null;
   address?: string | null;
@@ -60,13 +62,17 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
 
       const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
-      doc.fillColor(ACCENT).fontSize(9).font("Helvetica-Bold").text("MFBMT", { continued: false });
+      doc
+        .fillColor(ACCENT)
+        .fontSize(9)
+        .font("Helvetica-Bold")
+        .text((org.brandLabel || org.name).slice(0, 60), { continued: false });
       doc.moveDown(0.2);
       doc.fillColor(INK).fontSize(16).font("Helvetica-Bold").text(org.name);
       if (org.legalName && org.legalName !== org.name) {
         doc.fontSize(8.5).font("Helvetica").fillColor(MUTED).text(org.legalName);
       }
-      const contact = [org.address, org.phone, org.email, org.trn ? `TRN: ${org.trn}` : null]
+      const contact = [org.address, org.phone, org.email, org.taxRegistrationNumber ? `TRN: ${org.taxRegistrationNumber}` : null]
         .filter(Boolean)
         .join("  ·  ");
       doc.fontSize(8.5).fillColor(MUTED).text(contact, { width: pageWidth * 0.62 });

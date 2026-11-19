@@ -15,11 +15,12 @@
     "db:seed": "tsx src/scripts/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "provision:owner": "tsx src/scripts/provision-owner.ts",
+    "provision:org": "tsx src/scripts/provision-organization.ts",
     "worker": "tsx src/worker.ts",
     "check:config": "tsx src/scripts/check-config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "tsx tests/e2e/seed-fixture.ts && playwright test",
+    "test:e2e": "tsx tests/e2e/prepare.ts && playwright test",
     "test:e2e:fixture": "tsx tests/e2e/seed-fixture.ts",
     "check": "npm run typecheck && npm run test && npm run build"
   },

@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { getCurrentOrganization } from "@/lib/organization";
 import { requireOwner } from "@/lib/auth";
 import { env, integrationEnv, whatsAppSignupConfig } from "@/lib/env";
 import { aiStatus } from "@/lib/ai/provider";
@@ -31,11 +32,11 @@ export default async function OnboardingPage({
   const flags = await searchParams;
 
   const [org, whatsapp, gmail, microsoft, ai, products, suppliers, exclusions, rules, jobs, worker] = await Promise.all([
-    db.organization.findFirst(),
+    getCurrentOrganization(),
     getWhatsAppConnection(),
-    db.integration.findUnique({ where: { key: "GMAIL" } }),
-    db.integration.findUnique({ where: { key: "MICROSOFT365" } }),
-    db.integration.findUnique({ where: { key: "AI_PROVIDER" } }),
+    db.integration.findFirst({ where: { key: "GMAIL" } }),
+    db.integration.findFirst({ where: { key: "MICROSOFT365" } }),
+    db.integration.findFirst({ where: { key: "AI_PROVIDER" } }),
     db.product.count(),
     db.supplier.count(),
     db.excludedContact.count(),
@@ -55,7 +56,7 @@ export default async function OnboardingPage({
   const sourcingFirst = org?.inventoryMode === "SOURCING_FIRST";
   const workerHealthy = worker.status === "HEALTHY";
 
-  const companyComplete = Boolean(org?.address && org?.email && (org?.trn || org?.legalName));
+  const companyComplete = Boolean(org?.address && org?.email && (org?.taxRegistrationNumber || org?.legalName));
   const inventoryConfigured = sourcingFirst || Boolean(org?.inventoryConfiguredAt) || products > 0;
 
   const steps: Step[] = [
@@ -87,7 +88,7 @@ export default async function OnboardingPage({
       detail: whatsapp?.connected
         ? `${whatsapp.businessName ?? "Connected business"} · ${whatsapp.phoneNumber ?? ""}`
         : waSignup.configured
-          ? "Use Connect WhatsApp to run Meta Embedded Signup for MFBMT's own number."
+          ? "Use Connect WhatsApp to run Meta Embedded Signup for your company's own number."
           : `Meta app configuration is incomplete (${waSignup.missing.join(", ")}).`,
       href: "/settings#whatsapp",
       action: "Connect WhatsApp",
@@ -132,7 +133,7 @@ export default async function OnboardingPage({
       status: inventoryConfigured ? "CONNECTED" : "NOT_CONFIGURED",
       detail: inventoryConfigured
         ? `${products} product(s). Policy: ${sourcingFirst ? "sourcing-first" : "stock first, source the shortage"}.`
-        : "Import a stock spreadsheet, or set the sourcing-first policy if MFBMT normally outsources goods.",
+        : "Import a stock spreadsheet, or set the sourcing-first policy if your company normally outsources goods.",
       href: "/inventory",
       action: "Import inventory",
     },

@@ -16,7 +16,7 @@ export default async function ResetPasswordPage({
   return (
     <main className="flex min-h-screen items-center justify-center bg-bg px-4 py-12">
       <div className="w-full max-w-sm">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">MFBMT</p>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">Procurement</p>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink">Choose a new password</h1>
 
         {flags.error ? (

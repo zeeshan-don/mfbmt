@@ -119,3 +119,11 @@ migrations with `prisma migrate deploy`. It never resets the development databas
   `EnquiryItem(fastenerType, diameter)`, `SupplierOffer(enquiryItemId)`, `SearchSession(enquiryItemId)`,
   `BackgroundJob(status, runAfter)`, `BackgroundJob(status, leaseExpiresAt)`,
   `WorkerHeartbeat(lastSeenAt)`, `AuditLog(entityType, entityId)`.
+
+## Multi-company update (2026-11-19)
+
+Migration `20261119170000_multi_company_tenancy` adds organization ownership to all tenant tables,
+backfills historical rows to `org_mfbmt`, scopes unique keys, adds foreign keys and provisions the
+empty `org_ogs` tenant. It is additive and forward-only. `User.email`, `Integration.key` and the
+other previously global uniques are now composite with `organizationId`. Backup/restore is
+mandatory before deployment; see `docs/MULTITENANCY.md` and `docs/DEPLOYMENT.md`.

@@ -32,3 +32,11 @@ credentials were available; confirm onboarding in your own account before promis
 - A failed send is recorded with the provider error; it is never reported as delivered.
 
 Opt-in, template management and number quality are account-level responsibilities in Meta Business Manager.
+
+## Multi-company update (2026-11-19)
+
+Incoming Meta webhooks now resolve the company from the receiving Phone Number ID and execute inside
+that company's tenant context. Each company stores its own WABA ID, Phone Number ID and access token;
+a phone ID may be active for only one company. Delivery/read events, duplicate retries and send
+failures remain idempotent and tenant-scoped. Embedded Signup state is signed and bound to the
+initiating user and organization. Live Meta verification still requires real credentials.

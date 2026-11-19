@@ -26,7 +26,7 @@ async function makeProduct(input: {
     },
   });
   const location = await db.inventoryLocation.upsert({
-    where: { code: "TEST-MAIN" },
+    where: { organizationId_code: { organizationId: "org_mfbmt", code: "TEST-MAIN" } },
     update: {},
     create: { code: "TEST-MAIN", name: "Test warehouse" },
   });
@@ -207,11 +207,9 @@ describe("inventory availability", () => {
 
 describe("inventory import", () => {
   it("imports valid rows and reports invalid ones without stopping", async () => {
-    const user = await db.user.upsert({
-      where: { email: "import-test@mfbmt.local" },
-      update: {},
-      create: { email: "import-test@mfbmt.local", name: "Import Test", passwordHash: "x", role: "OWNER" },
-    });
+    const user =
+      (await db.user.findFirst({ where: { email: "import-test@mfbmt.local" } })) ??
+      (await db.user.create({ data: { email: "import-test@mfbmt.local", name: "Import Test", passwordHash: "x", role: "OWNER" } }));
     const sku = `IMP-${randomUUID().slice(0, 6)}`;
     const report = await importInventory({
       rows: [
@@ -227,7 +225,7 @@ describe("inventory import", () => {
 
     expect(report.created).toBe(1);
     expect(report.errors.length).toBe(2);
-    const product = await db.product.findUnique({ where: { sku } });
+    const product = await db.product.findFirst({ where: { sku } });
     expect(product).not.toBeNull();
     const stock = await db.inventoryStock.findFirst({ where: { productId: product!.id } });
     expect(stock?.quantityOnHand).toBe(12);
@@ -271,11 +269,9 @@ describe("approval transitions", () => {
       },
     });
 
-    const user = await db.user.upsert({
-      where: { email: "approver@mfbmt.local" },
-      update: {},
-      create: { email: "approver@mfbmt.local", name: "Approver", passwordHash: "x", role: "OWNER" },
-    });
+    const user =
+      (await db.user.findFirst({ where: { email: "approver@mfbmt.local" } })) ??
+      (await db.user.create({ data: { email: "approver@mfbmt.local", name: "Approver", passwordHash: "x", role: "OWNER" } }));
 
     const approvalId = await ensureSourcingApproval(item.id);
     expect(approvalId).toBeTruthy();
@@ -317,11 +313,9 @@ describe("approval transitions", () => {
         landedCostJson: "{}",
       },
     });
-    const user = await db.user.upsert({
-      where: { email: "approver@mfbmt.local" },
-      update: {},
-      create: { email: "approver@mfbmt.local", name: "Approver", passwordHash: "x", role: "OWNER" },
-    });
+    const user =
+      (await db.user.findFirst({ where: { email: "approver@mfbmt.local" } })) ??
+      (await db.user.create({ data: { email: "approver@mfbmt.local", name: "Approver", passwordHash: "x", role: "OWNER" } }));
     const approvalId = await ensureSourcingApproval(item.id);
     const blocked = await decideApproval({
       approvalId: approvalId!,

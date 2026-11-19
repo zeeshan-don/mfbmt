@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { getCurrentOrganization } from "@/lib/organization";
 import { requirePermission, canSeeSupplierCosts } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
 import { buildSpecSummary } from "@/lib/catalog/normalize";
@@ -63,7 +64,7 @@ export default async function SourcingDetailPage({
   });
   if (!item) notFound();
 
-  const org = await db.organization.findFirst();
+  const org = await getCurrentOrganization();
   const suppliers = await db.supplier.findMany({ where: { status: { not: "BLOCKED" } }, orderBy: { name: "asc" } });
   const supplierById = new Map(suppliers.map((supplier) => [supplier.id, supplier]));
 
@@ -277,7 +278,7 @@ export default async function SourcingDetailPage({
                               ? "Supplier quotation"
                               : offer.sourceType === "INTERNAL_DB"
                                 ? "Your supplier records"
-                                : "Entered by MFBMT"}
+                                : "Entered by your company"}
                         </span>
                         {offer.sourceUrl ? (
                           <a
@@ -493,7 +494,7 @@ export default async function SourcingDetailPage({
 
       {isOwner ? (
       <Card>
-        <CardHeader title="Record a price you received" description="For prices confirmed by phone, WhatsApp or email. It is marked as entered by MFBMT, not scraped." />
+        <CardHeader title="Record a price you received" description="For prices confirmed by phone, WhatsApp or email. It is marked as entered by your company, not scraped." />
         <details className="group">
           <summary className="cursor-pointer list-none px-4 py-2.5 text-xs font-medium text-accent hover:underline">
             Add supplier offer

@@ -32,3 +32,12 @@ Redirect URIs default to `${APP_URL}/api/integrations/gmail/callback` and
 OAuth, sync and send code paths are exercised only in their unconfigured/mock form. **No live Google or
 Microsoft credentials were available**, so onboarding, token refresh and provider delivery must be verified
 in your own accounts. In demo mode, sending is simulated and no provider request is made.
+
+## Multi-company update (2026-11-19)
+
+Gmail and Microsoft 365 are connected per organization. Gmail push notifications are routed by the
+mailbox address saved on the owning integration; Microsoft subscriptions use signed
+`org:<organizationId>:<secret>` clientState. An unmatched notification is discarded, never processed
+against another company's mailbox. Inbound forwarding now requires `x-organization-slug`; older
+forwarders without a workspace are rejected. Outgoing mail always uses the authenticated company's
+connected mailbox and sender identity. Live OAuth verification still requires provider credentials.

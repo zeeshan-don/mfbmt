@@ -36,6 +36,8 @@ export type ParsedStatusUpdate = {
   messageId: string;
   status: string;
   recipient: string;
+  /** Receiving WhatsApp business number, used to route the status to a tenant. */
+  phoneNumberId?: string | null;
   timestamp: Date;
   errorCode?: number | null;
   errorMessage?: string | null;
@@ -103,6 +105,7 @@ export function parseWhatsAppWebhook(payload: WebhookPayload): {
           messageId,
           status: String(status.status ?? "unknown"),
           recipient: String(status.recipient_id ?? ""),
+          phoneNumberId: receivingPhoneNumberId,
           timestamp: new Date(Number(status.timestamp ?? 0) * 1000 || Date.now()),
           errorCode: errors?.[0]?.code ?? null,
           errorMessage: errors?.[0]?.message ?? errors?.[0]?.title ?? null,

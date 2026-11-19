@@ -1,4 +1,5 @@
-import type { PrismaClient } from "@prisma/client";
+import type { TenantDb } from "../lib/db";
+import { requireTenantId } from "../lib/tenant";
 import { parseFastenerSpec } from "../lib/fasteners/spec";
 import { recomputeOffersForItem } from "../lib/costing/evaluate";
 import { ensureSourcingApproval } from "../lib/workflow/approvals";
@@ -42,7 +43,7 @@ function specFrom(description: string) {
   return parseFastenerSpec({ description, rawText: description });
 }
 
-async function getOrCreateSupplier(db: PrismaClient, row: (typeof SUPPLIERS)[number]) {
+async function getOrCreateSupplier(db: TenantDb, row: (typeof SUPPLIERS)[number]) {
   const existing = await db.supplier.findFirst({ where: { name: row.name } });
   if (existing) return existing;
   return db.supplier.create({
@@ -62,27 +63,28 @@ async function getOrCreateSupplier(db: PrismaClient, row: (typeof SUPPLIERS)[num
 }
 
 async function getOrCreateProduct(
-  db: PrismaClient,
+  db: TenantDb,
   input: { sku: string; name: string; specDescription: string; onHand: number; locationId: string },
 ) {
   const spec = specFrom(input.specDescription);
-  const product = await db.product.upsert({
-    where: { sku: input.sku },
-    update: {}, // never overwrite owner edits or stock
-    create: {
-      sku: input.sku,
-      name: input.name,
-      category: "Industrial Fasteners",
-      size: spec.diameter,
-      material: spec.material,
-      grade: spec.propertyClass,
-      standard: spec.standard,
-      unit: "pcs",
-      isDemo: true,
-      notes: "Sample stock row for the fastener walkthrough.",
-      fastenerSpecJson: JSON.stringify(spec),
-    },
-  });
+  const existing = await db.product.findFirst({ where: { sku: input.sku } });
+  const product =
+    existing ??
+    (await db.product.create({
+      data: {
+        sku: input.sku,
+        name: input.name,
+        category: "Industrial Fasteners",
+        size: spec.diameter,
+        material: spec.material,
+        grade: spec.propertyClass,
+        standard: spec.standard,
+        unit: "pcs",
+        isDemo: true,
+        notes: "Sample stock row for the fastener walkthrough.",
+        fastenerSpecJson: JSON.stringify(spec),
+      },
+    }));
   const stock = await db.inventoryStock.findUnique({
     where: { productId_locationId: { productId: product.id, locationId: input.locationId } },
   });
@@ -101,7 +103,7 @@ async function getOrCreateProduct(
   return product;
 }
 
-export async function resetFastenerWalkthrough(db: PrismaClient) {
+export async function resetFastenerWalkthrough(db: TenantDb) {
   const refs = Object.values(FASTENER_DEMO_REFS);
   const enquiries = await db.enquiry.findMany({
     where: { publicRef: { in: [...refs] }, isDemo: true },
@@ -116,13 +118,14 @@ export async function resetFastenerWalkthrough(db: PrismaClient) {
   return { removed: ids.length };
 }
 
-export async function seedFastenerWalkthrough(db: PrismaClient): Promise<{ created: boolean }> {
+export async function seedFastenerWalkthrough(db: TenantDb): Promise<{ created: boolean }> {
   const owner = await db.user.findFirst({ where: { role: "OWNER" } });
+  const organizationId = await requireTenantId();
 
   const location = await db.inventoryLocation.upsert({
-    where: { code: "MAIN" },
+    where: { organizationId_code: { organizationId, code: "MAIN" } },
     update: {},
-    create: { code: "MAIN", name: "Main warehouse (sample)", isDemo: true },
+    create: { organizationId, code: "MAIN", name: "Main warehouse (sample)", isDemo: true },
   });
 
   const suppliers = [];
@@ -146,7 +149,7 @@ export async function seedFastenerWalkthrough(db: PrismaClient): Promise<{ creat
     locationId: location.id,
   });
 
-  if (await db.enquiry.findUnique({ where: { publicRef: FASTENER_DEMO_REFS.rfq } })) {
+  if (await db.enquiry.findFirst({ where: { publicRef: FASTENER_DEMO_REFS.rfq } })) {
     return { created: false };
   }
 
@@ -383,8 +386,8 @@ export async function seedFastenerWalkthrough(db: PrismaClient): Promise<{ creat
   return { created: true };
 }
 
-async function seedQuotedDemo(db: PrismaClient, ownerId: string | null) {
-  if (await db.enquiry.findUnique({ where: { publicRef: FASTENER_DEMO_REFS.quoted } })) return;
+async function seedQuotedDemo(db: TenantDb, ownerId: string | null) {
+  if (await db.enquiry.findFirst({ where: { publicRef: FASTENER_DEMO_REFS.quoted } })) return;
 
   const boltSpec = specFrom(
     "Hex bolt ISO 4017 M10 x 1.5 x 30 mm class 8.8 zinc plated carbon steel",

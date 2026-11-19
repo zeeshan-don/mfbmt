@@ -1,7 +1,8 @@
 import { env, assertProductionConfig } from "./lib/env";
 import { db } from "./lib/db";
 import { runNextJob } from "./lib/workflow/process";
-import { enqueueJob, recordWorkerHeartbeat } from "./lib/workflow/jobs";
+import { activeTenantIds, enqueueJob, recordWorkerHeartbeat } from "./lib/workflow/jobs";
+import { runWithTenant } from "./lib/tenant";
 import { JOB_TYPES } from "./lib/constants";
 import { activeEmailProvider } from "./lib/email/send";
 
@@ -19,31 +20,37 @@ let stopping = false;
 
 async function ensureRecurringJobs() {
   const now = Date.now();
-  // The connected mailbox is the source of truth, not EMAIL_INTAKE_PROVIDER:
-  // a mailbox connected through OAuth must be polled even when the env flag
-  // still says "none".
-  const emailProvider = await activeEmailProvider();
-  if (env.EMAIL_AUTO_SYNC === "true" && emailProvider !== "none") {
-    await enqueueJob({
-      type: JOB_TYPES.SYNC_EMAIL,
-      payload: { trigger: "poll" },
-      idempotencyKey: `email-sync:${Math.floor(now / env.EMAIL_POLL_INTERVAL_MS)}`,
-      runAfter: new Date(Math.ceil(now / env.EMAIL_POLL_INTERVAL_MS) * env.EMAIL_POLL_INTERVAL_MS),
-      maxAttempts: 3,
-    });
-    await enqueueJob({
-      type: JOB_TYPES.RENEW_EMAIL_WATCH,
-      payload: {},
-      idempotencyKey: `email-watch-renew:${new Date().toISOString().slice(0, 13)}`,
-      maxAttempts: 2,
+  // Recurring work is planned per active tenant, so each company's mailbox and
+  // expired supplier requests are handled with that company's credentials.
+  for (const organizationId of await activeTenantIds()) {
+    await runWithTenant({ organizationId, source: "internal" }, async () => {
+      // The connected mailbox is the source of truth, not EMAIL_INTAKE_PROVIDER:
+      // a mailbox connected through OAuth must be polled even when the env flag
+      // still says "none".
+      const emailProvider = await activeEmailProvider();
+      if (env.EMAIL_AUTO_SYNC === "true" && emailProvider !== "none") {
+        await enqueueJob({
+          type: JOB_TYPES.SYNC_EMAIL,
+          payload: { trigger: "poll" },
+          idempotencyKey: `email-sync:${Math.floor(now / env.EMAIL_POLL_INTERVAL_MS)}`,
+          runAfter: new Date(Math.ceil(now / env.EMAIL_POLL_INTERVAL_MS) * env.EMAIL_POLL_INTERVAL_MS),
+          maxAttempts: 3,
+        });
+        await enqueueJob({
+          type: JOB_TYPES.RENEW_EMAIL_WATCH,
+          payload: {},
+          idempotencyKey: `email-watch-renew:${new Date().toISOString().slice(0, 13)}`,
+          maxAttempts: 2,
+        });
+      }
+      await enqueueJob({
+        type: JOB_TYPES.PURGE_EXPIRED,
+        payload: {},
+        idempotencyKey: `purge-expired:${new Date().toISOString().slice(0, 13)}`,
+        maxAttempts: 1,
+      });
     });
   }
-  await enqueueJob({
-    type: JOB_TYPES.PURGE_EXPIRED,
-    payload: {},
-    idempotencyKey: `purge-expired:${new Date().toISOString().slice(0, 13)}`,
-    maxAttempts: 1,
-  });
 }
 
 async function main() {

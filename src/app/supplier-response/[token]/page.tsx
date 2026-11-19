@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { rawDb } from "@/lib/db-base";
 import { formatQty } from "@/lib/format";
 import { submitSupplierResponseAction } from "@/app/actions/intake";
 import { Notice, inputClass, textareaClass } from "@/components/ui";
@@ -15,10 +15,16 @@ export default async function SupplierResponsePage({
   const { token } = await params;
   const flags = await searchParams;
 
-  const quote = await db.supplierQuote.findUnique({
+  // The unguessable token is a capability. Look it up unscoped, then use only
+  // the owning organization's branding; no other tenant's data is read.
+  const quote = await rawDb.supplierQuote.findFirst({
     where: { token },
     include: { supplier: true, items: true },
   });
+  const organization = quote
+    ? await rawDb.organization.findUnique({ where: { id: quote.organizationId }, select: { name: true } })
+    : null;
+  const companyName = organization?.name ?? "the company";
 
   const expired = quote ? quote.expiresAt.getTime() < Date.now() : false;
   const already = quote?.status === "RESPONDED";
@@ -26,27 +32,27 @@ export default async function SupplierResponsePage({
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center px-4 py-10">
       <div className="mb-6">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">Multi Fasteners Building Materials Trading LLC</p>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">{companyName}</p>
         <h1 className="mt-1 text-xl font-semibold text-ink">Submit your quotation</h1>
       </div>
 
       {!quote ? (
         <Notice tone="danger" title="This link is not valid">
-          Please contact MFBMT procurement for a new quotation request link.
+          Please contact {companyName} procurement for a new quotation request link.
         </Notice>
       ) : expired ? (
         <Notice tone="warn" title="This link has expired">
-          Please contact MFBMT procurement and we will send a fresh request.
+          Please contact {companyName} procurement and we will send a fresh request.
         </Notice>
       ) : flags.submitted || already ? (
         <Notice tone="ok" title="Thank you — your quotation was received">
-          MFBMT procurement will review your price and contact you if anything needs clarification.
+          {companyName} procurement will review your price and contact you if anything needs clarification.
         </Notice>
       ) : (
         <>
           {flags.error ? <Notice tone="danger" title="Could not submit">{flags.error}</Notice> : null}
           <div className="mb-4 rounded-card border border-line bg-surface px-4 py-3 text-sm">
-            <p className="text-xs text-muted">Requested by MFBMT · kindly quote:</p>
+            <p className="text-xs text-muted">Requested by {companyName} · kindly quote:</p>
             {quote.items.map((item) => (
               <div key={item.id} className="mt-1">
                 <p className="font-medium text-ink">{item.description}</p>
@@ -172,7 +178,7 @@ export default async function SupplierResponsePage({
             </label>
             <div className="flex items-center justify-between gap-3">
               <p className="text-[11px] text-muted">
-                Your price is used only to prepare an MFBMT customer quotation. This is not a purchase order.
+                Your price is used only to prepare a {companyName} customer quotation. This is not a purchase order.
               </p>
               <button className="h-9 rounded-control bg-accent px-4 text-sm font-medium text-white hover:opacity-90">
                 Submit quotation
@@ -180,7 +186,7 @@ export default async function SupplierResponsePage({
             </div>
           </form>
           <p className="mt-4 text-[11px] text-muted">
-            This secure link expires automatically and cannot be used to access MFBMT&apos;s internal system.
+            This secure link expires automatically and cannot be used to access {companyName}&apos;s internal system.
           </p>
         </>
       )}

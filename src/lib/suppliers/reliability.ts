@@ -1,7 +1,7 @@
 import { db } from "../db";
 
 /**
- * Reliability is built only from evidence MFBMT actually recorded.
+ * Reliability is built only from evidence your company actually recorded.
  * No invented star ratings; when there is no history we say so.
  */
 export async function supplierReliability(supplierId: string) {
@@ -42,6 +42,6 @@ export async function supplierReliability(supplierId: string) {
     verifiedPrices,
     priceConfirmedOffers: completedDeals,
     lastInteraction: lastInteraction ?? null,
-    basis: "Recorded by MFBMT only",
+    basis: "Recorded by your company only",
   };
 }

@@ -8,6 +8,8 @@ import { assertAllowedUpload } from "../storage";
 import { writeAudit } from "../audit";
 import { parseEmailAddress, parseEmailDisplayName } from "../intake/identity";
 import { activeEmailProvider } from "./send";
+import { graphClientState } from "./routing";
+import { requireTenantId } from "../tenant";
 
 /**
  * Automatic mailbox intake.
@@ -45,6 +47,8 @@ type EmailConfig = {
   lastError?: string;
   processedCount?: number;
   mode?: "push" | "poll";
+  /** Connected mailbox address, used to route push notifications to this tenant. */
+  accountEmail?: string;
 };
 
 function decodeBase64Url(data: string): Buffer {
@@ -367,6 +371,7 @@ async function syncGmail(token: string, config: EmailConfig, trigger: string): P
 
   const nextConfig: Partial<EmailConfig> = {
     historyId: currentHistoryId ?? config.historyId,
+    accountEmail: profileData.emailAddress ?? config.accountEmail,
   };
   // Keep the watch alive whenever a sync runs; the renewal job does the same.
   const watch = await ensureGmailWatch(token);
@@ -572,6 +577,8 @@ async function ensureGraphSubscription(
 
   const token = await getAccessToken("microsoft");
   if (!token) return { ok: false, detail: "Microsoft 365 is not connected." };
+  const organizationId = await requireTenantId();
+  const clientState = graphClientState(organizationId, env.GRAPH_WEBHOOK_CLIENT_STATE);
 
   try {
     if (config.subscriptionId) {
@@ -604,7 +611,7 @@ async function ensureGraphSubscription(
         lifecycleNotificationUrl: notificationUrl,
         resource: `/me/mailFolders/${folder}/messages`,
         expirationDateTime,
-        clientState: env.GRAPH_WEBHOOK_CLIENT_STATE,
+        clientState,
       }),
     });
     if (!response.ok) {

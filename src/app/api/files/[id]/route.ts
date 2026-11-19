@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { rawDb } from "@/lib/db-base";
 import { getCurrentUser } from "@/lib/auth";
 import { readAttachment, verifyDownloadToken } from "@/lib/storage";
 
@@ -15,12 +15,14 @@ export async function GET(
   const url = new URL(request.url);
   const token = url.searchParams.get("token");
 
-  const attachment = await db.attachment.findUnique({ where: { id } });
+  // An expiring signed token is a capability for exactly this attachment; an
+  // authenticated user must belong to the attachment's organization.
+  const attachment = await rawDb.attachment.findUnique({ where: { id } });
   if (!attachment) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
   const user = await getCurrentUser();
   const tokenValid = token ? verifyDownloadToken(id, token) : false;
-  if (!user && !tokenValid) {
+  if (!tokenValid && (!user || user.organizationId !== attachment.organizationId)) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 

@@ -2,6 +2,7 @@ import { db } from "../db";
 import { encryptSecret, tryDecryptSecret } from "../crypto";
 import { parseJson, stringifyJson } from "../json";
 import { integrationKeys, type IntegrationKey } from "../constants";
+import { requireTenantId } from "../tenant";
 
 const NAMES: Record<IntegrationKey, string> = {
   WHATSAPP: "WhatsApp Business",
@@ -15,17 +16,18 @@ const NAMES: Record<IntegrationKey, string> = {
 };
 
 export async function ensureIntegrations() {
+  const organizationId = await requireTenantId();
   for (const key of integrationKeys) {
     await db.integration.upsert({
-      where: { key },
+      where: { organizationId_key: { organizationId, key } },
       update: {},
-      create: { key, name: NAMES[key], status: "NOT_CONFIGURED" },
+      create: { organizationId, key, name: NAMES[key], status: "NOT_CONFIGURED" },
     });
   }
 }
 
 export async function getIntegration(key: IntegrationKey) {
-  return db.integration.findUnique({ where: { key } });
+  return db.integration.findFirst({ where: { key } });
 }
 
 export type SecretsResult = {
@@ -114,18 +116,20 @@ export async function saveIntegration(input: {
     nextSyncAt: input.nextSyncAt === undefined ? (existing?.nextSyncAt ?? null) : input.nextSyncAt,
   };
 
+  const organizationId = await requireTenantId();
   await db.integration.upsert({
-    where: { key: input.key },
+    where: { organizationId_key: { organizationId, key: input.key } },
     update: data,
-    create: { key: input.key, name: NAMES[input.key], ...data },
+    create: { organizationId, key: input.key, name: NAMES[input.key], ...data },
   });
 }
 
 /** Removes all stored credentials for an integration and marks it disconnected. */
 export async function clearIntegration(key: IntegrationKey, status = "DISCONNECTED") {
+  const organizationId = await requireTenantId();
   await db.integration.upsert({
-    where: { key },
+    where: { organizationId_key: { organizationId, key } },
     update: { secretsJson: "{}", status, accountLabel: null, lastError: null, nextSyncAt: null },
-    create: { key, name: NAMES[key], status, secretsJson: "{}" },
+    create: { organizationId, key, name: NAMES[key], status, secretsJson: "{}" },
   });
 }

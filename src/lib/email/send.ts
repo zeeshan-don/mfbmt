@@ -1,6 +1,7 @@
 import { env, isDemoMode } from "../env";
 import { getAccessToken } from "./oauth";
 import { getIntegration } from "../integrations/store";
+import { getCurrentOrganization } from "../organization";
 
 export type OutgoingAttachment = { filename: string; content: Buffer; contentType: string };
 
@@ -90,6 +91,10 @@ export async function sendEmail(input: {
   if (provider === "none") {
     return { ok: false, error: "No company email account is connected. Connect Gmail or Microsoft 365 in Settings." };
   }
+  // The sender identifies the company that owns this request. Never fall back
+  // to another tenant's mailbox: the integration lookup above is tenant-scoped.
+  const organization = await getCurrentOrganization().catch(() => null);
+  const fromAddress = organization?.email || env.COMPANY_EMAIL_FROM || "me";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.to)) {
     return { ok: false, error: "The recipient email address is not valid." };
   }
@@ -100,7 +105,7 @@ export async function sendEmail(input: {
       if (!token) return { ok: false, error: "Gmail needs to be reconnected in Settings." };
       const raw = Buffer.from(
         buildMime({
-          from: env.COMPANY_EMAIL_FROM || "me",
+          from: fromAddress,
           to: input.to,
           subject: input.subject,
           text: input.text,

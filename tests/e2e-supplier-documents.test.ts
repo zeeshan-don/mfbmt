@@ -34,7 +34,7 @@ async function resetDatabase() {
   await db.supplierProduct.deleteMany();
   await db.supplier.deleteMany();
   await db.pricingRule.deleteMany();
-  await db.organization.deleteMany();
+  // Organizations are provisioned by the migration and preserved between tests.
   await db.session.deleteMany();
   await db.user.deleteMany();
   await db.integration.deleteMany();
@@ -150,7 +150,7 @@ describe("supplier quotation request and response", () => {
         role: "OWNER",
       },
     });
-    await db.organization.create({ data: { name: "Test Trading LLC", defaultCurrency: "AED" } });
+    await db.organization.update({ where: { id: "org_mfbmt" }, data: { name: "Test Trading LLC", defaultCurrency: "AED" } });
     const enquiry = await db.enquiry.create({
       data: {
         publicRef: `ENQ-${randomUUID().slice(0, 8)}`,

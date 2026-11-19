@@ -8,6 +8,8 @@ import { writeAudit } from "@/lib/audit";
 import { ingestInboundMessage, processInboundMessage } from "@/lib/workflow/enquiry";
 import { recordSupplierResponse } from "@/lib/workflow/supplierQuotes";
 import { db } from "@/lib/db";
+import { rawDb } from "@/lib/db-base";
+import { runWithTenant } from "@/lib/tenant";
 
 function str(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
@@ -103,7 +105,17 @@ export async function submitSupplierResponseAction(formData: FormData) {
     redirect(`/supplier-response/${token}?error=Use+a+three-letter+currency+such+as+AED`);
   }
 
-  const result = await recordSupplierResponse({
+  // The public form has no session. The token identifies the tenant; the
+  // response is then written entirely inside that tenant's context.
+  const tokenQuote = await rawDb.supplierQuote.findFirst({
+    where: { token },
+    select: { organizationId: true },
+  });
+  if (!tokenQuote) redirect(`/supplier-response/${token}?error=This+link+is+not+valid`);
+
+  const result = await runWithTenant(
+    { organizationId: tokenQuote.organizationId, source: "explicit" },
+    () => recordSupplierResponse({
     token,
     unitPrice,
     currency,
@@ -130,7 +142,8 @@ export async function submitSupplierResponseAction(formData: FormData) {
     validityDays: optionalNumber(formData.get("validityDays")),
     availability: str(formData.get("availability")),
     notes: str(formData.get("notes")),
-  });
+    }),
+  );
 
   if (!result.ok) redirect(`/supplier-response/${token}?error=${encodeURIComponent(result.error)}`);
   redirect(`/supplier-response/${token}?submitted=1`);

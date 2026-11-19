@@ -181,17 +181,18 @@ export async function disconnectEmailAction(formData: FormData) {
 export async function saveOrganizationAction(formData: FormData) {
   const user = await authorizeOwner();
   if (!user) redirect("/login");
-  const existing = await db.organization.findFirst();
+  const existing = await db.organization.findUnique({ where: { id: user.organizationId } });
+  if (!existing) redirect("/settings?error=Your+company+workspace+could+not+be+found.#company");
   const inventoryMode = String(formData.get("inventoryMode") ?? "STOCK_FIRST");
   const data = {
-    name: str(formData.get("name")) ?? "Multi Fasteners Building Materials Trading LLC",
+    name: str(formData.get("name")) ?? existing.name,
     legalName: str(formData.get("legalName")),
-    trn: str(formData.get("trn")),
+    taxRegistrationNumber: str(formData.get("taxRegistrationNumber")),
     email: str(formData.get("email")),
     phone: str(formData.get("phone")),
     address: str(formData.get("address")),
     website: str(formData.get("website")),
-    defaultCurrency: (str(formData.get("defaultCurrency")) ?? "AED").toUpperCase().slice(0, 3),
+    defaultCurrency: (str(formData.get("defaultCurrency")) ?? existing.defaultCurrency).toUpperCase().slice(0, 3),
     quotationValidityDays: Number(String(formData.get("quotationValidityDays") ?? "14")) || 14,
     taxEnabled: formData.get("taxEnabled") === "on",
     taxInLandedCost: formData.get("taxInLandedCost") === "on",
@@ -200,13 +201,9 @@ export async function saveOrganizationAction(formData: FormData) {
     quotationTerms: str(formData.get("quotationTerms")),
     inventoryMode: inventoryMode === "SOURCING_FIRST" ? "SOURCING_FIRST" : "STOCK_FIRST",
     inventoryConfiguredAt:
-      inventoryMode === "SOURCING_FIRST" ? (existing?.inventoryConfiguredAt ?? new Date()) : existing?.inventoryConfiguredAt ?? null,
+      inventoryMode === "SOURCING_FIRST" ? (existing.inventoryConfiguredAt ?? new Date()) : existing.inventoryConfiguredAt ?? null,
   };
-  if (existing) {
-    await db.organization.update({ where: { id: existing.id }, data });
-  } else {
-    await db.organization.create({ data });
-  }
+  await db.organization.update({ where: { id: existing.id }, data });
   await writeAudit({
     actorId: user.id,
     actorLabel: user.name,
@@ -233,9 +230,10 @@ export async function addExcludedContactAction(formData: FormData) {
   const category = String(formData.get("category") ?? "PERSONAL");
 
   await db.excludedContact.upsert({
-    where: { identifier },
+    where: { organizationId_identifier: { organizationId: user.organizationId, identifier } },
     update: { category, label: str(formData.get("label")), reason: str(formData.get("reason")) },
     create: {
+      organizationId: user.organizationId,
       identifier,
       category,
       label: str(formData.get("label")),
@@ -396,7 +394,7 @@ export async function retryJobAction(formData: FormData) {
 export async function completeOnboardingAction() {
   const user = await authorizeOwner();
   if (!user) redirect("/login");
-  const org = await db.organization.findFirst();
+  const org = await db.organization.findUnique({ where: { id: user.organizationId } });
   if (org) {
     await db.organization.update({ where: { id: org.id }, data: { onboardingCompletedAt: new Date() } });
   }

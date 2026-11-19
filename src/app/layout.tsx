@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MFBMT Procurement",
-  description: "Enquiry intake, stock checks, supplier sourcing and owner approvals for MFBMT.",
+  title: "Orchestrator Procurement Intelligence",
+  description: "Multi-company procurement automation: enquiry intake, stock checks, supplier sourcing, owner approvals and quotations.",
 };
 
 export const viewport: Viewport = {

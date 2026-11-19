@@ -82,14 +82,16 @@ async function resetDatabase() {
   await db.supplierProduct.deleteMany();
   await db.supplier.deleteMany();
   await db.pricingRule.deleteMany();
-  await db.organization.deleteMany();
+  // Organizations are provisioned by the migration and never deleted by tests:
+  // deleting them would cascade every tenant and destroy the isolation fixtures.
   await db.session.deleteMany();
   await db.user.deleteMany();
   await db.integration.deleteMany();
 }
 
 async function seedBasics() {
-  await db.organization.create({
+  await db.organization.update({
+    where: { id: "org_mfbmt" },
     data: {
       name: "Test Trading LLC",
       defaultCurrency: "AED",
@@ -99,6 +101,16 @@ async function seedBasics() {
       quotationValidityDays: 14,
       inventoryMode: "STOCK_FIRST",
     },
+  });
+  // The webhook routes by the receiving WhatsApp Phone Number ID, so this
+  // tenant must own a connected WhatsApp integration for the fixture number.
+  const { ensureIntegrations, saveIntegration } = await import("../src/lib/integrations/store");
+  await ensureIntegrations();
+  await saveIntegration({
+    key: "WHATSAPP",
+    status: "CONNECTED",
+    accountLabel: "E2E test number",
+    secrets: { ACCESS_TOKEN: "e2e-token", WABA_ID: "WABA-E2E", PHONE_NUMBER_ID: PHONE_ID },
   });
   await db.pricingRule.create({
     data: { scope: "GLOBAL", category: null, type: "PERCENT_MARKUP", value: 20, priority: 100, isActive: true },
@@ -164,7 +176,7 @@ describe("end-to-end procurement workflow", () => {
 
     // Durable receipt exists before the work is done.
     expect(await db.webhookEvent.count({ where: { externalId } })).toBe(1);
-    const message = await db.message.findUnique({ where: { externalMessageId: externalId } });
+    const message = await db.message.findFirst({ where: { externalMessageId: externalId } });
     expect(message).not.toBeNull();
     expect(message?.processingStatus).not.toBe("IGNORED");
 
@@ -401,7 +413,7 @@ describe("end-to-end procurement workflow", () => {
     );
     expect(response.status).toBe(200);
 
-    const message = await db.message.findUnique({ where: { externalMessageId: externalId } });
+    const message = await db.message.findFirst({ where: { externalMessageId: externalId } });
     expect(message?.processingStatus).toBe("IGNORED");
     expect(message?.body ?? "").toBe("");
     expect(message?.subject).toBeNull();
@@ -418,9 +430,9 @@ describe("end-to-end procurement workflow", () => {
     );
     expect(response.status).toBe(200);
 
-    const message = await db.message.findUnique({ where: { externalMessageId: externalId } });
+    const message = await db.message.findFirst({ where: { externalMessageId: externalId } });
     await processInboundMessage(message!.id);
-    const reloaded = await db.message.findUnique({ where: { externalMessageId: externalId } });
+    const reloaded = await db.message.findFirst({ where: { externalMessageId: externalId } });
     expect(["UNCLEAR", "OTHER", "PERSONAL"]).toContain(reloaded?.classification);
 
     const enquiry = await db.enquiry.findFirst({ where: { conversationId: reloaded!.conversationId } });

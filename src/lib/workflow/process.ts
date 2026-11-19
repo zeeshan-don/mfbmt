@@ -6,6 +6,7 @@ import { ensureSourcingApproval } from "./approvals";
 import { runSourcingForItem } from "../sourcing/engine";
 import { sendSupplierQuoteRequest } from "./supplierQuotes";
 import { JOB_TYPES } from "../constants";
+import { runWithTenant } from "../tenant";
 
 /**
  * Executes one job. Handlers are idempotent: a retried job must not duplicate
@@ -97,7 +98,11 @@ export async function runNextJob(workerId: string): Promise<boolean> {
   const job = await claimJob(workerId);
   if (!job) return false;
   try {
-    const result = await withHeartbeat(job.id, workerId, () => processJob(job.id, workerId));
+    // Execute inside the owning tenant so every lookup, integration credential
+    // and audit entry is scoped to that company.
+    const result = await withHeartbeat(job.id, workerId, () =>
+      runWithTenant({ organizationId: job.organizationId, source: "job" }, () => processJob(job.id, workerId)),
+    );
     if (result.ok) {
       const completed = await completeJob(job.id, workerId, result.message);
       if (!completed) console.warn(`[worker] lost the lease for job ${job.id}; result was not written.`);

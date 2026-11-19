@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { db } from "../../src/lib/db";
+import { runWithTenant } from "../../src/lib/tenant";
 import { recomputeOffersForItem } from "../../src/lib/costing/evaluate";
 import { ensureSourcingApproval } from "../../src/lib/workflow/approvals";
 import { FASTENER_DEMO_REFS } from "../../src/scripts/demo-fasteners";
@@ -16,7 +17,7 @@ const REFS = {
 } as const;
 
 async function removeOld(ref: string) {
-  const existing = await db.enquiry.findUnique({ where: { publicRef: ref } });
+  const existing = await db.enquiry.findFirst({ where: { publicRef: ref } });
   if (!existing) return;
   await db.customerQuotation.deleteMany({ where: { enquiryId: existing.id } });
   await db.approval.deleteMany({ where: { enquiryId: existing.id } });
@@ -24,7 +25,7 @@ async function removeOld(ref: string) {
 }
 
 async function createClone(ref: string, customerName: string) {
-  const source = await db.enquiry.findUnique({
+  const source = await db.enquiry.findFirst({
     where: { publicRef: FASTENER_DEMO_REFS.rfq },
     include: { items: { include: { offers: true } } },
   });
@@ -138,7 +139,10 @@ async function main() {
   await db.$disconnect();
 }
 
-main().catch(async (error) => {
+runWithTenant(
+  { organizationId: process.env.SEED_ORGANIZATION_ID ?? "org_mfbmt", source: "internal" },
+  () => main(),
+).catch(async (error) => {
   console.error(error);
   await db.$disconnect();
   process.exit(1);

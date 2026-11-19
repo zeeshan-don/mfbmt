@@ -1,23 +1,29 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { isDemoMode } from "@/lib/env";
+import { db } from "@/lib/db";
 import { loginAction } from "./actions";
 import { Button, Notice, inputClass } from "@/components/ui";
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; workspace?: string }>;
 }) {
   const user = await getCurrentUser();
   if (user) redirect("/");
-  const { error } = await searchParams;
+  const { error, workspace } = await searchParams;
+  const organization = workspace
+    ? await db.organization.findUnique({ where: { slug: workspace.trim().toLowerCase() } })
+    : null;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-bg px-4 py-12">
       <div className="w-full max-w-sm">
         <div className="mb-8">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">MFBMT</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+            {organization?.name ?? "ZeeshStudios"}
+          </p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink">Procurement Intelligence</h1>
           <p className="mt-2 text-sm text-muted">
             Sign in to review enquiries, compare supplier offers and approve sourcing.
@@ -30,6 +36,20 @@ export default async function LoginPage({
               {error}
             </Notice>
           ) : null}
+          <div>
+            <label htmlFor="workspace" className="mb-1 block text-xs font-medium text-soft">
+              Workspace <span className="text-muted">(optional if your email belongs to one company)</span>
+            </label>
+            <input
+              id="workspace"
+              name="workspace"
+              type="text"
+              autoComplete="organization"
+              defaultValue={workspace ?? ""}
+              className={inputClass}
+              placeholder="e.g. mfbmt"
+            />
+          </div>
           <div>
             <label htmlFor="email" className="mb-1 block text-xs font-medium text-soft">
               Email
@@ -72,7 +92,7 @@ export default async function LoginPage({
             <p>
               Staff: <span className="text-ink">staff@mfbmt.local</span> / <span className="text-ink">ChangeMe123!</span>
             </p>
-            <p className="mt-1">Change these before using the system with real data.</p>
+            <p className="mt-1">Change these before using the system with real data. Workspace: mfbmt.</p>
           </div>
         ) : null}
       </div>

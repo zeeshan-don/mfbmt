@@ -45,18 +45,24 @@ async function SystemStatus() {
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
-  const unread = await db.notification.count({ where: { isRead: false, ...(user.role === "OWNER" ? {} : { userId: user.id }) } });
+  const [organization, unread] = await Promise.all([
+    db.organization.findUnique({ where: { id: user.organizationId } }),
+    db.notification.count({ where: { isRead: false, ...(user.role === "OWNER" ? {} : { userId: user.id }) } }),
+  ]);
 
   return (
     <div className="flex min-h-screen bg-bg">
       <aside className="hidden w-56 shrink-0 flex-col border-r border-line bg-surface px-3 py-4 lg:flex">
         <Link href="/" className="mb-6 block px-2">
-          <span className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">MFBMT</span>
+          <span className="block truncate text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+            {organization?.name ?? "Procurement"}
+          </span>
           <span className="mt-1 block text-[13px] font-medium leading-tight text-ink">
             Procurement
             <br />
             Intelligence
           </span>
+          <span className="mt-1 block text-[10px] text-muted">Workspace: {user.organizationSlug}</span>
         </Link>
         <SideNav role={user.role} isDemo={isDemoMode} />
         <div className="mt-auto space-y-2 px-2 pt-6">
@@ -71,8 +77,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <header className="sticky top-0 z-20 border-b border-line bg-bg/95 backdrop-blur">
           <div className="flex h-14 items-center justify-between gap-3 px-4 sm:px-6">
             <div className="flex min-w-0 items-center gap-3 lg:hidden">
-              <Link href="/" className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
-                MFBMT
+              <Link href="/" className="max-w-[9rem] shrink-0 truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
+                {organization?.name ?? "Procurement"}
               </Link>
               <MobileNav role={user.role} isDemo={isDemoMode} />
             </div>

@@ -201,7 +201,7 @@ export default async function SourcingPage({
       </Card>
 
       <p className="text-[11px] text-muted">
-        Results always state which sources were searched. MFBMT never claims to search the whole market and never presents a public listing as a confirmed supplier quotation.
+        Results always state which sources were searched. The system never claims to search the whole market and never presents a public listing as a confirmed supplier quotation.
       </p>
     </div>
   );

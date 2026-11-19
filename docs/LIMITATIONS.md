@@ -70,3 +70,12 @@ Everything below is a known, deliberate limit of this build. None of it is disgu
 - No real Meta, Google, Microsoft, AI or search credentials were available, so those calls were exercised only through their error/unconfigured paths. The code follows the documented request/response shapes, but live onboarding must be verified in your accounts.
 - No load, penetration or accessibility audit tooling was run. Contrast and focus states were designed for WCAG AA and checked by inspection, not with an automated auditor.
 - No production deployment was performed; `docs/DEPLOYMENT.md` describes the expected setup.
+
+## Multi-company update (2026-11-19)
+
+- Live WhatsApp, Gmail/Microsoft, AI, search and FX calls remain unverified: no provider credentials.
+- There is no platform-administration web UI; tenant lifecycle is the operator CLI only.
+- OGS industrial schemas and deterministic comparison are implemented and unit-tested, but every OGS
+  category is not yet wired into the enquiry extraction screens.
+- A support-access workflow with explicit authorization and audit is not implemented; operators
+  cannot read customer data.

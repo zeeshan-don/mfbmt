@@ -9,12 +9,14 @@ import { writeAudit } from "@/lib/audit";
 export async function loginAction(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
+  const workspace = String(formData.get("workspace") ?? "").trim();
   if (!email || !password) redirect("/login?error=Enter+your+email+and+password.");
 
   const headerList = await headers();
   const result = await login(email, password, {
     ip: headerList.get("x-forwarded-for")?.split(",")[0]?.trim(),
     userAgent: headerList.get("user-agent") ?? undefined,
+    workspace: workspace || undefined,
   });
 
   if (!result.ok) redirect(`/login?error=${encodeURIComponent(result.error)}`);

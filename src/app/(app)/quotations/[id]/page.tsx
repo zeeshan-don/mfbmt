@@ -79,7 +79,10 @@ export default async function QuotationPage({
               description="Customer-facing description and selling prices. Supplier costs are never shown to the customer."
             />
             <div className="scroll-x">
-              <table className="w-full text-sm" style={{ minWidth: 720 }}>
+              <table
+                className="w-full text-sm"
+                style={{ minWidth: isOwner ? (quotation.status === "DRAFT" ? 800 : 640) : 560 }}
+              >
                 <thead>
                   <tr className="text-[11px] uppercase tracking-wide text-muted">
                     <th scope="col" className="border-b border-line px-3 py-2 text-left">Item</th>

@@ -106,7 +106,7 @@ export async function addSupplierProductAction(formData: FormData) {
       moq: str(formData.get("moq")) ? Number(String(formData.get("moq")).replace(/,/g, "")) : null,
       availability: str(formData.get("availability")),
       sourceUrl: str(formData.get("sourceUrl")),
-      specs: stringifyJson({ note: "Recorded by MFBMT from supplier communication or catalogue." }),
+      specs: stringifyJson({ note: "Recorded by your company from supplier communication or catalogue." }),
       isDemo: false,
     },
   });
