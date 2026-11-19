@@ -97,8 +97,8 @@ export default async function SettingsPage({
       description: "Finds public supplier listings. A listing is evidence, never a confirmed price.",
       status: integrationEnv.webSearch() ? (webIntegration?.status ?? "NEEDS_ATTENTION") : "NOT_CONFIGURED",
       detail: integrationEnv.webSearch()
-        ? `${env.WEB_SEARCH_PROVIDER} is configured.`
-        : "No search provider connected. Set WEB_SEARCH_PROVIDER and its API key.",
+        ? `Providers: ${[env.TAVILY_API_KEY ? "Tavily" : null, env.SERPER_API_KEY ? "Serper" : null, env.BRAVE_SEARCH_API_KEY ? "Brave" : null].filter(Boolean).join(" → ")}. Tavily is tried first; falls back to Serper/Brave on quota or auth errors.`
+        : "No search provider connected. Set TAVILY_API_KEY or SERPER_API_KEY to enable public supplier search.",
       lastCheckedAt: webIntegration?.lastCheckedAt,
       lastError: webIntegration?.lastError,
       setup: "Supported: Tavily, Serper or Brave Search official APIs. No scraping behind logins, CAPTCHAs or blocks.",

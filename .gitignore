@@ -26,3 +26,6 @@ tsconfig.tsbuildinfo
 .eslintcache
 pg-data/
 backups/
+
+.vercel
+.env*

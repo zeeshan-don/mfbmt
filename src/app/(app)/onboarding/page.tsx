@@ -120,7 +120,7 @@ export default async function OnboardingPage({
       done: Boolean(integrationEnv.webSearch()),
       status: integrationEnv.webSearch() ? "CONNECTED" : "NOT_CONFIGURED",
       detail: integrationEnv.webSearch()
-        ? `Provider: ${env.WEB_SEARCH_PROVIDER}.`
+        ? `Providers: ${[env.TAVILY_API_KEY ? "Tavily" : null, env.SERPER_API_KEY ? "Serper" : null, env.BRAVE_SEARCH_API_KEY ? "Brave" : null].filter(Boolean).join(" → ")}. Tavily tried first, falls back on quota/auth errors.`
         : "Without a search provider you can still add suppliers and record their quotations manually.",
       href: "/settings#integrations",
       action: "Configure search",

@@ -104,13 +104,14 @@ Every email is keyed by its `Message-ID` (or provider id). Attachments are conte
 The AI layer is a replaceable adapter (`src/lib/ai/provider.ts`) using an OpenAI-compatible Chat Completions API with `response_format: json_object`.
 
 ```
-AI_PROVIDER=openai          # openai | none
+AI_PROVIDER=openai          # openai | gemini | none
 AI_API_KEY=
 AI_BASE_URL=https://api.openai.com/v1
 AI_MODEL=gpt-4o-mini
 ```
 
 - Any compatible gateway works by changing `AI_BASE_URL` and `AI_MODEL`.
+- **Gemini (free tier available)**: Set `AI_PROVIDER=gemini`, `AI_API_KEY=<your-gemini-key>`, `AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`, `AI_MODEL=gemini-3.1-flash-lite`. Gemini's free tier provides 15 requests/minute and 1,500 requests/day at no cost.
 - Every response is validated with zod. Invalid JSON or missing required fields is rejected; the app falls back to the deterministic parser and flags the enquiry for review.
 - Without a key the integration shows **Not configured**, the built-in parser is used, and affected enquiries are marked "read without AI assistance — please check".
 - A consumer ChatGPT subscription does **not** include API access; you need an API key from the provider.
@@ -131,6 +132,7 @@ SEARCH_MAX_RESULTS=8
 SEARCH_REQUEST_TIMEOUT_MS=15000
 ```
 
+- **Automatic fallback**: Tavily is tried first. If it fails (quota exhausted, auth error, rate limit, or network error), the system automatically falls back to Serper, then Brave. Set multiple API keys to enable fallback. The provider used is recorded in the search results.
 - Official APIs only: Tavily (`POST https://api.tavily.com/search`), Serper (`POST https://google.serper.dev/search`), Brave (`GET https://api.search.brave.com/res/v1/web/search`).
 - Results are recorded with URL, title, snippet, displayed price text, retrieval time and the query used.
 - Up to five result pages are fetched for evidence. Fetching checks `robots.txt`, blocks private/loopback hosts, caps response size and timeout, and honours HTTP errors.

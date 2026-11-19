@@ -220,8 +220,9 @@ export const integrationEnv = {
   whatsappSignup: () => whatsAppSignupConfig(),
   ai: () => env.AI_PROVIDER !== "none" && env.AI_API_KEY.length > 0,
   webSearch: () =>
-    env.WEB_SEARCH_PROVIDER !== "none" &&
-    ((env.WEB_SEARCH_PROVIDER === "tavily" && Boolean(env.TAVILY_API_KEY)) ||
+    Boolean(env.TAVILY_API_KEY || env.SERPER_API_KEY || env.BRAVE_SEARCH_API_KEY) &&
+    (env.WEB_SEARCH_PROVIDER === "none" ||
+      (env.WEB_SEARCH_PROVIDER === "tavily" && Boolean(env.TAVILY_API_KEY)) ||
       (env.WEB_SEARCH_PROVIDER === "serper" && Boolean(env.SERPER_API_KEY)) ||
       (env.WEB_SEARCH_PROVIDER === "brave" && Boolean(env.BRAVE_SEARCH_API_KEY))),
   gmail: () => Boolean(env.GMAIL_CLIENT_ID && env.GMAIL_CLIENT_SECRET),

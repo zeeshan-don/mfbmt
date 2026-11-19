@@ -73,7 +73,7 @@ export async function testIntegrationAction(formData: FormData) {
           status = result.status === "OK" ? "CONNECTED" : "NEEDS_ATTENTION";
           detail =
             result.status === "OK"
-              ? `${env.WEB_SEARCH_PROVIDER} returned ${result.candidates.length} result(s) for a test search.`
+              ? `Web search returned ${result.candidates.length} result(s) for a test search.${result.note ? ` ${result.note}` : ""}`
               : (result.note ?? "Search provider returned an error.");
           await saveIntegration({
             key: "WEB_SEARCH",

@@ -51,29 +51,45 @@ export async function completeJson<S extends z.ZodTypeAny>(options: ChatOptions,
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
-    const response = await fetch(`${env.AI_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+    const buildBody = (includeResponseFormat: boolean) => ({
+    model: env.AI_MODEL,
+    temperature: options.temperature ?? 0,
+    max_tokens: options.maxTokens ?? 2000,
+    ...(includeResponseFormat ? { response_format: { type: "json_object" } } : {}),
+    messages: [
+      { role: "system", content: options.system },
+      { role: "user", content: options.user },
+    ],
+  });
+
+  const doFetch = (includeResponseFormat: boolean) =>
+    fetch(`${env.AI_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${env.AI_API_KEY}`,
       },
-      body: JSON.stringify({
-        model: env.AI_MODEL,
-        temperature: options.temperature ?? 0,
-        max_tokens: options.maxTokens ?? 2000,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: options.system },
-          { role: "user", content: options.user },
-        ],
-      }),
+      body: JSON.stringify(buildBody(includeResponseFormat)),
       signal: controller.signal,
     });
 
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      return { ok: false, error: `AI provider returned ${response.status}. ${sanitize(detail).slice(0, 300)}` };
+  let response = await doFetch(true);
+
+  // Some providers (older Gemini models, certain gateways) reject response_format.
+  // Retry once without it — the prompt already asks for JSON and we parse defensively.
+  if (!response.ok && response.status === 400) {
+    const peek = await response.text().catch(() => "");
+    if (/response_format|json_object|unsupported/i.test(peek)) {
+      response = await doFetch(false);
+    } else {
+      return { ok: false, error: `AI provider returned 400. ${sanitize(peek).slice(0, 300)}` };
     }
+  }
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    return { ok: false, error: `AI provider returned ${response.status}. ${sanitize(detail).slice(0, 300)}` };
+  }
 
     const payload = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
