@@ -29,3 +29,4 @@ backups/
 
 .vercel
 .env*
+.neon
