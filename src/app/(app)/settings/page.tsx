@@ -429,7 +429,7 @@ export default async function SettingsPage({
           <form action={saveOrganizationAction} className="grid gap-3 px-4 py-4 sm:grid-cols-3">
             <label className="block text-xs text-soft sm:col-span-2">
               Trading name
-              <input name="name" defaultValue={org?.name ?? ""} placeholder="Multi Fasteners Building Materials Trading LLC" className={`${inputClass} mt-1`} />
+              <input name="name" defaultValue={org?.name ?? ""} placeholder="Your registered trading name" className={`${inputClass} mt-1`} />
             </label>
             <label className="block text-xs text-soft">
               Legal name
