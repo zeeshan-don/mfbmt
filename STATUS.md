@@ -20,7 +20,7 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 
 ## Doc/code disagreements found
 
-1. **`vercel.json` vs cron routes** — `src/app/api/cron/process-jobs/route.ts` and `src/app/api/cron/email-sync/route.ts` say they are scheduled every 5 minutes, but `vercel.json` currently defines only the worker daemon and no `crons` array. This is a real production gap.
+1. **`vercel.json` vs cron routes** — RESOLVED: Vercel crons removed (Hobby plan). Scheduling moved to Upstash QStash via `npm run setup:qstash` (every 5 minutes). Endpoints accept QStash signatures or legacy bearer tokens. Daemon worker remains the primary continuous processor; QStash is a watchdog/fallback.
 2. **Worker health** — `src/worker.ts` has durable heartbeats and SIGTERM/SIGINT flags, but no HTTP health server and no `livenessProbe`; it also cannot release a claimed job while blocking inside a handler.
 3. **OCR packaging** — `Dockerfile.worker` does not bake Tesseract language data. `docs/INTEGRATIONS.md` correctly says language data is downloaded first use, which is unsafe on ephemeral Vercel storage.
 4. **Deployment/storage docs** — `docs/DEPLOYMENT.md` and the storage section of `docs/INTEGRATIONS.md` still describe a writable local disk/`STORAGE_ROOT` as the normal deployment. Code now requires S3 in production unless `STORAGE_ALLOW_LOCAL_VOLUME=true`.
@@ -111,7 +111,7 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 | Supplier web discovery/outreach | Built + tested | Prospects deduplicated by domain, public contacts retained with source/time, draft queue, batch approval, send limits, DNC/bounce suppression |
 | Storage S3 + tenant keys | Built + tested; S3 live unverified | 12 storage tests; no S3 credentials |
 | Production local-storage refusal | Built + tested | `storage-config.ts`; check:storage script missing |
-| Cron scheduling | Built + tested | `vercel.json` schedules both routes every 5 minutes; cron bearer auth tested |
+| Cron scheduling | Built + tested | Upstash QStash schedules both routes every 5 minutes; QStash signature + bearer auth tested; daemon worker is primary processor |
 | Two-runner job safety | Built + tested | `FOR UPDATE SKIP LOCKED` claim path covered by 9 jobs-concurrency tests |
 | Worker HTTP health | Built + tested | `/health` on 3001, stale-loop/in-flight tests, `livenessProbe` |
 | Graceful worker shutdown | Built | SIGTERM drains, 25s deadline releases lease; no process-level integration test |

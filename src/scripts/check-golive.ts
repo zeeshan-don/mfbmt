@@ -30,6 +30,7 @@ async function main() {
   add(checks, "APP_URL uses HTTPS", /^https:\/\//i.test(env.APP_URL), env.APP_URL, "Set APP_URL to the public HTTPS origin and configure DNS.");
   add(checks, "CRON_SECRET is set", env.CRON_SECRET.length >= 16, env.CRON_SECRET ? "set" : "missing", "Generate a long random CRON_SECRET in Vercel; set the same value for the cron caller.");
   add(checks, "WORKER_SECRET is set", env.WORKER_SECRET.length >= 16, env.WORKER_SECRET ? "set" : "missing", "Generate a long random WORKER_SECRET in the daemon environment.");
+  add(checks, "QStash configured", Boolean(env.QSTASH_TOKEN && env.QSTASH_CURRENT_SIGNING_KEY), env.QSTASH_TOKEN ? "token set" : "missing", "Create an Upstash QStash project, set QSTASH_TOKEN and signing keys, and run npm run setup:qstash.");
 
   let orgId: string | null = null;
   try {

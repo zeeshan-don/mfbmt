@@ -11,7 +11,7 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 1 — Production safety
 
-- [x] Add Vercel cron entries for `/api/cron/process-jobs` and `/api/cron/email-sync` every 5 minutes.
+- [x] Replace Vercel crons with Upstash QStash schedules (every 5 minutes) for `/api/cron/process-jobs` and `/api/cron/email-sync`; secure with signature verification; daemon worker remains primary processor (watchdog only).
 - [x] Prove two runners cannot execute the same job; add a two-runner concurrency test.
 - [x] Add an HTTP health server to the worker and a `livenessProbe` in `vercel.json`.
 - [x] Graceful SIGTERM/SIGINT: finish or release the current job, then close the health server and database.

@@ -87,6 +87,7 @@ purchase order or payment is created.
 | Landed cost | Product + freight + other charges + tax + FX, MOQ overbuy disclosed, unknown components keep the total null, unknown currency never assumed to be AED |
 | Quotations | Per-line stock/procure split, no zero-priced lines, owner override with reason, atomic numbering, three separate approvals, customer-only PDF, real send or explicit manual confirmation |
 | Jobs | PostgreSQL `FOR UPDATE SKIP LOCKED` claims, leases + heartbeat (double execution prevented), crash recovery, dead-letter + manual retry |
+| Scheduling | Worker daemon is the primary continuous processor; QStash (Hobby-compatible) drives `/api/cron/*` as a watchdog every 5 minutes with signature verification |
 | Storage | Local disk or S3-compatible private bucket, authenticated expiring downloads, size/type validation |
 | Security | Fail-closed production config, AES-256-GCM credentials, CSP, rate-limited login, per-action authorisation, password change/reset, no credential logging |
 

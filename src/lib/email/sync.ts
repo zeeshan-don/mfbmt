@@ -11,6 +11,7 @@ import { activeEmailProvider } from "./send";
 import { graphClientState } from "./routing";
 import { requireTenantId } from "../tenant";
 import { ingestSupplierReply } from "../workflow/supplierReply";
+import { withMutex } from "../concurrency/mutex";
 
 /**
  * Automatic mailbox intake.
@@ -103,60 +104,67 @@ const emptyResult = (detail: string, ok = false): SyncResult => ({
  * granted scope.
  */
 export async function syncEmailIntake(options: { trigger?: "poll" | "push" | "manual" } = {}): Promise<SyncResult> {
-  const provider = await activeEmailProvider();
-  if (provider === "none") return emptyResult("No mailbox is connected.");
+  const lock = await withMutex("email-sync", async () => {
+    const provider = await activeEmailProvider();
+    if (provider === "none") return emptyResult("No mailbox is connected.");
 
-  const integrationKey = provider === "gmail" ? "GMAIL" : "MICROSOFT365";
-  const integration = await getIntegration(integrationKey);
-  const config = parseJson<EmailConfig>(integration?.configJson ?? "{}", {});
-  const token = await getAccessToken(provider === "gmail" ? "gmail" : "microsoft");
-  if (!token) {
+    const integrationKey = provider === "gmail" ? "GMAIL" : "MICROSOFT365";
+    const integration = await getIntegration(integrationKey);
+    const config = parseJson<EmailConfig>(integration?.configJson ?? "{}", {});
+    const token = await getAccessToken(provider === "gmail" ? "gmail" : "microsoft");
+    if (!token) {
+      await saveIntegration({
+        key: integrationKey,
+        status: "NEEDS_ATTENTION",
+        lastError: "Mailbox authorisation expired. Reconnect the mailbox in Settings.",
+      });
+      return emptyResult("Mailbox authorisation expired. Reconnect the mailbox in Settings.");
+    }
+
+    const trigger = options.trigger ?? "poll";
+    const result =
+      provider === "gmail"
+        ? await syncGmail(token, config, trigger)
+        : await syncGraph(token, config);
+
+    const now = new Date().toISOString();
     await saveIntegration({
       key: integrationKey,
-      status: "NEEDS_ATTENTION",
-      lastError: "Mailbox authorisation expired. Reconnect the mailbox in Settings.",
-    });
-    return emptyResult("Mailbox authorisation expired. Reconnect the mailbox in Settings.");
-  }
-
-  const trigger = options.trigger ?? "poll";
-  const result =
-    provider === "gmail"
-      ? await syncGmail(token, config, trigger)
-      : await syncGraph(token, config);
-
-  const now = new Date().toISOString();
-  await saveIntegration({
-    key: integrationKey,
-    status: result.ok ? "CONNECTED" : "NEEDS_ATTENTION",
-    lastError: result.ok ? null : result.detail,
-    markSuccess: result.ok,
-    config: {
-      ...result.nextConfig,
-      lastSyncAt: now,
-      lastSuccessAt: result.ok ? now : config.lastSuccessAt ?? null,
-      processedCount: result.processed,
-      mode: trigger === "push" ? "push" : "poll",
+      status: result.ok ? "CONNECTED" : "NEEDS_ATTENTION",
       lastError: result.ok ? null : result.detail,
-    },
+      markSuccess: result.ok,
+      config: {
+        ...result.nextConfig,
+        lastSyncAt: now,
+        lastSuccessAt: result.ok ? now : config.lastSuccessAt ?? null,
+        processedCount: result.processed,
+        mode: trigger === "push" ? "push" : "poll",
+        lastError: result.ok ? null : result.detail,
+      },
+    });
+
+    if (!result.ok) {
+      await writeAudit({
+        action: "email.sync_failed",
+        entityType: "Integration",
+        entityId: integrationKey,
+        actorLabel: "system",
+        meta: { detail: result.detail },
+      });
+    }
+    return {
+      ok: result.ok,
+      processed: result.processed,
+      skipped: result.skipped,
+      failed: result.failed,
+      detail: result.detail,
+    };
   });
 
-  if (!result.ok) {
-    await writeAudit({
-      action: "email.sync_failed",
-      entityType: "Integration",
-      entityId: integrationKey,
-      actorLabel: "system",
-      meta: { detail: result.detail },
-    });
+  if (!lock.acquired) {
+    return emptyResult("Email sync already in progress.");
   }
-  return {
-    ok: result.ok,
-    processed: result.processed,
-    skipped: result.skipped,
-    failed: result.failed,
-    detail: result.detail,
-  };
+  return lock.value as SyncResult;
 }
 
 type InternalSyncResult = SyncResult & { nextConfig: Partial<EmailConfig> };
