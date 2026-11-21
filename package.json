@@ -23,6 +23,7 @@
     "check:config": "tsx src/scripts/check-config.ts",
     "check:storage": "tsx src/scripts/check-storage.ts",
     "eval:extraction": "tsx src/scripts/eval-extraction.ts",
+    "verify:live": "tsx src/scripts/verify-live.ts",
     "check:golive": "tsx src/scripts/check-golive.ts",
     "test": "vitest run",
     "test:watch": "vitest",
