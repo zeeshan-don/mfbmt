@@ -101,7 +101,7 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 - [x] Add inbox views: needs review, waiting on suppliers, ready to quote, overdue.
 - [ ] Add bulk actions for safe confirmation steps only; keep three approvals individual. **Not built**.
 - [x] Add SLA timers with configurable overdue highlight. Overdue highlighting is 48 hours; the threshold is not yet tenant-configurable.
-- [ ] Add dashboard: today's volume, backlog, median time to quote, spend vs monthly limits. **Partial**: existing live attention/dashboard; median and spend cards not added.
+- [x] Add dashboard: today's volume, backlog, median time to quote, spend vs monthly limits. Median time to quote and AI spend vs monthly budget are now on the overview; enquiry allowance is shown alongside. Tenant-configurable SLA threshold remains open.
 - [ ] Phase 6: `npm run check` green, commit, update STATUS.md. **Partial**: email approval links, digest and inbox/SLA added; WhatsApp, bulk actions and the full metric cards remain open.
 
 ## Phase 7 — Proof

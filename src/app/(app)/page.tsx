@@ -5,6 +5,8 @@ import { parseJson } from "@/lib/json";
 import { timeAgo, truncate } from "@/lib/format";
 import { ENQUIRY_STATUS_LABELS, label } from "@/lib/constants";
 import { queueStats, workerLiveness } from "@/lib/workflow/jobs";
+import { getMonthlyUsage } from "@/lib/usage";
+import { getOrgLimits, aiBudgetStatus, enquiryAllowanceStatus } from "@/lib/limits";
 import { Badge, Card, CardHeader, DataTable, EmptyState, PageHeader, Td, Th, statusTone } from "@/components/ui";
 import { AlertTriangle, BadgeCheck, Boxes, Inbox, MessageSquare, Radar } from "lucide-react";
 
@@ -96,6 +98,30 @@ export default async function OverviewPage() {
     },
   ].filter((item) => item.count > 0);
 
+  const [usage, limits, budget, allowance, sentQuotes] = await Promise.all([
+    getMonthlyUsage(),
+    getOrgLimits(),
+    aiBudgetStatus(),
+    enquiryAllowanceStatus(),
+    db.customerQuotation.findMany({
+      where: { sentAt: { not: null } },
+      orderBy: { sentAt: "desc" },
+      take: 100,
+      select: { sentAt: true, enquiry: { select: { createdAt: true } } },
+    }),
+  ]);
+
+  const quoteDurationsDays = sentQuotes
+    .map((q) => (q.sentAt && q.enquiry?.createdAt ? (q.sentAt.getTime() - q.enquiry.createdAt.getTime()) / 86_400_000 : null))
+    .filter((v): v is number => v != null && v >= 0)
+    .sort((a, b) => a - b);
+  const medianTimeToQuoteDays =
+    quoteDurationsDays.length === 0
+      ? null
+      : quoteDurationsDays.length % 2 === 1
+        ? quoteDurationsDays[Math.floor(quoteDurationsDays.length / 2)]
+        : (quoteDurationsDays[quoteDurationsDays.length / 2 - 1] + quoteDurationsDays[quoteDurationsDays.length / 2]) / 2;
+
   const enquiryIds = recentEnquiries.map((e) => e.id);
   const lastMessages = enquiryIds.length
     ? await db.message.findMany({
@@ -157,6 +183,43 @@ export default async function OverviewPage() {
             </ul>
           )}
         </Card>
+      </section>
+
+      <section aria-labelledby="metrics-heading">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 id="metrics-heading" className="text-sm font-semibold text-ink">This month</h2>
+          <span className="text-[11px] text-muted">Live from your records</span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            [
+              "Enquiries received",
+              usage.enquiriesReceived,
+              limits.monthlyEnquiryAllowance > 0 ? `of ${limits.monthlyEnquiryAllowance} allowance` : "no allowance set",
+            ],
+            [
+              "Quotations sent",
+              usage.quotationsSent,
+              "sent this month",
+            ],
+            [
+              "Median time to quote",
+              medianTimeToQuoteDays == null ? "—" : `${medianTimeToQuoteDays.toFixed(1)} days`,
+              sentQuotes.length > 0 ? `from ${sentQuotes.length} sent quotation(s)` : "no sent quotations yet",
+            ],
+            [
+              "AI spend",
+              budget.spentAed == null ? "Incomplete" : `${budget.spentAed.toFixed(0)} / ${budget.budgetAed.toFixed(0)} AED`,
+              budget.warning === "100" ? "budget reached" : budget.warning === "80" ? "80% used" : "within budget",
+            ],
+          ].map(([label, value, detail]) => (
+            <Card key={label} className="p-4">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted">{label}</p>
+              <p className="mt-2 text-2xl font-semibold tabular text-ink">{value}</p>
+              <p className="mt-1 text-[11px] text-muted">{detail}</p>
+            </Card>
+          ))}
+        </div>
       </section>
 
       <div className="grid gap-6 lg:grid-cols-3">

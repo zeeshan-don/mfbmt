@@ -135,7 +135,7 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 | Quotation technical fields/revisions/Excel | Built + tested | Per-line origin/certification/lead time/delivery/validity, visible revision summary, PDF/Excel, outcome, margin floor |
 | Customer master | Built + tested | Customer/contact records, tier, enquiry and quote history, automatic linking on draft |
 | Approval notifications/digest | Not built | In-app notifications only |
-| Inbox/SLA/dashboard | Partial | Enquiries/activity exist; views/timers/metrics missing |
+| Inbox/SLA/dashboard | Partial | Inbox views and SLA highlighting built; dashboard now shows median time to quote and spend vs monthly limits. Tenant-configurable SLA threshold still open. |
 | Golden dataset/eval | Not built | No dataset/harness |
 | Live verification harness | Partial | Diagnostics module exists; no `verify:live` script |
 | Load test | Built (local) | 30-request burst; 60/hour with attachments missing |
