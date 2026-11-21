@@ -1,7 +1,7 @@
 # STATUS — OGS production readiness
 
-Last updated: 21 November 2026 (Phase 3)  
-HEAD: `931741e` Phase 1/2 commit; Phase 3 changes in the working tree  
+Last updated: 21 November 2026 (partial Phase 4/7/10 hand-off)
+HEAD: `625e6ab` Phase 4/7 evidence commit; go-live/docs changes in the working tree
 Working tree: Phase 1/2 implementation; no production env, database, credentials or deployments touched.
 
 ## Baseline verification (Phase 0)
@@ -54,6 +54,18 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 | Baked OCR image | **NOT BUILT** — Dockerfile changed; daemon image build needs a Docker host |
 | `npm run lint` | **NOT RUN in this phase** |
 
+## Phase 4/7/10 verification
+
+| Command | Result |
+| --- | --- |
+| `npm run check` | **PASS** — 30 test files / **230 tests**, typecheck and build |
+| `npm run eval:extraction` | **PASS (rules-only)** — 60 synthetic cases, 56 RFQs, 100% classification and field accuracy; 0 wrong-but-confident; $0 AI cost |
+| `npm run check:golive` | **EXPECTED FAIL locally** — missing CRON_SECRET, production S3, OGS org/migrations, integrations, worker. Prints a human step for each. |
+| Live provider tests | **NOT RUN** — no credentials |
+| 60/hour load test with attachments | **NOT RUN** — previous 30-request burst only |
+
+The evaluation corpus is deliberately simple, one-line synthetic text. The 100% result is a regression baseline, **not** evidence of real OGS accuracy. AI-mode evaluation and Arabic/mixed-language cases are not run.
+
 ## Phase 3 verification
 
 | Command | Result |
@@ -73,7 +85,7 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 | OGS industrial schemas | Built + tested (9 categories) | Pipes, valves, flanges, fittings, gaskets, insulation kits, chemicals, spares, services |
 | OGS review wiring | Built | Enquiry review displays/edits industrial spec; add Phase 3 categories/service/bolting |
 | Supplier reply correlation | Built + tested | Provider/header/token correlation; 10+4 tests; live providers unverified |
-| Supplier web discovery/outreach | Not built | Phase 4 |
+| Supplier web discovery/outreach | Not built | Phase 4; no prospect records, contact extraction or drafted-RFQ queue |
 | Storage S3 + tenant keys | Built + tested; S3 live unverified | 12 storage tests; no S3 credentials |
 | Production local-storage refusal | Built + tested | `storage-config.ts`; check:storage script missing |
 | Cron scheduling | Built + tested | `vercel.json` schedules both routes every 5 minutes; cron bearer auth tested |
@@ -88,12 +100,15 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 | Search/page cache | Built + tested | Organization-scoped 7-day default cache with overlapping-tenant test |
 | Usage report | Built | `/usage` + CSV/PDF; export route not integration-tested |
 | Optional second AI pass | Not built | No second-pass path; configuration checkbox exists but does not yet change extraction |
+| OGS eval corpus/harness | Built + tested (rules-only) | 60 synthetic cases; AI mode needs a key; not real-world proof |
+| Go-live gate | Built | `npm run check:golive`; local failures are expected human tasks |
+| Human hand-off docs | Built | OGS_ONBOARDING, RUNBOOK, SERVICE_SCOPE, HUMAN_TASKS, DEMO_SCRIPT |
 | Gaskets/insulation/bolting/services | Built + tested | Gasket/insulation/service schemas; bolting deliberately stays in the fastener engine; service sourcing blocked |
 | Units/conversions | Partial | Basic units only; no stated/configured quantity conversion yet |
 | Chemical SDS checklist | Partial | SDS/COA fields exist; quotation checklist flag not yet built |
 | Supplier directory/ranking/CSV | Partial | Supplier model/UI exists; fields/ranking/import need work |
 | Price memory | Not built | No history view |
-| FX multi-currency | Partial | USD/AED + provider; SAR/INR/EUR/CNY/KRW paths need proof/tests |
+| FX multi-currency | Partial | Provider supports arbitrary pairs; CNY/KRW price parsing and daily cache tested; live FX unverified; no fixed non-USD/AED rates |
 | Quotation technical fields/revisions/Excel | Partial | Version/PDF exist; fields/exports/outcome missing |
 | Customer master | Not built | Contact model exists but no company master/quote history |
 | Approval notifications/digest | Not built | In-app notifications only |
@@ -130,3 +145,6 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 - Phase 1: crons, authenticated cron calls, worker health/graceful release, storage round-trip command, baked OCR assets, operational alerts/digest and TOTP MFA with recovery codes implemented. `npm run check` PASS (27 files, 218 tests). Live S3/OCR-image checks remain unverified.
 - Phase 2: AI usage table/cost, budget refusal, per-org limits and warnings, item/query caps, search cache and monthly usage page/CSV/PDF implemented. `npm run check` PASS. Optional second pass remains **not built** and is called out above.
 - Phase 3: added gasket/insulation/service schemas, NACE/length vocabulary, A194 nut grades and U-bolt parsing, and a deterministic service-sourcing block. `npm run check` PASS (28 files, 225 tests). Unit conversions and the chemical SDS quotation checklist remain open.
+- Partial Phase 4: added CNY/KRW supplier price parsing, daily FX cache and same-currency test. Supplier prospect discovery/outreach, price memory and the full directory/ranking/CSV surface remain **not built**.
+- Phase 7 evidence: added a 60-case synthetic OGS corpus, `npm run eval:extraction`, and rules-only results (100% on this simple corpus; 0 wrong-but-confident; $0 AI). AI-mode, real-mail and attachment/OCR evaluation remain unverified.
+- Partial Phase 8/10: added OGS onboarding, runbook, service scope, human-task list, demo script and `npm run check:golive`. The gate fails closed locally on missing production credentials/data as expected.

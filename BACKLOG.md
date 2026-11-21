@@ -76,9 +76,9 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 - [ ] Rank suppliers by category fit and past quotes.
 - [ ] Add supplier CSV import.
 - [ ] Show previous quoted/purchased prices for same item/customer with date and currency on sourcing/quotation screens.
-- [ ] Add provider-backed FX with daily caching and SAR, INR, EUR, CNY, KRW support.
-- [ ] Store FX rate and timestamp on every conversion; no rate => incomplete total, never assumed.
-- [ ] Phase 4: `npm run check` green, commit, update STATUS.md.
+- [ ] Add provider-backed FX with daily caching and SAR, INR, EUR, CNY, KRW support. Partial: arbitrary provider pairs, CNY/KRW parsing and 24h cache; live provider and fixed non-USD/AED rates unverified.
+- [x] Store FX rate and timestamp on every conversion; no rate => incomplete total, never assumed.
+- [ ] Phase 4: `npm run check` green, commit, update STATUS.md. **Not complete**: prospect discovery/outreach, directory/ranking/CSV, price memory and send safeguards remain open.
 
 ## Phase 5 — Quotation quality
 
@@ -106,24 +106,24 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 7 — Proof
 
-- [ ] Build golden dataset of ≥60 synthetic OGS enquiries across pipes, valves, flanges, fittings, bolting, gaskets, spares, chemicals, services, messy WhatsApp, Excel, text/scanned PDFs, ambiguous/incomplete and non-RFQ messages.
-- [ ] Store expected structured results alongside every golden case.
-- [ ] Add `npm run eval:extraction` with field-level accuracy by category, wrong-but-confident count, AI cost/enquiry.
-- [ ] Run eval with rules-only parser and with AI when a key exists.
-- [ ] Add `npm run verify:live` for AI, search, FX, storage, Gmail/Microsoft and WhatsApp when credentials exist.
-- [ ] Never mark Connected without a passing live test.
-- [ ] Add 60-enquiries/hour load test with attachments; report queue latency, CPU, memory, DB connections, dead letters.
-- [ ] Add OGS demo seed: ten synthetic enquiries, message to approved quotation PDF, checked by automated test.
-- [ ] Phase 7: `npm run check` green, commit, update STATUS.md.
+- [x] Build golden dataset of ≥60 synthetic OGS enquiries across the listed categories; represented as text with source-kind metadata, not real binary Excel/PDF files.
+- [x] Store expected structured results alongside every golden case.
+- [x] Add `npm run eval:extraction` with field-level accuracy by category, wrong-but-confident count, AI cost/enquiry.
+- [ ] Run eval with rules-only parser and with AI when a key exists. Rules-only done (100% on 60 simple synthetic cases); AI mode unverified.
+- [ ] Add `npm run verify:live` for AI, search, FX, storage, Gmail/Microsoft and WhatsApp when credentials exist. **Not built.**
+- [x] Never mark Connected without a passing live test.
+- [ ] Add 60-enquiries/hour load test with attachments; report queue latency, CPU, memory, DB connections, dead letters. **Not run.**
+- [ ] Add OGS demo seed: ten synthetic enquiries, message to approved quotation PDF, checked by automated test. **Not built.**
+- [ ] Phase 7: `npm run check` green, commit, update STATUS.md. **Partial**: corpus/harness only.
 
 ## Phase 8 — Documentation
 
-- [ ] Update README.md and docs/ to match verified reality.
-- [ ] Add docs/OGS_ONBOARDING.md with required client inputs.
-- [ ] Add docs/RUNBOOK.md: deploy, rollback, backup/restore, incidents.
-- [ ] Add docs/SERVICE_SCOPE.md: included, limits, out of scope.
-- [ ] Keep docs/LIMITATIONS.md honest and current.
-- [ ] Phase 8: `npm run check` green, commit, update STATUS.md.
+- [x] Update README.md and docs/ to match verified reality. Status/report docs updated; README not fully rewritten.
+- [x] Add docs/OGS_ONBOARDING.md with required client inputs.
+- [x] Add docs/RUNBOOK.md: deploy, rollback, backup/restore, incidents.
+- [x] Add docs/SERVICE_SCOPE.md: included, limits, out of scope.
+- [ ] Keep docs/LIMITATIONS.md honest and current. Needs a final pass for the new partial features.
+- [ ] Phase 8: `npm run check` green, commit, update STATUS.md. **Partial**: docs added, README/LIMITATIONS still need reconciliation.
 
 ## Phase 9 — Audit gaps
 
@@ -155,13 +155,13 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 10 — Go-live automation and human hand-off
 
-- [ ] Add `npm run check:golive` for ogs: env, DB/migrations, storage round trip, worker heartbeat, cron secret, integration live results, FX, letterhead/terms, inventory, one verified supplier.
-- [ ] Print PASS/FAIL per line and exact human remediation for every FAIL.
-- [ ] Complete and comment `.env.production.example` with every variable and where to obtain it.
-- [ ] Add docs/HUMAN_TASKS.md generated from code/capabilities, ordered, with owner/time/links; human tasks only.
-- [ ] Add docs/DEMO_SCRIPT.md with exact 15-minute click path and synthetic data.
-- [ ] Add seed command creating demo data only outside production.
-- [ ] Phase 10: `npm run check` green, commit, update STATUS.md.
+- [x] Add `npm run check:golive` for ogs: env, DB/migrations, storage round trip, worker heartbeat, cron secret, integration live results, FX, letterhead/terms, inventory, one verified supplier.
+- [x] Print PASS/FAIL per line and exact human remediation for every FAIL.
+- [ ] Complete and comment `.env.production.example` with every variable and where to obtain it. File exists; final audit against env.ts still needed.
+- [x] Add docs/HUMAN_TASKS.md generated from code/capabilities, ordered, with owner/time/links; human tasks only.
+- [x] Add docs/DEMO_SCRIPT.md with exact 15-minute click path and synthetic data.
+- [ ] Add seed command creating demo data only outside production. Existing demo seed is guarded; ten-enquiry OGS pipeline seed not built.
+- [ ] Phase 10: `npm run check` green, commit, update STATUS.md. **Partial**: gate/docs built; env/seed/demo polish incomplete.
 
 ## Phase 11 — Self-audit finish line
 
