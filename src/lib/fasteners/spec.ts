@@ -16,6 +16,7 @@ export const FASTENER_SPEC_VERSION = 1;
 
 export const FASTENER_TYPES = [
   "HEX_BOLT",
+  "U_BOLT",
   "SOCKET_HEAD_CAP_SCREW",
   "MACHINE_SCREW",
   "STUD",
@@ -45,6 +46,7 @@ export type FastenerFinish = (typeof FINISHES)[number];
 
 export const FASTENER_TYPE_LABELS: Record<FastenerType, string> = {
   HEX_BOLT: "Hex bolt",
+  U_BOLT: "U-bolt",
   SOCKET_HEAD_CAP_SCREW: "Socket head cap screw",
   MACHINE_SCREW: "Machine screw",
   STUD: "Stud",
@@ -191,11 +193,13 @@ export function normalizeThreadSeriesValue(value: string | null | undefined): Th
 
 function parseFastenerType(text: string): FastenerType | null {
   const t = text.toLowerCase();
+  if (/\bu[\s-]*bolt\b/.test(t)) return "U_BOLT";
+  // "Stud bolt" is a stud assembly, not a hex bolt; check the specific type first.
+  if (/\bstud\s*bolt\b|\bstud\b/.test(t)) return "STUD";
   if (/\bsocket\s*(?:head)?\s*cap\s*screw\b|\bsocket\s*head\s*screw\b/.test(t)) return "SOCKET_HEAD_CAP_SCREW";
   if (/\bhex\s*(?:head)?\s*bolt\b|\bhex\s*head\s*screw\b|\bbolt\b/.test(t)) return "HEX_BOLT";
   if (/\bmachine\s*screw\b/.test(t)) return "MACHINE_SCREW";
   if (/\bthreaded\s*rod\b|\bthread\s*rod\b|\ball\s*thread\b/.test(t)) return "THREADED_ROD";
-  if (/\bstud\s*bolt\b|\bstud\b/.test(t)) return "STUD";
   if (/\block\s*nut\b|\bnyloc\b|\bnylon\s*insert\s*nut\b/.test(t)) return "LOCK_NUT";
   if (/\bhex\s*nut\b|\bnut\b/.test(t)) return "HEX_NUT";
   if (/\bspring\s*washer\b|\bwave\s*washer\b/.test(t)) return "SPRING_WASHER";
@@ -222,8 +226,8 @@ function parsePropertyClass(text: string): string | null {
   if (stainless) return `${stainless[1]}-${stainless[2]}`;
   const metric = t.match(/\b(4\.[68]|5\.6|5\.8|8\.8|10\.9|12\.9)\b/);
   if (metric) return metric[1];
-  const astm = t.match(/\b(ASTM\s*A(?:193|320|325|490)\s*(?:B\d|GR\s*\d+)?)\b/);
-  if (astm) return astm[1].replace(/\s+/g, " ");
+  const astm = t.match(/\b(?:ASTM\s*)?A(193|194|320|325|490)\s*(?:GR(?:ADE)?\.?\s*)?(B\dM?|L\dM?|2HM?|8M?|7|4)\b/);
+  if (astm) return `A${astm[1]} ${astm[2]}`;
   const grade = t.match(/\b(?:GR(?:ADE)?\.?|CLASS)\s*(\d+(?:\.\d+)?)\b/);
   if (grade) return grade[1];
   return null;
@@ -444,6 +448,7 @@ export function isFastenerCategory(category: string | null | undefined): boolean
 
 const THREADED_TYPES: FastenerType[] = [
   "HEX_BOLT",
+  "U_BOLT",
   "SOCKET_HEAD_CAP_SCREW",
   "MACHINE_SCREW",
   "STUD",
@@ -454,6 +459,7 @@ const THREADED_TYPES: FastenerType[] = [
 ];
 const LENGTH_TYPES: FastenerType[] = [
   "HEX_BOLT",
+  "U_BOLT",
   "SOCKET_HEAD_CAP_SCREW",
   "MACHINE_SCREW",
   "STUD",

@@ -8,6 +8,7 @@ import {
 } from "../catalog/industrialSpec";
 import { recomputeOffersForItem } from "../costing/evaluate";
 import { buildSearchQueries } from "./queries";
+import { isServiceCategory, isServiceDescription } from "../catalog/industrialSpec";
 import { getSearchAdapters } from "./registry";
 import { fetchPublicPage } from "./pages";
 import {
@@ -119,6 +120,21 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
       offers: 0,
       suppliers: 0,
       message: "More product details are needed before suppliers can be searched.",
+    };
+  }
+  if (isServiceCategory(item.category) || isServiceDescription(item.description)) {
+    await db.enquiryItem.update({
+      where: { id: item.id },
+      data: { sourcingStatus: "NOT_REQUIRED", clarificationQuestion: "Service line — quote manually. Services are not sourced as products." },
+    });
+    return {
+      sessionId: null,
+      status: "SKIPPED",
+      coverage: [],
+      results: 0,
+      offers: 0,
+      suppliers: 0,
+      message: "This is a service line. Price it manually; supplier product search is not used.",
     };
   }
   if (item.quantityToSource <= 0) {

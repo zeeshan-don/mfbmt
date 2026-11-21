@@ -10,7 +10,16 @@ import { normalizeMaterial, normalizePressure, normalizeSchedule, normalizeSize,
  * so adding industrial categories never changes MFBMT's fastener behaviour.
  */
 
-export type IndustrialCategory = "Pipes" | "Valves" | "Flanges" | "Fittings" | "Chemicals" | "Industrial Spares";
+export type IndustrialCategory =
+  | "Pipes"
+  | "Valves"
+  | "Flanges"
+  | "Fittings"
+  | "Gaskets"
+  | "Insulation Kits"
+  | "Chemicals"
+  | "Industrial Spares"
+  | "Services";
 
 export type IndustrialAttribute = {
   key: string;
@@ -35,6 +44,8 @@ export const INDUSTRIAL_SCHEMAS: Record<IndustrialCategory, IndustrialAttribute[
     { key: "endPreparation", label: "End preparation", required: true },
     { key: "coating", label: "Coating", required: false },
     { key: "certification", label: "Certification", required: false },
+    { key: "lengthBasis", label: "Sold by metre/length", required: false },
+    { key: "serviceCondition", label: "NACE / sour service", required: false },
   ],
   Valves: [
     { key: "valveType", label: "Valve type", required: true },
@@ -65,6 +76,22 @@ export const INDUSTRIAL_SCHEMAS: Record<IndustrialCategory, IndustrialAttribute[
     { key: "grade", label: "Grade", required: true },
     { key: "connection", label: "Connection type", required: true },
     { key: "standard", label: "Standard", required: true },
+    { key: "serviceCondition", label: "NACE / sour service", required: false },
+  ],
+  Gaskets: [
+    { key: "gasketType", label: "Gasket type", required: true },
+    { key: "size", label: "Size", required: true },
+    { key: "pressureClass", label: "Pressure class", required: true },
+    { key: "material", label: "Material", required: true },
+    { key: "filler", label: "Filler material", required: false },
+    { key: "standard", label: "Standard", required: true },
+  ],
+  "Insulation Kits": [
+    { key: "kitType", label: "Insulation kit type", required: true },
+    { key: "size", label: "Size", required: true },
+    { key: "pressureClass", label: "Pressure class", required: false },
+    { key: "material", label: "Insulation material", required: true },
+    { key: "standard", label: "Standard", required: false },
   ],
   Chemicals: [
     { key: "productName", label: "Product name", required: true },
@@ -88,18 +115,37 @@ export const INDUSTRIAL_SCHEMAS: Record<IndustrialCategory, IndustrialAttribute[
     { key: "specifications", label: "Specifications", required: true },
     { key: "documentation", label: "Documentation", required: false },
   ],
+  /** Services are deliberately not products: they require manual quoting. */
+  Services: [
+    { key: "serviceType", label: "Service type", required: true },
+    { key: "scope", label: "Scope of work", required: true },
+    { key: "standard", label: "Applicable standard / procedure", required: false },
+    { key: "turnaround", label: "Required turnaround", required: false },
+  ],
 };
 
 const CATEGORY_ALIASES: Array<{ match: RegExp; category: IndustrialCategory }> = [
-  // Fittings must be checked before the generic "pipe" match: "Pipe Fittings"
-  // is a fitting, never a pipe.
+  // Specific product families win over the generic "pipe"/"spares" words.
+  { match: /\bgasket|\bspiral\s*wound|\bring\s*(?:joint|type)|\bsheet\s*gasket|\bmetal\s*jacketed/i, category: "Gaskets" },
+  { match: /\binsulation\s*(?:kit|set|blanket|jacket)|\bcladding\s*kit/i, category: "Insulation Kits" },
+  { match: /\bservices?\b|\bmachining|\bhydro\s*test|\bhydrotest|\bplating|\bndt\b|\bnon[\s-]*destructive|\bpmi\b|\bpositive\s*material|\bpassivation|\bwelding\s*service/i, category: "Services" },
   { match: /\bfitting|\belbow|\btee\b|\breducer|\bcoupling/i, category: "Fittings" },
   { match: /\bpipes?\b/i, category: "Pipes" },
   { match: /\bvalve/i, category: "Valves" },
   { match: /\bflange/i, category: "Flanges" },
   { match: /\bchemical|\bsolvent|\bacids?\b|\bcaustic/i, category: "Chemicals" },
-  { match: /\bspares?\b|\bspare parts?|\bbearings?\b|\bseals?\b|\bgaskets?\b/i, category: "Industrial Spares" },
+  { match: /\bspares?\b|\bspare parts?|\bbearings?\b|\bseals?\b/i, category: "Industrial Spares" },
 ];
+
+const SERVICE_WORK = /\b(machining|hydro\s*test|hydrotest|plating|ndt|non[\s-]*destructive\s*testing|pmi|positive\s*material\s*identification|passivation|welding\s*service)\b/i;
+
+export function isServiceDescription(description: string | null | undefined): boolean {
+  return SERVICE_WORK.test(description ?? "");
+}
+
+export function isServiceCategory(category: string | null | undefined): boolean {
+  return resolveIndustrialCategory(category) === "Services" || /\bservices?\b/i.test(category ?? "");
+}
 
 export function resolveIndustrialCategory(category: string | null | undefined): IndustrialCategory | null {
   if (!category) return null;
@@ -122,7 +168,7 @@ export const INDUSTRIAL_SPEC_VERSION = 1 as const;
 
 export const IndustrialSpecSchema = z.object({
   version: z.literal(INDUSTRIAL_SPEC_VERSION),
-  category: z.enum(["Pipes", "Valves", "Flanges", "Fittings", "Chemicals", "Industrial Spares"]),
+  category: z.enum(["Pipes", "Valves", "Flanges", "Fittings", "Gaskets", "Insulation Kits", "Chemicals", "Industrial Spares", "Services"]),
   attributes: z.record(z.string(), z.string()),
   missingRequired: z.array(z.string()).default([]),
   missingOptional: z.array(z.string()).default([]),
@@ -225,12 +271,12 @@ export function extractIndustrialAttributes(
   const other = input.otherSpecs ?? {};
   const attrs: Record<string, string> = {};
 
-  const size = clean(input.size) ?? text.match(/\b(?:dn\s*\d+|\d+(?:\.\d+)?\s*(?:inch|in|"|mm)|\d+\/\d+(?:\s*(?:inch|in|"))?)\b/i)?.[0];
-  const material = clean(input.material) ?? text.match(/\b(?:ss\s*-?\s*(?:316l?|304l?)|stainless\s*steel(?:\s*(?:316l?|304l?))?|carbon\s*steel|mild\s*steel|cast\s*iron|ductile\s*iron|copper|brass|pvc|upvc|ppr|hdpe|alloy\s*steel|monel|duplex)\b/i)?.[0];
-  const grade = clean(input.grade) ?? text.match(/\b(?:gr\.?\s*[0-9a-z.]+|astm\s*a\d+(?:\s*(?:gr\.?|grade)\s*[a-z0-9]+)?|a\d{3}\s*(?:gr\.?|grade)?\s*[a-z]?)\b/i)?.[0];
-  const pressure = clean(input.pressureRating) ?? text.match(/\b(?:class\s*\d+|pn\s*\d+|\d+(?:\.\d+)?\s*(?:bar|psi))\b/i)?.[0];
+  const size = clean(input.size) ?? text.match(/\b(?:nps\s*\d+(?:\.\d+)?|dn\s*\d+|\d+(?:\.\d+)?\s*(?:inch|in|"|mm)|\d+\/\d+(?:\s*(?:inch|in|"))?)\b/i)?.[0];
+  const material = clean(input.material) ?? text.match(/\b(?:ss\s*-?\s*(?:316l?|304l?)|stainless\s*steel(?:\s*(?:316l?|304l?))?|carbon\s*steel|mild\s*steel|cast\s*iron|ductile\s*iron|copper|brass|pvc|upvc|ppr|hdpe|alloy\s*steel|monel|duplex|incoloy|inconel|graphite|ptfe|teflon)\b/i)?.[0];
+  const grade = clean(input.grade) ?? text.match(/\b(?:uns\s*[a-z]\d{4,5}|gr\.?\s*[0-9a-z.]+|astm\s*a\d+(?:\s*(?:gr\.?|grade)\s*[a-z0-9]+)?|a\d{3}\s*(?:gr\.?|grade)?\s*[a-z]?|a194\s*(?:gr\.?|grade)?\s*(?:2hm?|8m?|7|4))\b/i)?.[0];
+  const pressure = clean(input.pressureRating) ?? text.match(/\b(?:class\s*(?:150|300|400|600|900|1500|2500)|pn\s*\d+|\d+(?:\.\d+)?\s*(?:bar|psi))\b/i)?.[0];
   const schedule = clean(input.schedule) ?? text.match(/\b(?:sch\s*-?\s*\d+|schedule\s*\d+)\b/i)?.[0];
-  const standard = clean(input.standard) ?? text.match(/\b(?:asme\s*[a-z]?\d+(?:\.\d+)?|ansi\s*[a-z]?\d+(?:\.\d+)?|astm\s*[a-z]\d+|api\s*\d+[a-z]?|din\s*\d+|bs\s*\d+|en\s*\d+|iso\s*\d+)\b/i)?.[0];
+  const standard = clean(input.standard) ?? text.match(/\b(?:asme\s*[a-z]?\d+(?:\.\d+)?|ansi\s*[a-z]?\d+(?:\.\d+)?|astm\s*[a-z]\d+|api\s*\d+[a-z]?|din\s*\d+|bs\s*\d+|en\s*\d+|iso\s*\d+|nace\s*mr\d+)\b/i)?.[0];
   const brand = clean(input.brand) ?? clean(other.brand);
 
   const set = (key: string, value: string | null | undefined) => {
@@ -249,9 +295,11 @@ export function extractIndustrialAttributes(
       set("wallThickness", other.wallThickness ?? capture(text, /\b(?:wt|wall\s*thickness|thickness)\s*[:=]?\s*([\d.,]+\s*mm)/i));
       set("length", other.length ?? capture(text, /\b(?:length|long)\s*[:=]?\s*([\d.,]+\s*(?:m|mm|ft))/i));
       set("manufacturingType", other.manufacturingType ?? (/seamless/i.test(lower) ? "Seamless" : /erw|welded/i.test(lower) ? "Welded" : null));
-      set("endPreparation", other.endPreparation ?? (/bevel/i.test(lower) ? "Bevelled" : /plain\s*end/i.test(lower) ? "Plain end" : /thread/i.test(lower) ? "Threaded" : /socket/i.test(lower) ? "Socket" : null));
+      set("endPreparation", other.endPreparation ?? (/\bbw\b|butt\s*weld|bevel/i.test(lower) ? "Bevelled" : /\bpe\b|plain\s*end/i.test(lower) ? "Plain end" : /\bthd\b|thread/i.test(lower) ? "Threaded" : /\bsw\b|socket/i.test(lower) ? "Socket" : null));
       set("coating", other.coating ?? (/galvan/i.test(lower) ? "Galvanized" : /epoxy|fbe/i.test(lower) ? "Epoxy/FBE" : /paint/i.test(lower) ? "Painted" : null));
       set("certification", other.certification ?? (/en\s*10204\s*3\.1/i.test(lower) ? "EN 10204 3.1" : /mill\s*certificate/i.test(lower) ? "Mill certificate" : null));
+      set("lengthBasis", other.lengthBasis ?? (/double\s*random/i.test(lower) ? "Double random" : /random\s*length/i.test(lower) ? "Random length" : /per\s*(?:meter|metre|m)\b/i.test(lower) ? "Per metre" : /per\s*(?:length|joint)\b/i.test(lower) ? "Per length" : null));
+      set("serviceCondition", other.serviceCondition ?? (/\bnace\b|sour\s*service|\bh2s\b/i.test(lower) ? "NACE / sour service" : null));
       break;
     }
     case "Valves": {
@@ -285,6 +333,35 @@ export function extractIndustrialAttributes(
       set("grade", grade);
       set("connection", other.connection ?? (/butt\s*weld|\bbw\b/i.test(lower) ? "Butt weld" : /socket\s*weld|\bsw\b/i.test(lower) ? "Socket weld" : /flang/i.test(lower) ? "Flanged" : /thread|npt/i.test(lower) ? "Threaded" : null));
       set("standard", standard);
+      break;
+    }
+    case "Gaskets": {
+      set("gasketType", other.gasketType ?? (/spiral\s*wound/i.test(lower) ? "Spiral wound" : /metal\s*jacketed/i.test(lower) ? "Metal jacketed" : /ring\s*(?:joint|type)/i.test(lower) ? "Ring type joint" : /sheet/i.test(lower) ? "Sheet" : /insulation/i.test(lower) ? "Insulation kit" : null));
+      set("size", size);
+      set("pressureClass", pressure);
+      set("material", material);
+      set(
+        "filler",
+        other.filler ??
+          text.match(/\b([a-z0-9-]{2,30})\s+filler\b/i)?.[1] ??
+          capture(text, /\b(?:filler|filling)\s*[:=]\s*([a-z0-9 /-]{2,30})/i),
+      );
+      set("standard", standard);
+      break;
+    }
+    case "Insulation Kits": {
+      set("kitType", other.kitType ?? (/flange\s*insulation/i.test(lower) ? "Flange insulation kit" : /valve\s*insulation/i.test(lower) ? "Valve insulation kit" : /pipe\s*insulation/i.test(lower) ? "Pipe insulation kit" : /insulation\s*(?:kit|set|blanket|jacket)/i.test(lower) ? "Insulation kit" : null));
+      set("size", size);
+      set("pressureClass", pressure);
+      set("material", material);
+      set("standard", standard);
+      break;
+    }
+    case "Services": {
+      set("serviceType", other.serviceType ?? (lower.match(/\b(machining|hydro\s*test|hydrotest|plating|ndt|non[\s-]*destructive\s*testing|pmi|positive\s*material\s*identification|passivation)\b/i)?.[1]));
+      set("scope", other.scope ?? clean(input.description));
+      set("standard", standard);
+      set("turnaround", other.turnaround ?? capture(text, /\b(?:turnaround|lead\s*time|delivery)\s*[:=]?\s*([0-9]+\s*(?:days?|weeks?|hours?))/i));
       break;
     }
     case "Chemicals": {

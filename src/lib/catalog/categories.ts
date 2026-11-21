@@ -65,6 +65,14 @@ export const CATEGORIES: CategoryRule[] = [
     searchHints: ["gasket", "spiral wound gasket"],
   },
   {
+    name: "Insulation Kits",
+    synonyms: ["insulation kit", "insulation set", "flange insulation", "valve insulation", "pipe insulation"],
+    required: ["size", "material"],
+    optional: ["pressureRating", "standard"],
+    variantRequired: false,
+    searchHints: ["insulation kit", "flange insulation kit"],
+  },
+  {
     name: "Hoses & Couplings",
     synonyms: ["hose", "coupling", "camlock", "clamp", "hose fitting"],
     required: ["size", "material"],
@@ -103,6 +111,14 @@ export const CATEGORIES: CategoryRule[] = [
     optional: ["size", "brand", "material"],
     variantRequired: true,
     searchHints: ["industrial tool", "hand tool"],
+  },
+  {
+    name: "Industrial Services",
+    synonyms: ["machining", "hydrotest", "hydro test", "plating", "ndt", "pmi", "passivation", "welding service"],
+    required: ["typeVariant"],
+    optional: ["standard"],
+    variantRequired: true,
+    searchHints: [],
   },
   {
     name: "Other Industrial Supplies",

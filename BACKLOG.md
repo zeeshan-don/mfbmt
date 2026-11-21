@@ -42,19 +42,19 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 3 — OGS product coverage
 
-- [ ] Wire all six existing OGS categories end to end: extraction prompt, deterministic fallback, review UI, inventory matching, sourcing, comparison, quotation lines.
-- [ ] Add Gaskets schema: type, size, pressure class, material/filler, standard.
-- [ ] Add Insulation Kit schema.
-- [ ] Add Bolting schema: stud/hex bolts, nuts, washers, U-bolts, threaded bars; ASTM A193 B7/B7M/B8/B8M/L7/L7M; A194 2H/2HM/8/8M/7/4.
-- [ ] Fix fastener grade parsing for A194 nut grades and add tests.
-- [ ] Decide/document bolting engine choice (fastener vs industrial) with a test proving the decision.
-- [ ] Detect service lines (machining, hydrotesting, plating, NDT, PMI); flag them and route to manual quoting without sourcing.
-- [ ] Add domain vocabulary: UNS, ASTM/API/ASME, schedules, classes 150–2500, RF/FF/RTJ, BW/SW/THD/FLGD, NPS/DN, per-meter/length, random/double random, NACE/sour service.
-- [ ] Make unknown/conflicting attributes produce INSUFFICIENT or NO_MATCH; never guess.
-- [ ] Require an explicitly approved substitution for material equivalence.
-- [ ] Add stated/configured unit conversions for meters, lengths, pieces and sets; never assume.
-- [ ] Use SDS/COA fields for chemicals; flag missing SDS in quotation checklist; no compliance claim.
-- [ ] Phase 3: `npm run check` green, commit, update STATUS.md.
+- [x] Wire all six existing OGS categories end to end: extraction prompt, deterministic fallback, review UI, inventory matching, sourcing, comparison, quotation lines.
+- [x] Add Gaskets schema: type, size, pressure class, material/filler, standard.
+- [x] Add Insulation Kit schema.
+- [x] Add Bolting schema: stud/hex bolts, nuts, washers, U-bolts, threaded bars; ASTM A193 B7/B7M/B8/B8M/L7/L7M; A194 2H/2HM/8/8M/7/4. Implemented in the existing fastener engine so safety-critical bolt dimensions cannot bypass its matcher; A194 and U-bolt tests added.
+- [x] Fix fastener grade parsing for A194 nut grades and add tests.
+- [x] Decide/document bolting engine choice (fastener vs industrial) with a test proving the decision.
+- [x] Detect service lines (machining, hydrotesting, plating, NDT, PMI); flag them and route to manual quoting without sourcing.
+- [x] Add domain vocabulary: UNS, ASTM/API/ASME, schedules, classes 150–2500, RF/FF/RTJ, BW/SW/THD/FLGD, NPS/DN, per-meter/length, random/double random, NACE/sour service.
+- [x] Make unknown/conflicting attributes produce INSUFFICIENT or NO_MATCH; never guess.
+- [x] Require an explicitly approved substitution for material equivalence.
+- [ ] Add stated/configured unit conversions for meters, lengths, pieces and sets; never assume. **Not built**; basic unit normalization only.
+- [ ] Use SDS/COA fields for chemicals; flag missing SDS in quotation checklist; no compliance claim. Fields exist, checklist flag not built.
+- [x] Phase 3: `npm run check` green, commit, update STATUS.md.
 
 ## Phase 4 — Supplier workflow
 

@@ -1,7 +1,7 @@
 # STATUS — OGS production readiness
 
-Last updated: 21 November 2026 (Phase 2)  
-HEAD: `7378a2b` baseline commit; Phase 1/2 changes in the working tree  
+Last updated: 21 November 2026 (Phase 3)  
+HEAD: `931741e` Phase 1/2 commit; Phase 3 changes in the working tree  
 Working tree: Phase 1/2 implementation; no production env, database, credentials or deployments touched.
 
 ## Baseline verification (Phase 0)
@@ -46,7 +46,7 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 
 | Command | Result |
 | --- | --- |
-| `npm run check` | **PASS** — typecheck 0 errors, 27 test files / **218 tests**, production build compiled |
+| `npm run check` (Phase 2) | **PASS** — typecheck 0 errors, 27 test files / **218 tests**, production build compiled |
 | Focused MFA tests | 4/4 passed, including RFC 6238 vector, one-use challenge and recovery-code replay |
 | Focused Phase 2 tests | 5/5 passed: metering, limits, budget/allowance, monthly report, cache tenant isolation |
 | Worker health tests | 3/3 passed: stale loop, in-flight job, missing cron secret |
@@ -54,13 +54,23 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 | Baked OCR image | **NOT BUILT** — Dockerfile changed; daemon image build needs a Docker host |
 | `npm run lint` | **NOT RUN in this phase** |
 
+## Phase 3 verification
+
+| Command | Result |
+| --- | --- |
+| `npm run check` | **PASS** — typecheck 0 errors, 28 test files / **225 tests**, production build compiled |
+| Focused Phase 3 suite | 7/7 passed plus existing fastener/industrial suites (48 tests total) |
+| Gaskets/insulation | Deterministic schemas, extraction and comparison tests pass |
+| Bolting | A194 2H/2HM/8/8M/7/4 and A193 B7M tests pass; U-bolt type added |
+| Services | Service item is marked manual and creates no search session in test |
+
 ## Current feature states (after Phase 2)
 
 | Area | State | Evidence / gap |
 | --- | --- | --- |
 | Multi-tenant scoping | Built + tested | Tenant guard, 6 tenant-isolation tests, overlapping data |
 | MFBMT fastener engine | Built + tested | 22 fastener tests + matching/inventory tests |
-| OGS industrial schemas | Built + tested (6 categories) | `industrialSpec.ts`, extraction/matching tests |
+| OGS industrial schemas | Built + tested (9 categories) | Pipes, valves, flanges, fittings, gaskets, insulation kits, chemicals, spares, services |
 | OGS review wiring | Built | Enquiry review displays/edits industrial spec; add Phase 3 categories/service/bolting |
 | Supplier reply correlation | Built + tested | Provider/header/token correlation; 10+4 tests; live providers unverified |
 | Supplier web discovery/outreach | Not built | Phase 4 |
@@ -78,8 +88,9 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 | Search/page cache | Built + tested | Organization-scoped 7-day default cache with overlapping-tenant test |
 | Usage report | Built | `/usage` + CSV/PDF; export route not integration-tested |
 | Optional second AI pass | Not built | No second-pass path; configuration checkbox exists but does not yet change extraction |
-| Gaskets/insulation/bolting/services | Not built | Only six base categories |
-| Units/conversions | Partial | Basic units; no stated conversions |
+| Gaskets/insulation/bolting/services | Built + tested | Gasket/insulation/service schemas; bolting deliberately stays in the fastener engine; service sourcing blocked |
+| Units/conversions | Partial | Basic units only; no stated/configured quantity conversion yet |
+| Chemical SDS checklist | Partial | SDS/COA fields exist; quotation checklist flag not yet built |
 | Supplier directory/ranking/CSV | Partial | Supplier model/UI exists; fields/ranking/import need work |
 | Price memory | Not built | No history view |
 | FX multi-currency | Partial | USD/AED + provider; SAR/INR/EUR/CNY/KRW paths need proof/tests |
@@ -118,3 +129,4 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 - Phase 0: baseline check PASS; docs read/compared; BACKLOG.md and STATUS.md created. No behavior changed.
 - Phase 1: crons, authenticated cron calls, worker health/graceful release, storage round-trip command, baked OCR assets, operational alerts/digest and TOTP MFA with recovery codes implemented. `npm run check` PASS (27 files, 218 tests). Live S3/OCR-image checks remain unverified.
 - Phase 2: AI usage table/cost, budget refusal, per-org limits and warnings, item/query caps, search cache and monthly usage page/CSV/PDF implemented. `npm run check` PASS. Optional second pass remains **not built** and is called out above.
+- Phase 3: added gasket/insulation/service schemas, NACE/length vocabulary, A194 nut grades and U-bolt parsing, and a deterministic service-sourcing block. `npm run check` PASS (28 files, 225 tests). Unit conversions and the chemical SDS quotation checklist remain open.
