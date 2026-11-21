@@ -66,6 +66,16 @@ export async function processJob(jobId: string, workerId: string): Promise<{ ok:
       const result = await renewEmailSubscriptions();
       return { ok: result.ok, message: result.detail };
     }
+    case JOB_TYPES.OPS_CHECK: {
+      const { runOpsCheck } = await import("../ops-monitor");
+      const result = await runOpsCheck();
+      return { ok: true, message: `Operational checks complete${result.alerted.length ? ` (${result.alerted.join(", ")})` : ""}` };
+    }
+    case JOB_TYPES.OPS_DIGEST: {
+      const { sendDailyDigest } = await import("../ops-monitor");
+      const result = await sendDailyDigest();
+      return { ok: true, message: result.sent ? "Daily digest sent" : "Daily digest already sent" };
+    }
     case JOB_TYPES.PURGE_EXPIRED: {
       const now = new Date();
       const expired = await db.supplierQuote.updateMany({

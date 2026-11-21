@@ -62,6 +62,7 @@ export const TENANT_MODELS = new Set([
   "SupplierQuoteItem",
   "SupplierEmailReply",
   "OwnerInvitation",
+  "MfaChallenge",
   "Approval",
   "CustomerQuotation",
   "CustomerQuotationItem",
@@ -74,6 +75,8 @@ export const TENANT_MODELS = new Set([
   "AuditLog",
   "Notification",
   "ExchangeRate",
+  "AiUsage",
+  "SearchCache",
   "AppSetting",
 ]);
 

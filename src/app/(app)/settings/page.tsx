@@ -20,11 +20,13 @@ import {
   savePricingRuleAction,
   togglePricingRuleAction,
   deletePricingRuleAction,
+  saveLimitsAction,
   createUserAction,
   toggleUserAction,
 } from "@/app/actions/settings";
 import { CATEGORIES } from "@/lib/catalog/categories";
 import { storageDriver } from "@/lib/storage";
+import { getOrgLimits } from "@/lib/limits";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +59,7 @@ export default async function SettingsPage({
   const flags = await searchParams;
   await ensureIntegrations();
 
-  const [integrations, org, exclusions, rules, users, gmail, microsoft, whatsapp, storage, aiIntegration, webIntegration] =
+  const [integrations, org, exclusions, rules, users, gmail, microsoft, whatsapp, storage, aiIntegration, webIntegration, limits] =
     await Promise.all([
       db.integration.findMany(),
       getCurrentOrganization(),
@@ -70,6 +72,7 @@ export default async function SettingsPage({
       db.integration.findFirst({ where: { key: "STORAGE" } }),
       db.integration.findFirst({ where: { key: "AI_PROVIDER" } }),
       db.integration.findFirst({ where: { key: "WEB_SEARCH" } }),
+      getOrgLimits(),
     ]);
 
   const ai = aiStatus();
@@ -629,6 +632,42 @@ export default async function SettingsPage({
               <div className="sm:col-span-4"><Button size="sm">Save rule</Button></div>
             </form>
           </details>
+        </Card>
+      </section>
+
+      <section id="limits" className="space-y-3">
+        <h2 className="text-sm font-semibold text-ink">Cost and volume limits</h2>
+        <p className="text-xs text-muted">
+          These limits are deterministic and per company. Reaching one degrades to the built-in parser and notifies you; work is never silently discarded.
+        </p>
+        <Card>
+          <form action={saveLimitsAction} className="grid gap-3 px-4 py-4 sm:grid-cols-3">
+            <label className="block text-xs text-soft">
+              Maximum items sourced per enquiry
+              <input name="maxItemsPerEnquiry" type="number" min={1} max={50} defaultValue={limits.maxItemsPerEnquiry} className={`${inputClass} mt-1 tabular`} />
+            </label>
+            <label className="block text-xs text-soft">
+              Maximum search queries per item
+              <input name="maxSearchQueriesPerItem" type="number" min={1} max={10} defaultValue={limits.maxSearchQueriesPerItem} className={`${inputClass} mt-1 tabular`} />
+            </label>
+            <label className="block text-xs text-soft">
+              Monthly AI budget (AED)
+              <input name="monthlyAiBudgetAed" type="number" min={0} step="0.01" defaultValue={limits.monthlyAiBudgetAed} className={`${inputClass} mt-1 tabular`} />
+            </label>
+            <label className="block text-xs text-soft">
+              Monthly enquiry allowance
+              <input name="monthlyEnquiryAllowance" type="number" min={0} defaultValue={limits.monthlyEnquiryAllowance} className={`${inputClass} mt-1 tabular`} />
+            </label>
+            <label className="block text-xs text-soft">
+              Search/page cache TTL (days)
+              <input name="searchCacheTtlDays" type="number" min={1} max={90} defaultValue={limits.searchCacheTtlDays} className={`${inputClass} mt-1 tabular`} />
+            </label>
+            <div className="space-y-2 pt-5">
+              <label className="flex items-center gap-2 text-xs text-soft"><input type="checkbox" name="webSearchEnabled" defaultChecked={limits.webSearchEnabled} /> Enable public web search</label>
+              <label className="flex items-center gap-2 text-xs text-soft"><input type="checkbox" name="lowConfidenceSecondPass" defaultChecked={limits.lowConfidenceSecondPass} /> Second AI pass for low-confidence items</label>
+            </div>
+            <div className="sm:col-span-3"><Button size="sm" variant="primary">Save limits</Button></div>
+          </form>
         </Card>
       </section>
 

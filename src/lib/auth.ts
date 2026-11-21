@@ -8,6 +8,7 @@ import { PERMISSIONS, type Permission, type Role } from "./constants";
 import { parseStringArray } from "./json";
 import { env } from "./env";
 import { SESSION_COOKIE, clearTenantSessionCache } from "./tenant";
+import { createMfaChallenge } from "./mfa";
 
 const COOKIE_NAME = SESSION_COOKIE;
 /** One validated setting drives both the cookie and the database expiry. */
@@ -230,7 +231,24 @@ export async function login(email: string, password: string, meta?: LoginMeta) {
     return { ok: false as const, error: "Email or password is incorrect." };
   }
 
+  // Password is correct. Accounts with MFA do not receive a session yet:
+  // a short-lived, single-use challenge is issued and the second factor must
+  // be verified. Accounts without MFA keep the existing login behaviour.
+  if (user.mfaEnabledAt) {
+    const challenge = await createMfaChallenge(user.id, user.organizationId);
+    await writeAudit({
+      organizationId: user.organizationId,
+      actorId: user.id,
+      actorLabel: user.email,
+      action: "auth.mfa_challenge_created",
+      entityType: "User",
+      entityId: user.id,
+      ip: meta?.ip ?? null,
+    });
+    return { ok: true as const, user, mfaRequired: true as const, challengeToken: challenge.token };
+  }
+
   await createSession({ id: user.id, organizationId: user.organizationId }, meta);
   await rawDb.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-  return { ok: true as const, user };
+  return { ok: true as const, user, mfaRequired: false as const };
 }

@@ -6,13 +6,27 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+# Tesseract.js downloads language data on first use by default, which is unsafe
+# on an ephemeral daemon disk. Bake the languages the deployment may use.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && mkdir -p /app/tessdata \
+ && curl -fsSL https://tessdata.projectnaptha.com/4.0.0/eng.traineddata.gz -o /app/tessdata/eng.traineddata.gz \
+ && curl -fsSL https://tessdata.projectnaptha.com/4.0.0/ara.traineddata.gz -o /app/tessdata/ara.traineddata.gz \
+ && rm -rf /var/lib/apt/lists/*
+
 # Application source and Prisma schema.
 COPY . .
 
 # Generate the Prisma client for the worker's database access.
 RUN npx prisma generate
 
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    OCR_PROVIDER=auto \
+    OCR_LANGUAGES=eng \
+    OCR_LANG_PATH=/app/tessdata \
+    WORKER_HEALTH_PORT=3001
 
 # Long-running database-backed worker. Jobs are claimed with FOR UPDATE SKIP LOCKED.
+# Vercel livenessProbe calls GET /health on port 3001.
 CMD ["npm", "run", "worker"]

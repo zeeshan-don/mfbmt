@@ -15,6 +15,7 @@ import {
   UserRound,
   PlayCircle,
   PlugZap,
+  BarChart3,
 } from "lucide-react";
 
 type NavItem = {
@@ -33,6 +34,7 @@ const items: NavItem[] = [
   { href: "/suppliers", label: "Suppliers", icon: Building2 },
   { href: "/approvals", label: "Approvals", icon: BadgeCheck, ownerOnly: true },
   { href: "/activity", label: "Activity", icon: Activity },
+  { href: "/usage", label: "Usage & cost", icon: BarChart3, ownerOnly: true },
   { href: "/integrations", label: "Integrations", icon: PlugZap, ownerOnly: true },
   { href: "/settings", label: "Settings", icon: Settings, ownerOnly: true },
   { href: "/account", label: "My account", icon: UserRound },

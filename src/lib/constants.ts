@@ -136,6 +136,8 @@ export const JOB_TYPES = {
   SYNC_EMAIL: "SYNC_EMAIL",
   RENEW_EMAIL_WATCH: "RENEW_EMAIL_WATCH",
   PURGE_EXPIRED: "PURGE_EXPIRED",
+  OPS_CHECK: "OPS_CHECK",
+  OPS_DIGEST: "OPS_DIGEST",
 } as const;
 
 export const integrationKeys = [

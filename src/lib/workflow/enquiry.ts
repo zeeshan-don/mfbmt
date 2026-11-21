@@ -15,6 +15,7 @@ import {
 import { requireTenantId } from "../tenant";
 import { getCurrentOrganization } from "../organization";
 import { applyInventoryCheck } from "../inventory/check";
+import { getOrgLimits } from "../limits";
 import { enqueueJob } from "./jobs";
 import { nextEnquiryRef } from "./sequences";
 import { JOB_TYPES } from "../constants";
@@ -621,6 +622,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
     { industrial: industrialSpecs },
   );
 
+  const limits = await getOrgLimits();
   const unreadable = extraction.extraction.unreadableParts ?? [];
   let lineNo = 1;
   for (const item of extraction.items) {
@@ -685,15 +687,31 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
     },
   });
 
+  let sourcingSlots = limits.maxItemsPerEnquiry;
+  let cappedItems = 0;
   for (const item of items) {
     const missing = parseJson<string[]>(item.missingFields, []);
     if (missing.length === 0 && item.quantityToSource > 0) {
+      if (sourcingSlots <= 0) {
+        cappedItems += 1;
+        continue;
+      }
+      sourcingSlots -= 1;
       await enqueueJob({
         type: JOB_TYPES.RUN_SOURCING,
         payload: { enquiryItemId: item.id },
         idempotencyKey: `sourcing:${item.id}`,
       });
     }
+  }
+  if (cappedItems > 0) {
+    const { notifyOwner } = await import("../audit");
+    await notifyOwner({
+      type: "SOURCING_LIMIT",
+      title: "Sourcing limit reached for an enquiry",
+      body: `${cappedItems} extra item${cappedItems === 1 ? " was" : "s were"} kept for review but not sourced automatically. The configured limit is ${limits.maxItemsPerEnquiry} items per enquiry.`,
+      link: `/enquiries/${enquiry.id}`,
+    });
   }
 
   if (items.length > 0) {

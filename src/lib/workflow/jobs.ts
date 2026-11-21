@@ -204,6 +204,29 @@ export async function failJob(jobId: string, workerId: string, error: string): P
   return status === JOB_STATUS.FAILED ? "failed" : "retry";
 }
 
+/**
+ * Releases every job still owned by a worker that is shutting down. Used after
+ * the graceful-drain deadline. The same conditional lease rules apply, so a job
+ * already reclaimed by another worker is never touched.
+ */
+export async function releaseJobsForWorker(workerId: string): Promise<number> {
+  const rows = await rawDb.$queryRaw<Array<{ id: string }>>`
+    UPDATE "BackgroundJob"
+       SET status = CASE WHEN attempts >= "maxAttempts" THEN 'FAILED' ELSE 'QUEUED' END,
+           "lastError" = COALESCE("lastError", 'Worker shut down before this job finished.'),
+           "deadLetteredAt" = CASE WHEN attempts >= "maxAttempts" THEN now() ELSE NULL END,
+           "lockedAt" = NULL,
+           "lockedBy" = NULL,
+           "leaseExpiresAt" = NULL,
+           "heartbeatAt" = NULL,
+           progress = CASE WHEN attempts >= "maxAttempts" THEN 'Failed — needs manual retry' ELSE 'Released by a graceful worker shutdown' END
+     WHERE "lockedBy" = ${workerId}
+       AND status = 'PROCESSING'
+     RETURNING id
+  `;
+  return rows.length;
+}
+
 /** Owner-initiated retry of a dead-lettered job within the owner's company. */
 export async function retryJob(jobId: string, actor: string) {
   const organizationId = await requireTenantId();

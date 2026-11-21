@@ -19,6 +19,7 @@ import { testStorage, storageDriver } from "@/lib/storage";
 import { PERMISSIONS } from "@/lib/constants";
 import { canonicalPhone, parseEmailAddress } from "@/lib/intake/identity";
 import { retryJob } from "@/lib/workflow/jobs";
+import { getOrgLimits, saveOrgLimits } from "@/lib/limits";
 
 function str(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
@@ -323,6 +324,34 @@ export async function deletePricingRuleAction(formData: FormData) {
   await db.pricingRule.deleteMany({ where: { id: String(formData.get("id") ?? "") } });
   revalidatePath("/settings");
   redirect("/settings#pricing");
+}
+
+export async function saveLimitsAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const current = await getOrgLimits();
+  const number = (key: string, fallback: number) => {
+    const parsed = Number(String(formData.get(key) ?? ""));
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const saved = await saveOrgLimits({
+    maxItemsPerEnquiry: number("maxItemsPerEnquiry", current.maxItemsPerEnquiry),
+    maxSearchQueriesPerItem: number("maxSearchQueriesPerItem", current.maxSearchQueriesPerItem),
+    webSearchEnabled: formData.get("webSearchEnabled") === "on",
+    monthlyAiBudgetAed: number("monthlyAiBudgetAed", current.monthlyAiBudgetAed),
+    monthlyEnquiryAllowance: number("monthlyEnquiryAllowance", current.monthlyEnquiryAllowance),
+    searchCacheTtlDays: number("searchCacheTtlDays", current.searchCacheTtlDays),
+    lowConfidenceSecondPass: formData.get("lowConfidenceSecondPass") === "on",
+  });
+  await writeAudit({
+    actorId: user.id,
+    actorLabel: user.name,
+    action: "limits.updated",
+    entityType: "Organization",
+    meta: saved,
+  });
+  revalidatePath("/settings");
+  redirect("/settings?saved=1#limits");
 }
 
 export async function createUserAction(formData: FormData) {

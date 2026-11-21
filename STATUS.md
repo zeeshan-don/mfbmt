@@ -1,8 +1,8 @@
 # STATUS — OGS production readiness
 
-Last updated: 21 November 2026 (Phase 0 baseline)  
-HEAD: `8c4142eaa64e16125de7c842c8f4f46482ae6290` · branch `main`  
-Working tree: baseline hardening changes being committed; no production env, database, credentials or deployments touched.
+Last updated: 21 November 2026 (Phase 2)  
+HEAD: `7378a2b` baseline commit; Phase 1/2 changes in the working tree  
+Working tree: Phase 1/2 implementation; no production env, database, credentials or deployments touched.
 
 ## Baseline verification (Phase 0)
 
@@ -28,9 +28,9 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 6. **RELEASE_REPORT stale status** — its main body says OGS extraction-screen wiring and automatic supplier-reply matching are not implemented; the 21 Nov addendum and code show both implemented. Current test count is 206, not 164.
 7. **MULTITENANCY stale status** — it says OGS category wiring is pending; the industrial flow is now wired behind `procurementProfile=INDUSTRIAL`. Its statement that OGS is empty is a data statement, not a code limitation.
 8. **`docs/LIMITATIONS.md`** — contains a truncated `## Current verific` heading, says “One organisation” despite multi-tenancy, and correctly lists missing MFA, email/WhatsApp alerts, `.xls/.docx` parsing, reservations and other gaps still to implement.
-9. **No MFA** — `docs/LIMITATIONS.md` and `docs/SECURITY.md` correctly say MFA is absent. No TOTP code exists yet.
-10. **No AI metering/limits/search cache/usage report** — documented features do not exist yet; AI calls return no usage to the app, and sourcing has no query cache.
-11. **No `check:storage`, `eval:extraction`, `verify:live` or `check:golive` scripts** — only the scripts visible in `package.json` exist.
+9. **No MFA** — resolved in Phase 1; `docs/LIMITATIONS.md` and `docs/SECURITY.md` still need their stale statements updated in Phase 8.
+10. **No AI metering/limits/search cache/usage report** — resolved in Phase 2; docs still need updating.
+11. **No `check:storage`, `eval:extraction`, `verify:live` or `check:golive` scripts** — `check:storage` now exists; the other three remain missing.
 12. **No supplier prospect/outreach layer** — web search produces search results and offers, but no unverified prospect record, contact extraction, drafted-RFQ queue or auto-send-to-verified path.
 13. **No quotation revisions/Excel/outcome tracking/customer master** — the existing quote flow has versions and PDF, but not the full Phase 5 surface.
 14. **`docs/LIMITATIONS.md` is honest about file parsing** — `.xls`, `.xlsb`, `.doc`, `.docx` and archives are not parsed. This matches the code at baseline.
@@ -42,7 +42,19 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 - **Needs live credentials** — code path exists; provider behavior cannot be proven here.
 - **Not built** — no honest implementation yet; must be built or listed in LIMITATIONS.
 
-## Current feature states (baseline, before Phase 1)
+## Phase 1/2 verification
+
+| Command | Result |
+| --- | --- |
+| `npm run check` | **PASS** — typecheck 0 errors, 27 test files / **218 tests**, production build compiled |
+| Focused MFA tests | 4/4 passed, including RFC 6238 vector, one-use challenge and recovery-code replay |
+| Focused Phase 2 tests | 5/5 passed: metering, limits, budget/allowance, monthly report, cache tenant isolation |
+| Worker health tests | 3/3 passed: stale loop, in-flight job, missing cron secret |
+| `check:storage` | **NOT RUN** — local storage is configured; S3/R2 round trip needs credentials |
+| Baked OCR image | **NOT BUILT** — Dockerfile changed; daemon image build needs a Docker host |
+| `npm run lint` | **NOT RUN in this phase** |
+
+## Current feature states (after Phase 2)
 
 | Area | State | Evidence / gap |
 | --- | --- | --- |
@@ -54,18 +66,18 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 | Supplier web discovery/outreach | Not built | Phase 4 |
 | Storage S3 + tenant keys | Built + tested; S3 live unverified | 12 storage tests; no S3 credentials |
 | Production local-storage refusal | Built + tested | `storage-config.ts`; check:storage script missing |
-| Cron scheduling | Not built | Route code exists; `vercel.json` has no crons |
-| Two-runner job safety | Built + tested | Existing jobs-concurrency tests; add explicit two-runner proof |
-| Worker HTTP health | Not built | DB heartbeat exists |
-| Graceful worker shutdown | Partial | Flag stops loop; no job release/health server |
-| OCR packaging/loud failure | Partial | OCR works; Docker language data missing |
-| Owner alerts/failure digest | Not built | In-app notifications only |
-| TOTP MFA | Not built | No code |
-| AI usage metering/budget | Not built | No usage capture |
-| Organization limits | Not built | No limits |
-| Search/page cache | Not built | No cache model |
-| Usage report | Not built | No page/export |
-| Optional second AI pass | Not built | No second-pass path |
+| Cron scheduling | Built + tested | `vercel.json` schedules both routes every 5 minutes; cron bearer auth tested |
+| Two-runner job safety | Built + tested | `FOR UPDATE SKIP LOCKED` claim path covered by 9 jobs-concurrency tests |
+| Worker HTTP health | Built + tested | `/health` on 3001, stale-loop/in-flight tests, `livenessProbe` |
+| Graceful worker shutdown | Built | SIGTERM drains, 25s deadline releases lease; no process-level integration test |
+| OCR packaging/loud failure | Built | Docker bakes eng/ara; OCR errors remain explicit; image unbuilt here |
+| Owner alerts/failure digest | Built + tested | Dead-letter/worker/integration/limit alerts and daily digest via durable jobs |
+| TOTP MFA | Built + tested | RFC 6238, hashed single-use challenges, hashed recovery codes, enrolment UI |
+| AI usage metering/budget | Built + tested | Provider usage recorded; deterministic cost; budget blocks new spend |
+| Organization limits | Built + tested | Item cap, query cap, web toggle, allowance; 80/100 warnings |
+| Search/page cache | Built + tested | Organization-scoped 7-day default cache with overlapping-tenant test |
+| Usage report | Built | `/usage` + CSV/PDF; export route not integration-tested |
+| Optional second AI pass | Not built | No second-pass path; configuration checkbox exists but does not yet change extraction |
 | Gaskets/insulation/bolting/services | Not built | Only six base categories |
 | Units/conversions | Partial | Basic units; no stated conversions |
 | Supplier directory/ranking/CSV | Partial | Supplier model/UI exists; fields/ranking/import need work |
@@ -93,6 +105,8 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 
 ## Unverified / blocked
 
+- **Phase 2 second AI pass is not built.** The Settings checkbox is stored but no second extraction pass runs. It is off by default; do not sell it as available.
+- Worker SIGTERM release and Docker OCR image were not exercised process-by-process in this environment.
 - All live provider integrations (Meta, Gmail, Microsoft, AI, search, FX): **needs live credentials**; no provider call was made.
 - S3/R2 round trip: **needs credentials**; local storage tests only.
 - Production database migration: **not applied**; no production access used.
@@ -102,3 +116,5 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 ## Phase log
 
 - Phase 0: baseline check PASS; docs read/compared; BACKLOG.md and STATUS.md created. No behavior changed.
+- Phase 1: crons, authenticated cron calls, worker health/graceful release, storage round-trip command, baked OCR assets, operational alerts/digest and TOTP MFA with recovery codes implemented. `npm run check` PASS (27 files, 218 tests). Live S3/OCR-image checks remain unverified.
+- Phase 2: AI usage table/cost, budget refusal, per-org limits and warnings, item/query caps, search cache and monthly usage page/CSV/PDF implemented. `npm run check` PASS. Optional second pass remains **not built** and is called out above.

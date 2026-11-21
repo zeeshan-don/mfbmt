@@ -29,6 +29,10 @@ function ocrEnabled(): boolean {
   return env.OCR_PROVIDER !== "none";
 }
 
+function ocrOptions(): { langPath?: string } {
+  return env.OCR_LANG_PATH ? { langPath: env.OCR_LANG_PATH } : {};
+}
+
 async function loadPdfParse() {
   const mod = (await import("pdf-parse")) as unknown as {
     default?: (buffer: Buffer) => Promise<{ text: string; numpages: number }>;
@@ -109,7 +113,7 @@ export async function extractPdf(buffer: Buffer): Promise<DocumentText> {
       for (const page of textPages.slice(0, limit)) {
         try {
           const png = tasks.drawPageAsPNG(document, page.page - 1, 200);
-          const result = await Tesseract.recognize(Buffer.from(png), languages);
+          const result = await Tesseract.recognize(Buffer.from(png), languages, ocrOptions());
           ocrPages.push({ page: page.page, text: (result.data.text ?? "").trim(), ocr: true });
         } catch (error) {
           ocrPages.push({
@@ -447,7 +451,7 @@ export async function extractImage(buffer: Buffer): Promise<DocumentText> {
   try {
     const languages = ocrLanguages();
     const Tesseract = (await import("tesseract.js")).default;
-    const result = await Tesseract.recognize(working, languages);
+    const result = await Tesseract.recognize(working, languages, ocrOptions());
     const text = (result.data.text ?? "").trim();
     if (text.length < 10) {
       return {

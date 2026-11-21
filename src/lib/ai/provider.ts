@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { env } from "../env";
+import { recordAiUsage, estimateAiCostUsd } from "./usage";
+import { aiBudgetStatus } from "../limits";
 
 /**
  * Provider abstraction: the procurement engine never talks to a model vendor
@@ -22,15 +24,19 @@ export function aiStatus(): AIStatus {
   return { configured: true, provider: env.AI_PROVIDER, model: env.AI_MODEL };
 }
 
+export type AIUsageSnapshot = { inputTokens: number; outputTokens: number; model: string };
 export type AIResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: string; notConfigured?: boolean };
+  | { ok: true; data: T; usage?: AIUsageSnapshot }
+  | { ok: false; error: string; notConfigured?: boolean; budgetBlocked?: boolean };
 
 type ChatOptions = {
   system: string;
   user: string;
   maxTokens?: number;
   temperature?: number;
+  /** Stable label used in the usage report, e.g. extraction/classification. */
+  jobType?: string;
+  enquiryId?: string | null;
 };
 
 function stripFences(content: string): string {
@@ -46,6 +52,17 @@ export async function completeJson<S extends z.ZodTypeAny>(options: ChatOptions,
   const status = aiStatus();
   if (!status.configured) {
     return { ok: false, notConfigured: true, error: status.reason ?? "AI is not configured." };
+  }
+
+  // Budget is deterministic: provider token cost is recorded from usage, and a
+  // reached budget degrades to the rules parser instead of spending more.
+  const budget = await aiBudgetStatus().catch(() => null);
+  if (budget && !budget.allowed) {
+    return {
+      ok: false,
+      budgetBlocked: true,
+      error: `Monthly AI budget reached (${budget.spentAed?.toFixed(2) ?? "unknown"} of ${budget.budgetAed} AED). The built-in parser will be used.`,
+    };
   }
 
   const controller = new AbortController();
@@ -93,7 +110,12 @@ export async function completeJson<S extends z.ZodTypeAny>(options: ChatOptions,
 
     const payload = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
+      model?: string;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    const inputTokens = Math.max(0, Number(payload.usage?.prompt_tokens ?? 0));
+    const outputTokens = Math.max(0, Number(payload.usage?.completion_tokens ?? 0));
+    const responseModel = payload.model ?? env.AI_MODEL;
     const content = payload.choices?.[0]?.message?.content;
     if (!content) return { ok: false, error: "AI provider returned an empty response." };
 
@@ -114,7 +136,34 @@ export async function completeJson<S extends z.ZodTypeAny>(options: ChatOptions,
           .join("; ")}`,
       };
     }
-    return { ok: true, data: validated.data };
+    if (payload.usage) {
+      await recordAiUsage({
+        jobType: options.jobType ?? "ai.complete",
+        provider: env.AI_PROVIDER,
+        model: responseModel,
+        inputTokens,
+        outputTokens,
+        estimatedCostUsd: estimateAiCostUsd(inputTokens, outputTokens),
+        enquiryId: options.enquiryId ?? null,
+      });
+    } else {
+      // Some gateways omit usage. Record the call with unknown cost rather than
+      // fabricating token counts.
+      await recordAiUsage({
+        jobType: options.jobType ?? "ai.complete",
+        provider: env.AI_PROVIDER,
+        model: responseModel,
+        inputTokens: 0,
+        outputTokens: 0,
+        estimatedCostUsd: null,
+        enquiryId: options.enquiryId ?? null,
+      });
+    }
+    return {
+      ok: true,
+      data: validated.data,
+      usage: { inputTokens, outputTokens, model: responseModel },
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown AI error";
     return { ok: false, error: controller.signal.aborted ? "AI request timed out." : message };

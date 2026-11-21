@@ -21,6 +21,10 @@ export async function loginAction(formData: FormData) {
 
   if (!result.ok) redirect(`/login?error=${encodeURIComponent(result.error)}`);
 
+  if (result.mfaRequired) {
+    redirect(`/login/mfa?token=${encodeURIComponent(result.challengeToken)}`);
+  }
+
   await writeAudit({
     actorId: result.user.id,
     actorLabel: result.user.name,

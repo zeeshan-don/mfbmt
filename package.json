@@ -21,6 +21,7 @@
     "provision:org": "tsx src/scripts/provision-organization.ts",
     "worker": "tsx src/worker.ts",
     "check:config": "tsx src/scripts/check-config.ts",
+    "check:storage": "tsx src/scripts/check-storage.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "tsx tests/e2e/prepare.ts && playwright test",

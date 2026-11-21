@@ -17,6 +17,8 @@ import {
   extractSpecsFromText,
 } from "./extract";
 import type { AdapterContext, CoverageEntry, SourcingCandidate } from "./types";
+import { getOrgLimits } from "../limits";
+import { readSearchCache, searchCacheKey, writeSearchCache } from "./cache";
 
 const PAGE_FETCH_LIMIT = 5;
 
@@ -137,7 +139,10 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
   });
   await db.enquiryItem.update({ where: { id: item.id }, data: { sourcingStatus: "SEARCHING" } });
 
-  const queries = buildSearchQueries(item);
+  const limits = await getOrgLimits();
+  // The query cap is a per-organization commercial control, not an arbitrary
+  // hidden constant. Cached results still satisfy repeated searches.
+  const queries = buildSearchQueries(item).slice(0, limits.maxSearchQueriesPerItem);
   const context: AdapterContext = {
     request: {
       description: item.description,
@@ -159,6 +164,17 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
   let candidates: SourcingCandidate[] = [];
 
   for (const adapter of getSearchAdapters()) {
+    if (adapter.key === "PUBLIC_WEB" && !limits.webSearchEnabled) {
+      coverage.push({ adapter: adapter.key, label: adapter.label, status: "NOT_CONFIGURED", queries: queries.length, results: 0, note: "Web search is disabled in this organization's limits." });
+      continue;
+    }
+    const cacheKey = searchCacheKey(adapter.key, queries, context.request as unknown as Record<string, unknown>);
+    const cached = await readSearchCache(cacheKey);
+    if (cached) {
+      candidates.push(...cached);
+      coverage.push({ adapter: adapter.key, label: adapter.label, status: "OK", queries: queries.length, results: cached.length, note: "Served from the organization search cache." });
+      continue;
+    }
     if (!adapter.available()) {
       await db.searchQuery.createMany({
         data: queries.map((query) => ({
@@ -202,6 +218,9 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
         note: result.note,
       });
       candidates.push(...result.candidates);
+      if (result.status === "OK") {
+        await writeSearchCache(cacheKey, result.candidates, limits.searchCacheTtlDays);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 300) : "Adapter failed";
       coverage.push({

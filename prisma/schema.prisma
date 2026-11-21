@@ -84,6 +84,7 @@ model Organization {
   integrations           Integration[]
   supplierEmailReplies   SupplierEmailReply[]
   ownerInvitations       OwnerInvitation[]
+  mfaChallenges          MfaChallenge[]
   backgroundJobs         BackgroundJob[]
   webhookEvents           WebhookEvent[]
   numberSequences        NumberSequence[]
@@ -91,6 +92,8 @@ model Organization {
   notifications          Notification[]
   exchangeRates          ExchangeRate[]
   appSettings            AppSetting[]
+  aiUsage                AiUsage[]
+  searchCache            SearchCache[]
 
   @@index([status])
 }
@@ -109,9 +112,16 @@ model User {
   passwordChangedAt      DateTime?
   passwordResetTokenHash String?
   passwordResetExpiresAt DateTime?
+  // TOTP MFA. The secret is stored encrypted-at-rest by the database provider;
+  // it is never returned to a browser after enrollment.
+  mfaSecret              String?
+  mfaEnabledAt           DateTime?
+  mfaRecoveryCodesJson   String              @default("[]")
+  mfaLastUsedCounter     Int?
   createdAt              DateTime            @default(now())
   lastLoginAt            DateTime?
   sessions               Session[]
+  mfaChallenges          MfaChallenge[]
   approvals              Approval[]          @relation("ApprovalDecider")
   approvedQuotes         CustomerQuotation[] @relation("QuoteApprover")
   pricingExceptions      CustomerQuotation[] @relation("PricingExceptionApprover")
@@ -137,6 +147,23 @@ model Session {
 
   @@index([userId])
   @@index([organizationId])
+}
+
+/// Short-lived, single-use MFA challenge created only after a valid password.
+model MfaChallenge {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash      String       @unique
+  expiresAt      DateTime
+  attempts       Int          @default(0)
+  usedAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Contact {
@@ -1013,6 +1040,42 @@ model Notification {
 
   @@index([isRead])
   @@index([organizationId, createdAt])
+}
+
+/// Provider-reported token usage. Cost is deterministic (configured rates), not AI-estimated.
+model AiUsage {
+  id               String   @id @default(cuid())
+  organizationId   String   @default("__unset__")
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobType          String
+  provider         String
+  model            String
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  estimatedCostUsd Float?
+  enquiryId        String?
+  success          Boolean  @default(true)
+  error            String?
+  createdAt        DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, jobType])
+}
+
+/// Organization-scoped search/page cache. Keys include the normalized query.
+model SearchCache {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  cacheKey       String
+  kind           String       @default("SEARCH") // SEARCH | PAGE
+  payloadJson    String
+  sourceUrl      String?
+  fetchedAt      DateTime     @default(now())
+  expiresAt      DateTime
+
+  @@unique([organizationId, cacheKey])
+  @@index([organizationId, expiresAt])
 }
 
 model ExchangeRate {

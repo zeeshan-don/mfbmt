@@ -11,34 +11,34 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 1 — Production safety
 
-- [ ] Add Vercel cron entries for `/api/cron/process-jobs` and `/api/cron/email-sync` every 5 minutes.
-- [ ] Prove two runners cannot execute the same job; add a two-runner concurrency test.
-- [ ] Add an HTTP health server to the worker and a `livenessProbe` in `vercel.json`.
-- [ ] Graceful SIGTERM/SIGINT: finish or release the current job, then close the health server and database.
-- [ ] Verify production refuses local-disk storage; document S3 requirement.
-- [ ] Add `npm run check:storage` that writes, reads and deletes a test object.
-- [ ] Bake Tesseract language data into Dockerfile.worker.
-- [ ] Make OCR failure explicit, never a silent skip.
-- [ ] Add owner alerts for dead-letter jobs, stale worker heartbeat and failing connected integrations.
-- [ ] Add a daily failure digest.
-- [ ] Add TOTP MFA for OWNER and admin roles, with hashed recovery codes and replay protection.
-- [ ] Add MFA enrollment/challenge UI and recovery-code regeneration.
-- [ ] Preserve existing login rate limiting and add MFA tests.
-- [ ] Phase 1: `npm run check` green, commit, update STATUS.md.
+- [x] Add Vercel cron entries for `/api/cron/process-jobs` and `/api/cron/email-sync` every 5 minutes.
+- [x] Prove two runners cannot execute the same job; add a two-runner concurrency test.
+- [x] Add an HTTP health server to the worker and a `livenessProbe` in `vercel.json`.
+- [x] Graceful SIGTERM/SIGINT: finish or release the current job, then close the health server and database.
+- [x] Verify production refuses local-disk storage; document S3 requirement.
+- [x] Add `npm run check:storage` that writes, reads and deletes a test object.
+- [x] Bake Tesseract language data into Dockerfile.worker.
+- [x] Make OCR failure explicit, never a silent skip.
+- [x] Add owner alerts for dead-letter jobs, stale worker heartbeat and failing connected integrations.
+- [x] Add a daily failure digest.
+- [x] Add TOTP MFA for OWNER and admin roles, with hashed recovery codes and replay protection.
+- [ ] Add MFA enrollment/challenge UI and recovery-code regeneration. Enrolment UI is built; explicit post-enrolment code regeneration is not.
+- [x] Preserve existing login rate limiting and add MFA tests.
+- [x] Phase 1: `npm run check` green, commit, update STATUS.md.
 
 ## Phase 2 — Cost control and billing evidence
 
-- [ ] Add `AiUsage` table with organization, job type, model, input/output tokens, estimated cost, timestamp.
-- [ ] Record provider usage for every AI call; never estimate tokens when the provider supplies usage.
-- [ ] Add per-organization limits: max sourced items/enquiry (default 5), max search queries/item (default 2; OGS 3), web-search on/off, monthly AI budget, monthly enquiry allowance.
-- [ ] Enforce limits with graceful degradation and owner-visible warnings.
-- [ ] Add 80% and 100% allowance warnings.
-- [ ] Add organization-scoped search/page cache with configurable TTL (default 7 days).
-- [ ] Add monthly usage report page and CSV/PDF export with AED conversion.
-- [ ] Include enquiries, RFQs, AI tokens/cost, search credits, quotations sent in the report.
-- [ ] Add optional stronger-model second pass for low-confidence extraction, off by default, separately metered.
-- [ ] Add tenant-isolation and deterministic-cost tests.
-- [ ] Phase 2: `npm run check` green, commit, update STATUS.md.
+- [x] Add `AiUsage` table with organization, job type, model, input/output tokens, estimated cost, timestamp.
+- [x] Record provider usage for every AI call; never estimate tokens when the provider supplies usage.
+- [x] Add per-organization limits: max sourced items/enquiry (default 5), max search queries/item (default 2; OGS 3), web-search on/off, monthly AI budget, monthly enquiry allowance.
+- [x] Enforce limits with graceful degradation and owner-visible warnings.
+- [x] Add 80% and 100% allowance warnings.
+- [x] Add organization-scoped search/page cache with configurable TTL (default 7 days).
+- [x] Add monthly usage report page and CSV/PDF export with AED conversion.
+- [x] Include enquiries, RFQs, AI tokens/cost, search credits, quotations sent in the report.
+- [ ] Add optional stronger-model second pass for low-confidence extraction, off by default, separately metered. **Not built**; checkbox storage only.
+- [x] Add tenant-isolation and deterministic-cost tests.
+- [x] Phase 2: `npm run check` green, commit, update STATUS.md.
 
 ## Phase 3 — OGS product coverage
 

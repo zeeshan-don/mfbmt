@@ -19,8 +19,11 @@ const schema = z.object({
   NODE_ENV: z.string().default("development"),
   WORKER_POLL_MS: z.coerce.number().default(3000),
   WORKER_SECRET: z.string().default(""),
+  CRON_SECRET: z.string().default(""),
   WORKER_STALE_MS: z.coerce.number().default(120_000),
   WORKER_HEARTBEAT_MS: z.coerce.number().default(20_000),
+  WORKER_HEALTH_PORT: z.coerce.number().default(3001),
+  WORKER_HEALTH_HOST: z.string().default("0.0.0.0"),
   BUSINESS_TIMEZONE: z.string().default("Asia/Dubai"),
   DEMO_MODE: z.string().default("false"),
   SEED_DEMO_DATA: z.string().default("false"),
@@ -30,6 +33,9 @@ const schema = z.object({
   AI_BASE_URL: z.string().default("https://api.openai.com/v1"),
   AI_MODEL: z.string().default("gpt-4o-mini"),
   AI_VISION_MODEL: z.string().default(""),
+  /** Provider rates in USD per million tokens, used for deterministic cost evidence. */
+  AI_INPUT_COST_PER_1M_USD: z.coerce.number().default(0.15),
+  AI_OUTPUT_COST_PER_1M_USD: z.coerce.number().default(0.6),
   /** Send messages from unknown senders to the AI provider. Off by default. */
   AI_FOR_UNKNOWN_SENDERS: z.string().default("false"),
 
@@ -75,6 +81,8 @@ const schema = z.object({
 
   OCR_PROVIDER: z.string().default("auto"),
   OCR_LANGUAGES: z.string().default("eng"),
+  /** Directory containing pre-baked Tesseract language files (Docker worker). */
+  OCR_LANG_PATH: z.string().default(""),
   OCR_PDF_MAX_PAGES: z.coerce.number().default(10),
 
   EXCHANGE_RATE_PROVIDER: z.string().default("none"),
