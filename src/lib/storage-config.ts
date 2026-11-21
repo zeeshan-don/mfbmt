@@ -140,7 +140,7 @@ export function buildTenantAttachmentKey(organizationId: string, randomId: strin
   }
   // Only known-safe extensions are kept for readability. An archive, script or
   // executable suffix is dropped rather than stored on the object name.
-  const safeExtensions = new Set([".pdf", ".xlsx", ".xls", ".csv", ".txt", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"]);
+  const safeExtensions = new Set([".pdf", ".xlsx", ".xls", ".csv", ".txt", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".docx", ".doc", ".zip", ".xlsb"]);
   const safeExtension = safeExtensions.has(extension.toLowerCase()) ? extension.toLowerCase() : "";
   return `organizations/${organizationId}/attachments/${month}/${randomId}${safeExtension}`;
 }

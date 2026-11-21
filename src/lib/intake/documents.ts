@@ -500,6 +500,173 @@ export async function extractPlainText(buffer: Buffer): Promise<DocumentText> {
   };
 }
 
+const MAX_ZIP_ENTRIES = 200;
+const MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
+const MAX_ZIP_NESTING_DEPTH = 3;
+
+/** Decode the handful of XML entities that appear in OOXML text. */
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+/** Strip tags from an OOXML document.xml stream, keeping paragraph breaks. */
+function docxXmlToText(xml: string): string {
+  // Replace paragraph/table row boundaries with newlines before stripping tags.
+  const withBreaks = xml
+    .replace(/<w:br[^>]*\/?>/g, "\n")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<\/w:tr>/g, "\n")
+    .replace(/<\/w:tc>/g, "\t");
+  const text = withBreaks.replace(/<[^>]+>/g, "");
+  return decodeXmlEntities(text)
+    .split(/\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+export async function extractDocx(buffer: Buffer): Promise<DocumentText> {
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(buffer);
+    const documentEntry = zip.file("word/document.xml");
+    if (!documentEntry) {
+      return {
+        text: "",
+        pageCount: null,
+        status: "NEEDS_REVIEW",
+        note: "The .docx did not contain a readable document.xml part.",
+        unreadable: true,
+      };
+    }
+    const xml = await documentEntry.async("string");
+    const text = docxXmlToText(xml);
+    // Also pull any headers/footers for completeness.
+    const extras: string[] = [];
+    for (const name of Object.keys(zip.files)) {
+      if (/^word\/(header|footer)\d*\.xml$/.test(name)) {
+        const part = zip.file(name);
+        if (part) {
+          const partXml = await part.async("string");
+          const partText = docxXmlToText(partXml);
+          if (partText) extras.push(partText);
+        }
+      }
+    }
+    const combined = [text, ...extras].filter(Boolean).join("\n");
+    return {
+      text: combined,
+      pageCount: null,
+      status: combined ? "TEXT_OK" : "NEEDS_REVIEW",
+      note: combined ? null : "The .docx contained no readable text.",
+      unreadable: !combined,
+    };
+  } catch (error) {
+    return {
+      text: "",
+      pageCount: null,
+      status: "FAILED",
+      note: `The .docx could not be read (${error instanceof Error ? error.message.slice(0, 140) : "unknown error"}).`,
+      unreadable: true,
+    };
+  }
+}
+
+export async function extractZip(buffer: Buffer, depth = 0): Promise<DocumentText> {
+  if (depth > MAX_ZIP_NESTING_DEPTH) {
+    return {
+      text: "",
+      pageCount: null,
+      status: "NEEDS_REVIEW",
+      note: "Archive nesting exceeded the safe limit.",
+      unreadable: true,
+    };
+  }
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(buffer);
+    const entries = Object.keys(zip.files);
+    if (entries.length > MAX_ZIP_ENTRIES) {
+      return {
+        text: "",
+        pageCount: null,
+        status: "NEEDS_REVIEW",
+        note: `Archive contains ${entries.length} entries, above the safe limit of ${MAX_ZIP_ENTRIES}.`,
+        unreadable: true,
+      };
+    }
+    // Guard against path traversal in entry names.
+    for (const name of entries) {
+      const normalized = name.replace(/\\/g, "/");
+      if (normalized.includes("..") || normalized.startsWith("/") || normalized.includes("\u0000")) {
+        return {
+          text: "",
+          pageCount: null,
+          status: "NEEDS_REVIEW",
+          note: "Archive contained an unsafe entry path and was not extracted.",
+          unreadable: true,
+        };
+      }
+    }
+    let totalUncompressed = 0;
+    const chunks: string[] = [];
+    for (const name of entries) {
+      const entry = zip.file(name);
+      if (!entry || entry.dir) continue;
+      // Skip macos metadata and hidden junk.
+      if (name.startsWith("__MACOSX/") || name.split("/").pop()?.startsWith(".") ) continue;
+      const data = await entry.async("nodebuffer");
+      totalUncompressed += data.length;
+      if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) {
+        return {
+          text: "",
+          pageCount: null,
+          status: "NEEDS_REVIEW",
+          note: "Archive decompressed size exceeded the safe limit.",
+          unreadable: true,
+        };
+      }
+      const lower = name.toLowerCase();
+      if (lower.endsWith(".txt") || lower.endsWith(".csv") || lower.endsWith(".json")) {
+        chunks.push(`--- ${name} ---\n${data.toString("utf8").slice(0, 20000)}`);
+      } else if (lower.endsWith(".docx")) {
+        const nested = await extractDocx(data);
+        if (nested.text) chunks.push(`--- ${name} ---\n${nested.text}`);
+      } else if (lower.endsWith(".xlsx")) {
+        const nested = await extractExcel(data);
+        if (nested.text) chunks.push(`--- ${name} ---\n${nested.text}`);
+      } else if (lower.endsWith(".zip")) {
+        const nested = await extractZip(data, depth + 1);
+        if (nested.text) chunks.push(`--- ${name} ---\n${nested.text}`);
+      }
+      // Other types (pdf etc.) are skipped to keep extraction bounded; they remain stored.
+    }
+    const combined = chunks.join("\n\n");
+    return {
+      text: combined,
+      pageCount: null,
+      status: combined ? "TEXT_OK" : "NEEDS_REVIEW",
+      note: combined ? null : "No supported text files were found in the archive.",
+      unreadable: !combined,
+    };
+  } catch (error) {
+    return {
+      text: "",
+      pageCount: null,
+      status: "FAILED",
+      note: `The archive could not be read (${error instanceof Error ? error.message.slice(0, 140) : "unknown error"}).`,
+      unreadable: true,
+    };
+  }
+}
+
 export async function extractDocument(buffer: Buffer, filename: string): Promise<DocumentText> {
   const { family } = sniffType(buffer);
   switch (family) {
@@ -507,6 +674,10 @@ export async function extractDocument(buffer: Buffer, filename: string): Promise
       return extractPdf(buffer);
     case "excel":
       return extractExcel(buffer);
+    case "docx":
+      return extractDocx(buffer);
+    case "archive":
+      return extractZip(buffer);
     case "csv":
       return extractCsv(buffer);
     case "image":
@@ -518,7 +689,7 @@ export async function extractDocument(buffer: Buffer, filename: string): Promise
         text: "",
         pageCount: null,
         status: "NEEDS_REVIEW",
-        note: `${filename} is not a supported document type. Supported: PDF, XLSX, CSV, plain text, JPEG, PNG and WebP.`,
+        note: `${filename} is not a supported document type. Supported: PDF, XLSX, DOCX, ZIP, CSV, plain text, JPEG, PNG and WebP. Legacy .xls/.xlsb/.doc files are not parsed; re-save as .xlsx/.docx or upload as PDF.`,
         unreadable: true,
       };
   }

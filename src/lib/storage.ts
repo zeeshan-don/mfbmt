@@ -84,6 +84,8 @@ export function storageReadiness(): StorageReadiness {
 export const ALLOWED_TYPES = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "excel",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/zip": "archive",
   "application/vnd.ms-excel": "excel",
   "text/csv": "csv",
   "text/plain": "text",
@@ -94,7 +96,7 @@ export const ALLOWED_TYPES = {
   "image/heif": "image",
 } as const;
 
-export type FileFamily = "pdf" | "excel" | "csv" | "text" | "image" | "other";
+export type FileFamily = "pdf" | "excel" | "csv" | "text" | "image" | "docx" | "archive" | "other";
 
 /** Content-based detection — never trust the extension or the browser MIME alone. */
 export function sniffType(buffer: Buffer): { mime: string; family: FileFamily } {
@@ -108,11 +110,14 @@ export function sniffType(buffer: Buffer): { mime: string; family: FileFamily } 
     return { mime: "image/webp", family: "image" };
   }
   if (head.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
-    const text = buffer.subarray(0, Math.min(buffer.length, 4000)).toString("latin1");
+    const text = buffer.subarray(0, Math.min(buffer.length, 8000)).toString("latin1");
+    if (text.includes("word/document.xml")) {
+      return { mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", family: "docx" };
+    }
     if (text.includes("xl/worksheets") || text.includes("[Content_Types].xml")) {
       return { mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", family: "excel" };
     }
-    return { mime: "application/zip", family: "other" };
+    return { mime: "application/zip", family: "archive" };
   }
   if (head.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))) {
     return { mime: "application/vnd.ms-excel", family: "excel" };
@@ -171,7 +176,7 @@ export function assertAllowedUpload(
     return { ok: false, error: `The file is larger than ${MAX_UPLOAD_MB} MB.` };
   }
   const sniffed = sniffType(buffer);
-  const allowedFamilies: FileFamily[] = ["pdf", "excel", "csv", "text", "image"];
+  const allowedFamilies: FileFamily[] = ["pdf", "excel", "csv", "text", "image", "docx", "archive"];
   if (!allowedFamilies.includes(sniffed.family)) {
     return {
       ok: false,
