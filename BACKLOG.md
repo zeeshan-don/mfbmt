@@ -100,7 +100,7 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 - [x] Add daily pending-approval digest.
 - [x] Add inbox views: needs review, waiting on suppliers, ready to quote, overdue.
 - [ ] Add bulk actions for safe confirmation steps only; keep three approvals individual. **Not built**.
-- [x] Add SLA timers with configurable overdue highlight. Overdue highlighting is 48 hours; the threshold is not yet tenant-configurable.
+- [x] Add SLA timers with configurable overdue highlight. Threshold is now stored in organization limits (1-720 hours, default 48) and editable in Settings.
 - [x] Add dashboard: today's volume, backlog, median time to quote, spend vs monthly limits. Median time to quote and AI spend vs monthly budget are now on the overview; enquiry allowance is shown alongside. Tenant-configurable SLA threshold remains open.
 - [ ] Phase 6: `npm run check` green, commit, update STATUS.md. **Partial**: email approval links, digest and inbox/SLA added; WhatsApp, bulk actions and the full metric cards remain open.
 
@@ -110,7 +110,7 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 - [x] Store expected structured results alongside every golden case.
 - [x] Add `npm run eval:extraction` with field-level accuracy by category, wrong-but-confident count, AI cost/enquiry.
 - [ ] Run eval with rules-only parser and with AI when a key exists. Rules-only done (100% on 60 simple synthetic cases); AI mode unverified.
-- [ ] Add `npm run verify:live` for AI, search, FX, storage, Gmail/Microsoft and WhatsApp when credentials exist. **Not built.**
+- [x] Add `npm run verify:live` for AI, search, FX, storage, Gmail/Microsoft and WhatsApp when credentials exist. Implemented as a tenant-scoped non-destructive diagnostic runner.
 - [x] Never mark Connected without a passing live test.
 - [ ] Add 60-enquiries/hour load test with attachments; report queue latency, CPU, memory, DB connections, dead letters. **Not run.**
 - [ ] Add OGS demo seed: ten synthetic enquiries, message to approved quotation PDF, checked by automated test. **Not built.**
