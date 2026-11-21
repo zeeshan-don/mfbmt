@@ -36,6 +36,7 @@ const PRODUCT_HINTS = [
   "elbow", "valve", "flange", "gasket", "hose", "fitting", "bolt", "nut", "washer", "pipe",
   "ss", "stainless", "pvc", "ppr", "hdpe", "steel", "hammer", "coupling", "tee", "reducer",
   "nipple", "union", "clamp", "fastener", "flanges", "valves", "bearings", "tools",
+  "acid", "chemical", "caustic", "soda", "chloride", "hypochlorite", "solvent", "seal kit",
 ];
 
 function countMatches(text: string, words: string[]): number {

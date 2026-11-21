@@ -3,12 +3,13 @@ import { SupplierEvidenceSchema, type SupplierEvidence } from "../validation/ext
 const CURRENCY_SYMBOLS: Record<string, string> = {
   "د.إ": "AED", "AED": "AED", "$": "USD", "US$": "USD", "USD": "USD", "€": "EUR", "EUR": "EUR",
   "£": "GBP", "GBP": "GBP", "₹": "INR", "INR": "INR", "SAR": "SAR", "SR": "SAR",
+  "CNY": "CNY", "RMB": "CNY", "¥": "CNY", "KRW": "KRW", "₩": "KRW",
 };
 
 const PRICE_PATTERNS = [
-  /(?:AED|USD|EUR|GBP|INR|SAR|US\$)\s*([0-9][0-9.,]*)/i,
-  /([0-9][0-9.,]*)\s*(?:AED|USD|EUR|GBP|INR|SAR)\b/i,
-  /(?:price|rate|unit price)\s*(?:of|:)?\s*(?:AED|USD|EUR|GBP|INR|SAR)?\s*([0-9][0-9.,]*)/i,
+  /(?:AED|USD|EUR|GBP|INR|SAR|CNY|RMB|KRW|US\$)\s*([0-9][0-9.,]*)/i,
+  /([0-9][0-9.,]*)\s*(?:AED|USD|EUR|GBP|INR|SAR|CNY|KRW)\b/i,
+  /(?:price|rate|unit price)\s*(?:of|:)?\s*(?:AED|USD|EUR|GBP|INR|SAR|CNY|KRW)?\s*([0-9][0-9.,]*)/i,
   /([0-9][0-9.,]*)\s*(?:\/|per)\s*(?:pc|pcs|piece|unit|nos?)/i,
 ];
 

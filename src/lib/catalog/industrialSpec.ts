@@ -129,11 +129,12 @@ const CATEGORY_ALIASES: Array<{ match: RegExp; category: IndustrialCategory }> =
   { match: /\bgasket|\bspiral\s*wound|\bring\s*(?:joint|type)|\bsheet\s*gasket|\bmetal\s*jacketed/i, category: "Gaskets" },
   { match: /\binsulation\s*(?:kit|set|blanket|jacket)|\bcladding\s*kit/i, category: "Insulation Kits" },
   { match: /\bservices?\b|\bmachining|\bhydro\s*test|\bhydrotest|\bplating|\bndt\b|\bnon[\s-]*destructive|\bpmi\b|\bpositive\s*material|\bpassivation|\bwelding\s*service/i, category: "Services" },
+  { match: /\bseal\s*kit|\bspare\s*part|\bbearings?\b|\bimpeller|\bmechanical\s*seal/i, category: "Industrial Spares" },
   { match: /\bfitting|\belbow|\btee\b|\breducer|\bcoupling/i, category: "Fittings" },
   { match: /\bpipes?\b/i, category: "Pipes" },
   { match: /\bvalve/i, category: "Valves" },
   { match: /\bflange/i, category: "Flanges" },
-  { match: /\bchemical|\bsolvent|\bacids?\b|\bcaustic/i, category: "Chemicals" },
+  { match: /\bchemical|\bsolvent|\bacids?\b|\bcaustic|\bhydrochloric|\bsodium|\bcalcium|\bchloride|\bhypochlorite/i, category: "Chemicals" },
   { match: /\bspares?\b|\bspare parts?|\bbearings?\b|\bseals?\b/i, category: "Industrial Spares" },
 ];
 

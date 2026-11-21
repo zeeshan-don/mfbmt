@@ -77,10 +77,10 @@ export function parseLineItems(text: string, sourceRef: string): ItemDraft[] {
     let description = "";
 
     const leading = line.match(
-      /^(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|m|meters?|metres?|boxes?|box|rolls?|litres?|liters?)?\b[\s.:\-–—]*([A-Za-z][A-Za-z0-9'"./ -]*)$/i,
+      /^(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|m|meters?|metres?|boxes?|box|rolls?|drums?|bags?|litres?|liters?|tonnes?|tons?)?\b[\s.:\-–—]*([A-Za-z][A-Za-z0-9'"./% -]*)$/i,
     );
     const trailing = line.match(
-      /^([A-Za-z].*?)\s*[-–—:]\s*(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|m|boxes?|box|rolls?)?$/i,
+      /^([A-Za-z].*?)\s*[-–—:]\s*(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|m|boxes?|box|rolls?|drums?|bags?)?$/i,
     );
 
     if (leading) {
@@ -163,8 +163,11 @@ export function finalizeItems(items: ExtractedItem[], options: { industrial?: bo
     const industrialCategory =
       options.industrial && !fastenerCategory
         ? resolveIndustrialCategory(item.category) ??
-          resolveIndustrialCategory(category?.name) ??
-          resolveIndustrialCategory(item.description)
+          // A generic rule such as "Stainless Steel Fittings" can be a false
+          // positive from the SS316 token. The customer's description is the
+          // stronger industrial signal.
+          resolveIndustrialCategory(item.description) ??
+          resolveIndustrialCategory(category?.name)
         : null;
     const normalized: ExtractedItem = {
       ...item,
@@ -320,7 +323,7 @@ export type ExtractionOutput = {
 
 export async function extractEnquiry(
   input: ExtractionInput,
-  options: { industrial?: boolean } = {},
+  options: { industrial?: boolean; allowAi?: boolean } = {},
 ): Promise<ExtractionOutput> {
   const documents = input.documents;
   const ruleItems = finalizeItems(
@@ -357,7 +360,7 @@ export async function extractEnquiry(
     ruleItems.push(...fallback);
   }
 
-  if (!aiStatus().configured) {
+  if (options.allowAi === false || !aiStatus().configured) {
     const unreadable = documents.filter((d) => d.unreadable).map((d) => d.filename);
     return {
       extraction: {
@@ -371,7 +374,7 @@ export async function extractEnquiry(
       },
       items: ruleItems,
       source: "rule",
-      aiError: aiStatus().reason,
+      aiError: options.allowAi === false ? "AI disabled for this evaluation run." : aiStatus().reason,
     };
   }
 

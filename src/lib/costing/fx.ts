@@ -8,7 +8,8 @@ export type RateResult = {
   pair: string;
 };
 
-const CACHE_HOURS = 12;
+// Daily cache: a rate is reused for 24 hours, then refreshed or reported missing.
+const CACHE_HOURS = 24;
 
 function fixedUsdAed(): number {
   return env.FIXED_USD_AED;

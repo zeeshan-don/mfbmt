@@ -113,6 +113,14 @@ export const CATEGORIES: CategoryRule[] = [
     searchHints: ["industrial tool", "hand tool"],
   },
   {
+    name: "Industrial Spares",
+    synonyms: ["spare part", "spares", "bearing", "mechanical seal", "seal kit", "impeller"],
+    required: ["typeVariant"],
+    optional: ["brand", "material"],
+    variantRequired: true,
+    searchHints: ["industrial spare part", "mechanical seal"],
+  },
+  {
     name: "Industrial Services",
     synonyms: ["machining", "hydrotest", "hydro test", "plating", "ndt", "pmi", "passivation", "welding service"],
     required: ["typeVariant"],

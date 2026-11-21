@@ -29,7 +29,7 @@ import { ensureSourcingApproval } from "./approvals";
  */
 
 const TOKEN_PATTERN = /\bRFQ-([A-Z0-9]{8,24})\b/i;
-const CURRENCY_PATTERN = /\b(AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY)\b/i;
+const CURRENCY_PATTERN = /\b(AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY|KRW|KRW)\b/i;
 
 export type ReplyCorrelationInput = {
   fromAddress: string;
@@ -237,9 +237,9 @@ export function extractSupplierQuoteTerms(body: string, subject?: string | null)
   // promoted to a unit price.
   let unitPrice: number | null = null;
   const pricePatterns: Array<RegExp> = [
-    new RegExp(`\\b(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY)\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(?:/|per)\\s*(?:pcs?|pc|kg|m|meter|metre|set|unit|litre|liter|ton|bag|drum)\\b`, "i"),
-    new RegExp(`\\b(?:unit\\s*price|price\\s*per|unit\\s*rate|rate)\\s*[:=]?\\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY)?\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)`, "i"),
-    new RegExp(`\\b([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY)\\s*(?:/|per)\\s*(?:pcs?|pc|kg|m|meter|metre|set|unit|litre|liter|ton|bag|drum)\\b`, "i"),
+    new RegExp(`\\b(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY|KRW)\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(?:/|per)\\s*(?:pcs?|pc|kg|m|meter|metre|set|unit|litre|liter|ton|bag|drum)\\b`, "i"),
+    new RegExp(`\\b(?:unit\\s*price|price\\s*per|unit\\s*rate|rate)\\s*[:=]?\\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY|KRW)?\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)`, "i"),
+    new RegExp(`\\b([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY|KRW)\\s*(?:/|per)\\s*(?:pcs?|pc|kg|m|meter|metre|set|unit|litre|liter|ton|bag|drum)\\b`, "i"),
   ];
   for (const pattern of pricePatterns) {
     const value = matchNumber(text, pattern);
@@ -265,19 +265,19 @@ export function extractSupplierQuoteTerms(body: string, subject?: string | null)
 
   const shippingCost = matchNumber(
     text,
-    /\b(?:freight|shipping|delivery\s*(?:charges?|cost))\s*[:=-]?\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
+    /\b(?:freight|shipping|delivery\s*(?:charges?|cost))\s*[:=-]?\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY|KRW)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
   );
   if (shippingCost != null) confidence.shippingCost = 0.85;
 
   const otherCharges = matchNumber(
     text,
-    /\b(?:other\s*charges?|handling(?:\s*charges?)?|packing\s*charges?)\s*[:=-]?\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
+    /\b(?:other\s*charges?|handling(?:\s*charges?)?|packing\s*charges?)\s*[:=-]?\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY|KRW)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
   );
   if (otherCharges != null) confidence.otherCharges = 0.8;
 
   const taxes = matchNumber(
     text,
-    /\b(?:vat|tax(?:es)?)\s*[:=-]?\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY)\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
+    /\b(?:vat|tax(?:es)?)\s*[:=-]?\s*(?:AED|USD|EUR|GBP|SAR|QAR|OMR|KWD|BHD|INR|CNY|JPY|KRW)\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
   );
   if (taxes != null) confidence.taxes = 0.8;
 
