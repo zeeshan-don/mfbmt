@@ -5,6 +5,7 @@ import { parseJson } from "@/lib/json";
 import { ENQUIRY_STATUS_LABELS, SOURCING_STATUS_LABELS, label } from "@/lib/constants";
 import { timeAgo, truncate } from "@/lib/format";
 import { Badge, Card, DataTable, EmptyState, PageHeader, Td, Th, statusTone, inputClass, ButtonLink } from "@/components/ui";
+import { getOrgLimits } from "@/lib/limits";
 import { Inbox, Search } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +29,8 @@ export default async function EnquiriesPage({
   const status = params.status && params.status !== "all" ? params.status : undefined;
   const filter = params.filter;
   const query = params.q?.trim();
-  const overdueBefore = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  const limits = await getOrgLimits();
+  const overdueBefore = new Date(Date.now() - limits.slaOverdueHours * 60 * 60 * 1000);
 
   const enquiries = await db.enquiry.findMany({
     where: {

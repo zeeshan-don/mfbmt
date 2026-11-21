@@ -346,6 +346,7 @@ export async function saveLimitsAction(formData: FormData) {
     searchCacheTtlDays: number("searchCacheTtlDays", current.searchCacheTtlDays),
     lowConfidenceSecondPass: formData.get("lowConfidenceSecondPass") === "on",
     supplierAutoSendVerified: formData.get("supplierAutoSendVerified") === "on",
+    slaOverdueHours: number("slaOverdueHours", current.slaOverdueHours),
   });
   await writeAudit({
     actorId: user.id,

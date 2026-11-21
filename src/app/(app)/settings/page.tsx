@@ -677,6 +677,10 @@ export default async function SettingsPage({
               <input name="monthlyEnquiryAllowance" type="number" min={0} defaultValue={limits.monthlyEnquiryAllowance} className={`${inputClass} mt-1 tabular`} />
             </label>
             <label className="block text-xs text-soft">
+              SLA overdue threshold (hours)
+              <input name="slaOverdueHours" type="number" min={1} max={720} defaultValue={limits.slaOverdueHours} className={`${inputClass} mt-1 tabular`} />
+            </label>
+            <label className="block text-xs text-soft">
               Search/page cache TTL (days)
               <input name="searchCacheTtlDays" type="number" min={1} max={90} defaultValue={limits.searchCacheTtlDays} className={`${inputClass} mt-1 tabular`} />
             </label>
