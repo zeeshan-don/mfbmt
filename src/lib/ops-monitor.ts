@@ -6,6 +6,7 @@ import { notifyOwner } from "./audit";
 import { sendEmail } from "./email/send";
 import { JOB_TYPES } from "./constants";
 import { aiBudgetStatus, enquiryAllowanceStatus } from "./limits";
+import { env } from "./env";
 
 /**
  * Operational alerts live in the same durable queue as business work, so a cron
@@ -178,6 +179,26 @@ export async function runOpsCheck(): Promise<{ alerted: string[] }> {
     });
     await setSettingJson(LIMIT_WARNING_KEY, warningKey);
     alerted.push("limits");
+  }
+
+  const reminderCutoff = new Date(now.getTime() - env.SUPPLIER_REMINDER_DAYS * 24 * 60 * 60 * 1000);
+  const dueReminders = await db.supplierQuote.findMany({
+    where: {
+      status: "SENT",
+      sentAt: { lte: reminderCutoff },
+      reminderCount: { lt: env.SUPPLIER_REMINDER_MAX },
+      supplier: { doNotContact: false, status: { not: "BLOCKED" }, bouncedAt: null },
+    },
+    select: { id: true, reminderCount: true },
+    take: 100,
+  });
+  for (const quote of dueReminders) {
+    await enqueueJob({
+      type: JOB_TYPES.SUPPLIER_REMINDER,
+      payload: { supplierQuoteId: quote.id },
+      idempotencyKey: `supplier-reminder:${quote.id}:${quote.reminderCount + 1}`,
+      maxAttempts: 3,
+    });
   }
 
   await setSettingJson(CHECK_KEY, now.toISOString());

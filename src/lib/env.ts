@@ -78,6 +78,9 @@ const schema = z.object({
   SEARCH_REQUEST_TIMEOUT_MS: z.coerce.number().default(15000),
   SEARCH_MAX_QUERIES: z.coerce.number().default(4),
   SEARCH_PAGE_FETCH_LIMIT: z.coerce.number().default(5),
+  SUPPLIER_DAILY_SEND_LIMIT: z.coerce.number().default(20),
+  SUPPLIER_REMINDER_DAYS: z.coerce.number().default(3),
+  SUPPLIER_REMINDER_MAX: z.coerce.number().default(1),
 
   OCR_PROVIDER: z.string().default("auto"),
   OCR_LANGUAGES: z.string().default("eng"),

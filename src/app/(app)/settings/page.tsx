@@ -665,6 +665,13 @@ export default async function SettingsPage({
             <div className="space-y-2 pt-5">
               <label className="flex items-center gap-2 text-xs text-soft"><input type="checkbox" name="webSearchEnabled" defaultChecked={limits.webSearchEnabled} /> Enable public web search</label>
               <label className="flex items-center gap-2 text-xs text-soft"><input type="checkbox" name="lowConfidenceSecondPass" defaultChecked={limits.lowConfidenceSecondPass} /> Second AI pass for low-confidence items</label>
+              <label className="flex items-center gap-2 text-xs text-soft">
+                <input type="checkbox" name="supplierAutoSendVerified" defaultChecked={limits.supplierAutoSendVerified} />
+                Auto-send drafted RFQs only to verified suppliers
+              </label>
+              <p className="text-[11px] text-muted">
+                Off by default. When on, each automatic send is recorded against this standing owner policy and still obeys do-not-contact, bounce and daily limits.
+              </p>
             </div>
             <div className="sm:col-span-3"><Button size="sm" variant="primary">Save limits</Button></div>
           </form>

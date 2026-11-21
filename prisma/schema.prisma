@@ -541,9 +541,20 @@ model Supplier {
   organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   name           String
   website        String?
+  /// Normalized website host, used to deduplicate discovered prospects.
+  domain         String?
   country        String?
   city           String?
   address        String?
+  paymentTerms   String?
+  currencies     String           @default("[]")
+  typicalLeadTimeDays Int?
+  lastQuotedAt   DateTime?
+  doNotContact   Boolean          @default(false)
+  discoveredFromUrl String?
+  discoveredAt   DateTime?
+  bouncedAt      DateTime?
+  bounceReason   String?
   contactPerson  String?
   email          String?
   phone          String?
@@ -563,6 +574,7 @@ model Supplier {
   quotes         SupplierQuote[]
 
   @@index([organizationId, name])
+  @@index([organizationId, domain])
   emailReplies   SupplierEmailReply[]
 }
 
@@ -577,6 +589,8 @@ model SupplierContact {
   email          String?
   phone          String?
   whatsapp       String?
+  sourceUrl      String?
+  retrievedAt    DateTime?
   isPrimary      Boolean      @default(false)
 
   @@index([supplierId])
@@ -729,7 +743,11 @@ model SupplierQuote {
   enquiryItemId  String?
   enquiryItem    EnquiryItem?        @relation(fields: [enquiryItemId], references: [id])
   token          String              @unique
-  status         String              @default("REQUESTED") // REQUESTED | AWAITING_APPROVAL | SENT | RESPONDED | DECLINED | EXPIRED
+  status         String              @default("REQUESTED") // DRAFT | REQUESTED | AWAITING_APPROVAL | SENT | RESPONDED | DECLINED | EXPIRED
+  reminderSentAt DateTime?
+  reminderCount  Int                 @default(0)
+  bounceAt        DateTime?
+  bounceReason    String?
   /// Opaque reference embedded in the outgoing RFQ subject, used to correlate replies.
   correlationToken String?           @unique
   /// Provider thread/message ids captured from the send response when available.

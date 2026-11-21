@@ -16,6 +16,7 @@ import {
   PlayCircle,
   PlugZap,
   BarChart3,
+  Send,
 } from "lucide-react";
 
 type NavItem = {
@@ -32,6 +33,7 @@ const items: NavItem[] = [
   { href: "/sourcing", label: "Sourcing", icon: Radar },
   { href: "/inventory", label: "Inventory", icon: Boxes },
   { href: "/suppliers", label: "Suppliers", icon: Building2 },
+  { href: "/suppliers/outreach", label: "Draft RFQs", icon: Send, ownerOnly: true },
   { href: "/approvals", label: "Approvals", icon: BadgeCheck, ownerOnly: true },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/usage", label: "Usage & cost", icon: BarChart3, ownerOnly: true },

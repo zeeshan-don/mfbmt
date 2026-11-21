@@ -1,7 +1,7 @@
 # STATUS — OGS production readiness
 
-Last updated: 21 November 2026 (partial Phase 4/7/10 hand-off)
-HEAD: `625e6ab` Phase 4/7 evidence commit; go-live/docs changes in the working tree
+Last updated: 21 November 2026 (Phase 4 supplier workflow)
+HEAD: `625e6ab`; Phase 4 supplier workflow in the working tree
 Working tree: Phase 1/2 implementation; no production env, database, credentials or deployments touched.
 
 ## Baseline verification (Phase 0)
@@ -54,6 +54,17 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 | Baked OCR image | **NOT BUILT** — Dockerfile changed; daemon image build needs a Docker host |
 | `npm run lint` | **NOT RUN in this phase** |
 
+## Phase 4 verification
+
+| Command | Result |
+| --- | --- |
+| `npm run check` | **PASS** — typecheck, Vitest and production build |
+| Focused supplier tests | 15/15 passed: contact extraction/ranking, outreach safeguards, supplier reply ingestion |
+| Additive migrations | `20261121150000_supplier_outreach`, `20261121160000_supplier_currencies` applied with `prisma migrate deploy`; no reset |
+| Live providers | **NOT VERIFIED** — no AI/search/FX/email/WhatsApp credentials |
+
+Prospect discovery creates unverified supplier records only from a public result and visibly extracted contacts. The RFQ sender now enforces do-not-contact, contact exclusions, bounced-address suppression, one request per supplier/item and a per-organization daily cap. Drafts are never sent without an approval row; optional auto-send is off by default and only applies to owner-verified suppliers.
+
 ## Phase 4/7/10 verification
 
 | Command | Result |
@@ -85,7 +96,7 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 | OGS industrial schemas | Built + tested (9 categories) | Pipes, valves, flanges, fittings, gaskets, insulation kits, chemicals, spares, services |
 | OGS review wiring | Built | Enquiry review displays/edits industrial spec; add Phase 3 categories/service/bolting |
 | Supplier reply correlation | Built + tested | Provider/header/token correlation; 10+4 tests; live providers unverified |
-| Supplier web discovery/outreach | Not built | Phase 4; no prospect records, contact extraction or drafted-RFQ queue |
+| Supplier web discovery/outreach | Built + tested | Prospects deduplicated by domain, public contacts retained with source/time, draft queue, batch approval, send limits, DNC/bounce suppression |
 | Storage S3 + tenant keys | Built + tested; S3 live unverified | 12 storage tests; no S3 credentials |
 | Production local-storage refusal | Built + tested | `storage-config.ts`; check:storage script missing |
 | Cron scheduling | Built + tested | `vercel.json` schedules both routes every 5 minutes; cron bearer auth tested |
@@ -106,8 +117,8 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 | Gaskets/insulation/bolting/services | Built + tested | Gasket/insulation/service schemas; bolting deliberately stays in the fastener engine; service sourcing blocked |
 | Units/conversions | Partial | Basic units only; no stated/configured quantity conversion yet |
 | Chemical SDS checklist | Partial | SDS/COA fields exist; quotation checklist flag not yet built |
-| Supplier directory/ranking/CSV | Partial | Supplier model/UI exists; fields/ranking/import need work |
-| Price memory | Not built | No history view |
+| Supplier directory/ranking/CSV | Built + tested | Categories, countries, currencies, payment terms, lead time, ranking and CSV import |
+| Price memory | Built | Previous supplier/customer prices with date and currency on the sourcing screen |
 | FX multi-currency | Partial | Provider supports arbitrary pairs; CNY/KRW price parsing and daily cache tested; live FX unverified; no fixed non-USD/AED rates |
 | Quotation technical fields/revisions/Excel | Partial | Version/PDF exist; fields/exports/outcome missing |
 | Customer master | Not built | Contact model exists but no company master/quote history |
@@ -145,6 +156,6 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 - Phase 1: crons, authenticated cron calls, worker health/graceful release, storage round-trip command, baked OCR assets, operational alerts/digest and TOTP MFA with recovery codes implemented. `npm run check` PASS (27 files, 218 tests). Live S3/OCR-image checks remain unverified.
 - Phase 2: AI usage table/cost, budget refusal, per-org limits and warnings, item/query caps, search cache and monthly usage page/CSV/PDF implemented. `npm run check` PASS. Optional second pass remains **not built** and is called out above.
 - Phase 3: added gasket/insulation/service schemas, NACE/length vocabulary, A194 nut grades and U-bolt parsing, and a deterministic service-sourcing block. `npm run check` PASS (28 files, 225 tests). Unit conversions and the chemical SDS quotation checklist remain open.
-- Partial Phase 4: added CNY/KRW supplier price parsing, daily FX cache and same-currency test. Supplier prospect discovery/outreach, price memory and the full directory/ranking/CSV surface remain **not built**.
+- Phase 4: added prospect discovery and public-contact evidence, domain deduplication, drafted RFQ queue with batch approval, daily/DNC/bounce safeguards, reminders, supplier ranking/CSV fields and recorded price memory. `npm run check` PASS. AI+zod supplier-reply extraction and live FX remain open.
 - Phase 7 evidence: added a 60-case synthetic OGS corpus, `npm run eval:extraction`, and rules-only results (100% on this simple corpus; 0 wrong-but-confident; $0 AI). AI-mode, real-mail and attachment/OCR evaluation remain unverified.
 - Partial Phase 8/10: added OGS onboarding, runbook, service scope, human-task list, demo script and `npm run check:golive`. The gate fails closed locally on missing production credentials/data as expected.

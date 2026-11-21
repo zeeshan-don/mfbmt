@@ -20,6 +20,8 @@ import {
 import type { AdapterContext, CoverageEntry, SourcingCandidate } from "./types";
 import { getOrgLimits } from "../limits";
 import { readSearchCache, searchCacheKey, writeSearchCache } from "./cache";
+import { extractPublicContacts } from "./contacts";
+import { upsertProspectsAndDraftRfqs } from "../suppliers/prospects";
 
 const PAGE_FETCH_LIMIT = 5;
 
@@ -72,11 +74,13 @@ async function enrichWithPageEvidence(candidates: SourcingCandidate[]): Promise<
     }
     const price = extractPriceFromText(page.text);
     const specs = extractSpecsFromText(`${candidate.title}\n${page.text.slice(0, 8000)}`);
+    const publicContacts = extractPublicContacts(page.text, page.finalUrl, page.links);
     candidate.evidence = {
       ...(candidate.evidence ?? {}),
       specifications: specs,
       pageFetch: "OK",
       pageExcerpt: page.text.slice(0, 600),
+      publicContacts,
     };
     if (candidate.unitPrice == null && price.unitPrice != null) {
       candidate.unitPrice = price.unitPrice;
@@ -365,6 +369,14 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
       },
     });
     offerCount += 1;
+  }
+
+  try {
+    await upsertProspectsAndDraftRfqs(item, uniqueCandidates);
+  } catch (error) {
+    // Prospect discovery is additive; an error here must not hide the offers
+    // and coverage that were already produced by this sourcing run.
+    console.warn("Prospect discovery failed:", error instanceof Error ? error.message : error);
   }
 
   const evaluation = await recomputeOffersForItem(item.id);

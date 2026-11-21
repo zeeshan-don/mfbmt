@@ -58,27 +58,27 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 4 — Supplier workflow
 
-- [ ] Put a reference token in every supplier RFQ subject and body; match replies by token and thread id.
-- [ ] Extract prices, MOQ, lead time, validity and currency from replies/PDF/Excel with AI + zod.
-- [ ] Store extracted replies as unverified draft offers with one-click human confirmation; never auto-approve.
-- [ ] Respect robots.txt, SSRF and size limits when fetching public supplier pages.
-- [ ] Extract and retain public emails, contact-page links and phones with source URL and retrieval time.
-- [ ] Create deduplicated prospect supplier records by domain, with category/country/source evidence.
-- [ ] Draft supplier RFQs from item specs when a result has no visible price, attaching prospect recipients.
-- [ ] Show all drafted RFQs for one enquiry on one screen with one recorded “approve and send selected” action.
-- [ ] Add optional auto-send to owner-verified suppliers only; default manual; full audit.
-- [ ] Add daily send limit per organization.
-- [ ] Add do-not-contact list enforcement.
-- [ ] Handle bounces and suppress bad addresses.
-- [ ] Enforce max one RFQ per supplier per item.
-- [ ] Send automatic reminder after configurable days without reply.
-- [ ] Add supplier directory fields: categories, countries, currencies, payment terms, typical lead time, last quoted prices.
-- [ ] Rank suppliers by category fit and past quotes.
-- [ ] Add supplier CSV import.
-- [ ] Show previous quoted/purchased prices for same item/customer with date and currency on sourcing/quotation screens.
+- [x] Put a reference token in every supplier RFQ subject and body; match replies by token and thread id.
+- [ ] Extract prices, MOQ, lead time, validity and currency from replies/PDF/Excel with AI + zod. **Partial**: deterministic extraction is covered; no AI path is claimed.
+- [x] Store extracted replies as unverified draft offers with one-click human confirmation; never auto-approve.
+- [x] Respect robots.txt, SSRF and size limits when fetching public supplier pages.
+- [x] Extract and retain public emails, contact-page links and phones with source URL and retrieval time.
+- [x] Create deduplicated prospect supplier records by domain, with category/country/source evidence.
+- [x] Draft supplier RFQs from item specs when a result has no visible price, attaching prospect recipients.
+- [x] Show all drafted RFQs for one enquiry on one screen with one recorded “approve and send selected” action.
+- [x] Add optional auto-send to owner-verified suppliers only; default manual; full audit.
+- [x] Add daily send limit per organization.
+- [x] Add do-not-contact list enforcement.
+- [x] Handle bounces and suppress bad addresses.
+- [x] Enforce max one RFQ per supplier per item.
+- [x] Send automatic reminder after configurable days without reply.
+- [x] Add supplier directory fields: categories, countries, currencies, payment terms, typical lead time, last quoted prices.
+- [x] Rank suppliers by category fit and past quotes.
+- [x] Add supplier CSV import.
+- [x] Show previous quoted/purchased prices for same item/customer with date and currency on sourcing/quotation screens.
 - [ ] Add provider-backed FX with daily caching and SAR, INR, EUR, CNY, KRW support. Partial: arbitrary provider pairs, CNY/KRW parsing and 24h cache; live provider and fixed non-USD/AED rates unverified.
 - [x] Store FX rate and timestamp on every conversion; no rate => incomplete total, never assumed.
-- [ ] Phase 4: `npm run check` green, commit, update STATUS.md. **Not complete**: prospect discovery/outreach, directory/ranking/CSV, price memory and send safeguards remain open.
+- [x] Phase 4: `npm run check` green, commit, update STATUS.md. Deterministic supplier reply extraction remains the only extraction path; AI+zod and live FX stay unchecked.
 
 ## Phase 5 — Quotation quality
 

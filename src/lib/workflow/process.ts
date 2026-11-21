@@ -4,7 +4,7 @@ import { claimJob, completeJob, failJob, heartbeatJob, releaseExpiredJobs, LEASE
 import { processInboundMessage, extractEnquiryById, checkEnquiryInventory } from "./enquiry";
 import { ensureSourcingApproval } from "./approvals";
 import { runSourcingForItem } from "../sourcing/engine";
-import { sendSupplierQuoteRequest } from "./supplierQuotes";
+import { sendSupplierQuoteRequest, sendSupplierReminder } from "./supplierQuotes";
 import { JOB_TYPES } from "../constants";
 import { runWithTenant } from "../tenant";
 
@@ -52,6 +52,11 @@ export async function processJob(jobId: string, workerId: string): Promise<{ ok:
     case JOB_TYPES.SEND_SUPPLIER_RFQ: {
       if (!payload.supplierQuoteId) throw new Error("Missing supplierQuoteId");
       const result = await sendSupplierQuoteRequest(payload.supplierQuoteId);
+      return { ok: result.ok, message: result.detail };
+    }
+    case JOB_TYPES.SUPPLIER_REMINDER: {
+      if (!payload.supplierQuoteId) throw new Error("Missing supplierQuoteId");
+      const result = await sendSupplierReminder(payload.supplierQuoteId);
       return { ok: result.ok, message: result.detail };
     }
     case JOB_TYPES.SYNC_EMAIL: {

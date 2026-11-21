@@ -188,7 +188,13 @@ export default async function SupplierDetailPage({
                 <div className="flex justify-between gap-2"><dt className="text-muted">Email</dt><dd className="break-all text-right text-ink">{supplier.email ?? "—"}</dd></div>
                 <div className="flex justify-between gap-2"><dt className="text-muted">Phone</dt><dd className="text-ink">{supplier.phone ?? "—"}</dd></div>
                 <div className="flex justify-between gap-2"><dt className="text-muted">WhatsApp</dt><dd className="text-ink">{supplier.whatsapp ?? "—"}</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-muted">Domain</dt><dd className="text-ink">{supplier.domain ?? "—"}</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-muted">Currencies</dt><dd className="text-ink">{parseStringArray(supplier.currencies).join(", ") || "—"}</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-muted">Payment terms</dt><dd className="text-ink">{supplier.paymentTerms ?? "—"}</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-muted">Typical lead time</dt><dd className="text-ink">{supplier.typicalLeadTimeDays != null ? `${supplier.typicalLeadTimeDays} days` : "—"}</dd></div>
                 <div className="flex justify-between gap-2"><dt className="text-muted">Last verified</dt><dd className="text-ink">{supplier.lastVerifiedAt ? formatDate(supplier.lastVerifiedAt) : "Never"}</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-muted">Do not contact</dt><dd className={supplier.doNotContact ? "text-danger" : "text-ink"}>{supplier.doNotContact ? "Yes — sending blocked" : "No"}</dd></div>
+                {supplier.bouncedAt ? <div className="flex justify-between gap-2"><dt className="text-muted">Bounce</dt><dd className="text-right text-danger">{supplier.bounceReason ?? "Email bounced"}</dd></div> : null}
               </dl>
               {supplier.notes ? <p className="rounded-card border border-line bg-bg p-2 text-[11px] text-soft">{supplier.notes}</p> : null}
             </div>
@@ -219,6 +225,14 @@ export default async function SupplierDetailPage({
                     <option value="PAUSED">Paused</option>
                     <option value="BLOCKED">Blocked (never used)</option>
                   </select>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block text-xs text-soft">Payment terms<input name="paymentTerms" defaultValue={supplier.paymentTerms ?? ""} className={`${inputClass} mt-1`} placeholder="30 days" /></label>
+                  <label className="block text-xs text-soft">Typical lead time (days)<input name="typicalLeadTimeDays" inputMode="numeric" defaultValue={supplier.typicalLeadTimeDays ?? ""} className={`${inputClass} mt-1 tabular`} /></label>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-soft">
+                  <input type="checkbox" name="doNotContact" defaultChecked={supplier.doNotContact} />
+                  Do not contact this supplier
                 </label>
                 <label className="block text-xs text-soft">Notes<textarea name="notes" defaultValue={supplier.notes ?? ""} rows={2} className={`${inputClass} mt-1 h-auto py-2`} /></label>
                 <Button size="sm" variant="primary">Save changes</Button>

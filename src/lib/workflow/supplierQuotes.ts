@@ -10,6 +10,7 @@ import { buildSpecSummary } from "../catalog/normalize";
 import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
 import { industrialSpecFromFields, parseIndustrialSpecJson } from "../catalog/industrialSpec";
 import { getCurrentOrganization } from "../organization";
+import { supplierSendGuard } from "../suppliers/sendGuard";
 
 function quoteLink(token: string): string {
   return `${env.APP_URL.replace(/\/$/, "")}/supplier-response/${token}`;
@@ -57,6 +58,7 @@ export async function createSupplierQuoteRequest(input: {
   enquiryItemId: string;
   userId: string;
   actorLabel: string;
+  draft?: boolean;
 }): Promise<{ ok: true; quoteId: string; link: string } | { ok: false; error: string }> {
   const [supplier, item] = await Promise.all([
     db.supplier.findUnique({ where: { id: input.supplierId } }),
@@ -64,8 +66,21 @@ export async function createSupplierQuoteRequest(input: {
   ]);
   if (!supplier) return { ok: false, error: "Supplier not found." };
   if (!item) return { ok: false, error: "Product line not found." };
-  if (!supplier.email && !supplier.whatsapp && !supplier.phone) {
+  if (!supplier.email && !supplier.whatsapp) {
     return { ok: false, error: "This supplier has no email or WhatsApp number recorded." };
+  }
+  const existing = await db.supplierQuote.findFirst({
+    where: { supplierId: input.supplierId, enquiryItemId: item.id, status: { not: "EXPIRED" } },
+    select: { id: true, status: true },
+  });
+  if (existing) {
+    return {
+      ok: false,
+      error:
+        existing.status === "DRAFT"
+          ? "A draft request for this supplier and product is already waiting."
+          : "A request already exists for this supplier and product. Use the existing RFQ instead of sending a duplicate.",
+    };
   }
 
   const crypto = await import("node:crypto");
@@ -80,7 +95,7 @@ export async function createSupplierQuoteRequest(input: {
       enquiryItemId: item.id,
       token,
       correlationToken,
-      status: "AWAITING_APPROVAL",
+      status: input.draft ? "DRAFT" : "AWAITING_APPROVAL",
       expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
       items: {
         create: [
@@ -133,6 +148,18 @@ export async function createSupplierQuoteRequest(input: {
     data: { subject: message.subject, messageBody: message.body },
   });
 
+  if (input.draft) {
+    await writeAudit({
+      actorId: input.userId === "system" ? null : input.userId,
+      actorLabel: input.actorLabel,
+      action: "supplier_quote.drafted",
+      entityType: "SupplierQuote",
+      entityId: quote.id,
+      meta: { supplier: supplier.name, enquiryItemId: item.id },
+    });
+    return { ok: true, quoteId: quote.id, link: quoteLink(token) };
+  }
+
   const approval = await db.approval.create({
     data: {
       type: "SUPPLIER_QUOTE_SEND",
@@ -152,7 +179,7 @@ export async function createSupplierQuoteRequest(input: {
   });
 
   await writeAudit({
-    actorId: input.userId,
+    actorId: input.userId === "system" ? null : input.userId,
     actorLabel: input.actorLabel,
     action: "supplier_quote.requested",
     entityType: "SupplierQuote",
@@ -161,6 +188,16 @@ export async function createSupplierQuoteRequest(input: {
   });
 
   return { ok: true, quoteId: quote.id, link: quoteLink(token) };
+}
+
+/** A queued RFQ. It has no approval and cannot be sent until the owner approves it. */
+export async function createDraftSupplierQuoteRequest(input: {
+  supplierId: string;
+  enquiryItemId: string;
+  userId: string;
+  actorLabel: string;
+}) {
+  return createSupplierQuoteRequest({ ...input, draft: true });
 }
 
 /** Sends an approved supplier quotation request. Never runs without approval. */
@@ -178,13 +215,17 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
     return { ok: true, detail: "Already sent earlier." };
   }
 
+  const guard = await supplierSendGuard(quote.supplierId);
+  if (!guard.ok) return { ok: false, detail: guard.error ?? "Sending is blocked for this supplier." };
+
   const organization = await getCurrentOrganization();
   const subject = quote.subject ?? `Quotation request — ${organization?.name ?? "Procurement"}`;
   const body = quote.messageBody ?? "";
 
   // Demo mode never reaches a provider. The activity log records the simulation.
   if (isDemoMode) {
-    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date() } });
+    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date(), channel: quote.supplier.email ? "email" : "whatsapp" } });
+    await db.supplier.update({ where: { id: quote.supplierId }, data: { lastQuotedAt: new Date() } });
     await writeAudit({
       actorLabel: "demo-simulation",
       action: "supplier_quote.simulated_sent",
@@ -212,8 +253,10 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
         sentTo: quote.supplier.email,
         providerThreadId: providerIds?.threadId ?? null,
         providerMessageId: providerIds?.messageId ?? null,
+        channel: "email",
       },
     });
+    await db.supplier.update({ where: { id: quote.supplierId }, data: { lastQuotedAt: new Date() } });
     return { ok: true, detail: `Sent to ${quote.supplier.email}.` };
   }
 
@@ -221,7 +264,8 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
   if (quote.supplier.whatsapp && whatsapp) {
     const sent = await sendWhatsAppText(quote.supplier.whatsapp, body);
     if (!sent.ok) return { ok: false, detail: sent.detail };
-    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date() } });
+    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date(), channel: "whatsapp" } });
+    await db.supplier.update({ where: { id: quote.supplierId }, data: { lastQuotedAt: new Date() } });
     return { ok: true, detail: sent.detail };
   }
 
@@ -230,6 +274,77 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
     detail:
       "No sending channel is configured. Connect a company email account or WhatsApp Business in Settings, or copy the message and send it yourself.",
   };
+}
+
+/**
+ * Sends one polite reminder for an unanswered RFQ. It never changes the RFQ's
+ * commercial terms and it obeys the same suppression and daily-cap checks as a
+ * first send. No approval row is needed because this is not a new commitment.
+ */
+export async function sendSupplierReminder(supplierQuoteId: string): Promise<{ ok: boolean; detail: string }> {
+  const quote = await db.supplierQuote.findUnique({
+    where: { id: supplierQuoteId },
+    include: { supplier: true },
+  });
+  if (!quote) return { ok: false, detail: "Supplier request not found." };
+  if (quote.status !== "SENT" || !quote.sentAt) return { ok: false, detail: "Only a sent, unanswered request can be reminded." };
+  if (quote.reminderCount >= env.SUPPLIER_REMINDER_MAX) return { ok: false, detail: "The reminder limit for this request has been reached." };
+  const guard = await supplierSendGuard(quote.supplierId);
+  if (!guard.ok) return { ok: false, detail: guard.error ?? "Sending is blocked for this supplier." };
+
+  const organization = await getCurrentOrganization();
+  const subject = `Reminder: ${quote.subject ?? `Quotation request — ${organization?.name ?? "Procurement"}`}`;
+  const body = [
+    `Dear ${quote.supplier.name},`,
+    "",
+    "This is a polite reminder for the quotation request below. If you have already replied, please ignore this message.",
+    "",
+    quote.messageBody ?? "",
+    "",
+    "Thank you,",
+    `Procurement — ${organization?.name ?? "Procurement"}`,
+  ].join("\n");
+
+  if (isDemoMode) {
+    await db.supplierQuote.update({
+      where: { id: quote.id },
+      data: { reminderSentAt: new Date(), reminderCount: { increment: 1 } },
+    });
+    await writeAudit({
+      actorLabel: "demo-simulation",
+      action: "supplier_quote.reminder_simulated",
+      entityType: "SupplierQuote",
+      entityId: quote.id,
+      meta: { supplier: quote.supplier.name },
+    });
+    return { ok: true, detail: "Demo simulation: reminder recorded, not transmitted." };
+  }
+
+  const emailProvider = await activeEmailProvider();
+  if (quote.supplier.email && emailProvider !== "none") {
+    const sent = await sendEmail({ to: quote.supplier.email, subject, text: body });
+    if (!sent.ok) return { ok: false, detail: sent.error };
+  } else {
+    const whatsapp = await getWhatsAppCredentials();
+    if (!quote.supplier.whatsapp || !whatsapp) {
+      return { ok: false, detail: "No sending channel is configured for this reminder." };
+    }
+    const sent = await sendWhatsAppText(quote.supplier.whatsapp, body);
+    if (!sent.ok) return { ok: false, detail: sent.detail };
+  }
+
+  await db.supplierQuote.update({
+    where: { id: quote.id },
+    data: { reminderSentAt: new Date(), reminderCount: { increment: 1 }, lastError: null },
+  });
+  await writeAudit({
+    actorLabel: "system",
+    action: "supplier_quote.reminder_sent",
+    entityType: "SupplierQuote",
+    entityId: quote.id,
+    meta: { supplier: quote.supplier.name, channel: quote.supplier.email ? "email" : "whatsapp" },
+  });
+  return { ok: true, detail: "Reminder sent." };
 }
 
 export type SupplierResponseInput = {

@@ -35,6 +35,7 @@ export default async function SuppliersPage({
       <PageHeader
         title="Suppliers"
         description="The suppliers your company knows about. Saved suppliers are searched first for every shortage."
+        actions={<ButtonLink href="/suppliers/outreach" size="sm">Draft RFQs</ButtonLink>}
       />
 
       {params.error ? <Notice tone="danger" title="Could not save">{params.error}</Notice> : null}
@@ -143,8 +144,8 @@ export default async function SuppliersPage({
                 className="block w-full cursor-pointer rounded-control border border-line bg-bg px-3 py-2 text-sm text-soft file:mr-3 file:rounded file:border-0 file:bg-elevated file:px-2 file:py-1 file:text-xs file:text-ink"
               />
               <p className="text-[11px] text-muted">
-                Recognized columns: supplier/company name, email, phone, WhatsApp, country, city, website, categories.
-                Duplicates by name or email are skipped.
+                Recognized columns: supplier/company name, email, phone, WhatsApp, country, city, website, categories,
+                payment terms and lead time. Duplicates by name, email or website domain are skipped.
               </p>
               <Button size="sm">Import suppliers</Button>
             </form>

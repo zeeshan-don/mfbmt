@@ -11,6 +11,7 @@ export type OrgLimits = {
   monthlyEnquiryAllowance: number;
   searchCacheTtlDays: number;
   lowConfidenceSecondPass: boolean;
+  supplierAutoSendVerified: boolean;
 };
 
 const GENERAL_DEFAULTS: OrgLimits = {
@@ -21,6 +22,7 @@ const GENERAL_DEFAULTS: OrgLimits = {
   monthlyEnquiryAllowance: 500,
   searchCacheTtlDays: 7,
   lowConfidenceSecondPass: false,
+  supplierAutoSendVerified: false,
 };
 
 const OGS_DEFAULTS: OrgLimits = {
@@ -54,6 +56,7 @@ export async function getOrgLimits(): Promise<OrgLimits> {
     monthlyEnquiryAllowance: clampNumber(stored.monthlyEnquiryAllowance, defaults.monthlyEnquiryAllowance, 0, 100_000),
     searchCacheTtlDays: clampNumber(stored.searchCacheTtlDays, defaults.searchCacheTtlDays, 1, 90),
     lowConfidenceSecondPass: stored.lowConfidenceSecondPass === true,
+    supplierAutoSendVerified: stored.supplierAutoSendVerified === true,
   };
 }
 
@@ -67,6 +70,7 @@ export async function saveOrgLimits(input: Partial<OrgLimits>): Promise<OrgLimit
     monthlyAiBudgetAed: clampNumber(input.monthlyAiBudgetAed ?? current.monthlyAiBudgetAed, current.monthlyAiBudgetAed, 0, 100_000),
     monthlyEnquiryAllowance: clampNumber(input.monthlyEnquiryAllowance ?? current.monthlyEnquiryAllowance, current.monthlyEnquiryAllowance, 0, 100_000),
     searchCacheTtlDays: clampNumber(input.searchCacheTtlDays ?? current.searchCacheTtlDays, current.searchCacheTtlDays, 1, 90),
+    supplierAutoSendVerified: input.supplierAutoSendVerified ?? current.supplierAutoSendVerified,
   };
   await setSettingJson(LIMITS_KEY, next);
   return next;

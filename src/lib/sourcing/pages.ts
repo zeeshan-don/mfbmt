@@ -153,7 +153,7 @@ type FetchFailure = { ok: false; text: ""; status: "ROBOTS_DISALLOWED" | "FAILED
  * is never followed by the HTTP client itself.
  */
 export async function fetchPublicPage(raw: string): Promise<
-  | { ok: true; text: string; status: "OK"; finalUrl: string }
+  | { ok: true; text: string; status: "OK"; finalUrl: string; links: string[] }
   | FetchFailure
 > {
   let current = raw;
@@ -209,7 +209,10 @@ export async function fetchPublicPage(raw: string): Promise<
         await reader.cancel().catch(() => undefined);
       }
       const html = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
-      return { ok: true, text: htmlToText(html).slice(0, 60_000), status: "OK", finalUrl: current };
+      const links = [...html.matchAll(/<a\b[^>]*href=["']([^"']+)["']/gi)]
+        .map((match) => match[1])
+        .slice(0, 100);
+      return { ok: true, text: htmlToText(html).slice(0, 60_000), status: "OK", finalUrl: current, links };
     } catch (error) {
       return {
         ok: false,

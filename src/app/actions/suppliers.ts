@@ -8,6 +8,7 @@ import { writeAudit } from "@/lib/audit";
 import { readTabular } from "@/lib/inventory/import";
 import { assertAllowedUpload } from "@/lib/storage";
 import { stringifyJson } from "@/lib/json";
+import { normalizeDomain } from "@/lib/sourcing/contacts";
 
 function str(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
@@ -72,6 +73,11 @@ export async function updateSupplierAction(formData: FormData) {
       whatsapp: str(formData.get("whatsapp")),
       notes: str(formData.get("notes")),
       status: String(formData.get("status") ?? "ACTIVE"),
+      paymentTerms: str(formData.get("paymentTerms")),
+      typicalLeadTimeDays: str(formData.get("typicalLeadTimeDays"))
+        ? Math.max(0, Math.round(Number(String(formData.get("typicalLeadTimeDays")).replace(/[^0-9.]/g, ""))))
+        : null,
+      doNotContact: formData.get("doNotContact") === "on",
       lastVerifiedAt: new Date(),
     },
   });
@@ -146,6 +152,9 @@ export async function importSuppliersAction(formData: FormData) {
     const cityCol = headerIndex([/city|emirate/i]);
     const websiteCol = headerIndex([/website|site|url/i]);
     const categoryCol = headerIndex([/categor/i]);
+    const currencyCol = headerIndex([/currenc/i]);
+    const paymentCol = headerIndex([/payment/i]);
+    const leadTimeCol = headerIndex([/lead.?time/i]);
 
     if (nameCol < 0) redirect("/suppliers?error=No+supplier+name+column+found");
 
@@ -156,14 +165,17 @@ export async function importSuppliersAction(formData: FormData) {
         continue;
       }
       const email = emailCol >= 0 ? (row[emailCol] ?? "").trim() || null : null;
+      const website = websiteCol >= 0 ? (row[websiteCol] ?? "").trim() || null : null;
+      const domain = normalizeDomain(website);
       const exists = await db.supplier.findFirst({
-        where: email ? { OR: [{ name }, { email }] } : { name },
+        where: { OR: [{ name }, ...(email ? [{ email }] : []), ...(domain ? [{ domain }] : [])] },
       });
       if (exists) {
         skipped += 1;
         continue;
       }
       const categories = categoryCol >= 0 ? (row[categoryCol] ?? "").split(/[,;/]/).map((c) => c.trim()).filter(Boolean) : [];
+      const currencies = currencyCol >= 0 ? (row[currencyCol] ?? "").split(/[,;/\s]+/).map((c) => c.trim().toUpperCase()).filter((c) => /^[A-Z]{3}$/.test(c)) : [];
       await db.supplier.create({
         data: {
           name,
@@ -172,8 +184,14 @@ export async function importSuppliersAction(formData: FormData) {
           whatsapp: whatsappCol >= 0 ? (row[whatsappCol] ?? "").trim() || null : null,
           country: countryCol >= 0 ? (row[countryCol] ?? "").trim() || null : null,
           city: cityCol >= 0 ? (row[cityCol] ?? "").trim() || null : null,
-          website: websiteCol >= 0 ? (row[websiteCol] ?? "").trim() || null : null,
+          website,
+          domain,
+          paymentTerms: paymentCol >= 0 ? (row[paymentCol] ?? "").trim() || null : null,
+          typicalLeadTimeDays: leadTimeCol >= 0 && Number((row[leadTimeCol] ?? "").replace(/[^0-9.]/g, "")) > 0
+            ? Math.round(Number((row[leadTimeCol] ?? "").replace(/[^0-9.]/g, "")))
+            : null,
           categories: stringifyJson(categories),
+          currencies: stringifyJson(currencies),
           status: "UNVERIFIED",
           notes: "Imported from spreadsheet. Confirm details before sending requests.",
         },

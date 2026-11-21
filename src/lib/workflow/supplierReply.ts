@@ -587,11 +587,51 @@ async function materializeOffer(input: {
 }
 
 /** Records an inbound email as a supplier reply when its sender is a supplier. */
+async function recordSupplierBounce(body: string, subject: string | null): Promise<void> {
+  const addresses = [...new Set((body.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []).map((value) => value.toLowerCase()))];
+  if (addresses.length === 0) return;
+  const suppliers = await db.supplier.findMany({
+    where: { email: { in: addresses, mode: "insensitive" } },
+    select: { id: true, name: true, email: true },
+  });
+  for (const supplier of suppliers) {
+    await db.supplier.update({
+      where: { id: supplier.id },
+      data: {
+        status: "BLOCKED",
+        doNotContact: true,
+        bouncedAt: new Date(),
+        bounceReason: (subject ?? "Delivery failure").slice(0, 300),
+      },
+    });
+    await notifyOwner({
+      type: "SUPPLIER_BOUNCE",
+      title: `Supplier email bounced: ${supplier.name}`,
+      body: `${supplier.email ?? "The supplier address"} is now blocked from sending until the address is corrected.`,
+      link: `/suppliers/${supplier.id}`,
+    });
+    await writeAudit({
+      action: "supplier.bounced",
+      entityType: "Supplier",
+      entityId: supplier.id,
+      actorLabel: "email-bounce",
+      meta: { email: supplier.email, subject },
+    });
+  }
+}
+
 export async function ingestSupplierReply(input: SupplierReplyInput): Promise<SupplierReplyResult> {
   const from = input.from.trim().toLowerCase();
   if (!from) return { handled: false, reason: "No sender address." };
 
   const supplier = await findSupplierByEmail(from);
+  const looksLikeBounce =
+    /mailer-daemon|postmaster|mail delivery subsystem/i.test(from) ||
+    /undeliverable|delivery status notification|delivery has failed|returned mail|failure notice/i.test(input.subject ?? "");
+  if (!supplier && looksLikeBounce) {
+    await recordSupplierBounce(input.body, input.subject ?? null);
+    return { handled: true, reason: "Delivery failure recorded." };
+  }
   if (!supplier) return { handled: false, reason: "Sender is not a known supplier." };
 
   const duplicate = await db.supplierEmailReply.findFirst({

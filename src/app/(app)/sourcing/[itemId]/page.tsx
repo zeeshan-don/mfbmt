@@ -14,6 +14,8 @@ import {
 import { formatDate, formatDateTime, formatMoney, formatQty, timeAgo, truncate } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, Notice, PageHeader, inputClass, statusTone, textareaClass } from "@/components/ui";
 import { approveOfferAction, createSupplierQuoteAction, recordManualOfferAction, requestMoreQuotesAction } from "@/app/actions/sourcing";
+import { priceMemoryForDescription } from "@/lib/pricing/memory";
+import { rankSuppliersForRequest } from "@/lib/suppliers/ranking";
 import { CheckCircle2, ExternalLink, Info } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -66,7 +68,11 @@ export default async function SourcingDetailPage({
 
   const org = await getCurrentOrganization();
   const suppliers = await db.supplier.findMany({ where: { status: { not: "BLOCKED" } }, orderBy: { name: "asc" } });
+  const supplierOptions = rankSuppliersForRequest(suppliers, item.category)
+    .filter((entry) => entry.score >= 0)
+    .map((entry) => entry.supplier);
   const supplierById = new Map(suppliers.map((supplier) => [supplier.id, supplier]));
+  const priceMemory = await priceMemoryForDescription(item.description, 6);
 
   const offers = item.offers
     .map((offer) => {
@@ -401,6 +407,50 @@ export default async function SourcingDetailPage({
         ) : null}
       </Card>
 
+      {priceMemory.length > 0 ? (
+        <Card>
+          <CardHeader
+            title="Recorded price memory"
+            description="Similar items your company has quoted or bought before. These are historical records, not current offers."
+          />
+          <div className="scroll-x">
+            <table className="w-full border-collapse text-sm" style={{ minWidth: 680 }}>
+              <thead>
+                <tr>
+                  <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Source</th>
+                  <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Item</th>
+                  <th scope="col" className="border-b border-line px-3 py-2 text-right text-[11px] uppercase tracking-wide text-muted">Price</th>
+                  <th scope="col" className="border-b border-line px-3 py-2 text-left text-[11px] uppercase tracking-wide text-muted">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {priceMemory.map((entry, index) => (
+                  <tr key={`${entry.source}-${entry.reference ?? index}-${index}`}>
+                    <td className="border-b border-line/70 px-3 py-2 align-top">
+                      <span className="text-xs text-ink">{entry.supplier ?? "Unknown"}</span>
+                      <span className="mt-0.5 block text-[10px] text-muted">
+                        {entry.source === "CUSTOMER" ? "customer quotation" : entry.source === "QUOTE" ? "supplier RFQ reply" : "recorded supplier offer"}
+                      </span>
+                    </td>
+                    <td className="border-b border-line/70 px-3 py-2 align-top text-xs text-soft">
+                      {truncate(entry.description, 70)}
+                      {entry.href ? <Link href={entry.href} className="ml-1 text-[10px] text-accent hover:underline">open</Link> : null}
+                    </td>
+                    <td className="border-b border-line/70 px-3 py-2 align-top text-right tabular text-xs text-ink">
+                      {formatMoney(entry.unitPrice, entry.currency)}<span className="text-muted">/{entry.unit}</span>
+                    </td>
+                    <td className="border-b border-line/70 px-3 py-2 align-top text-xs text-muted">{formatDate(entry.quotedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="border-t border-line px-4 py-2 text-[11px] text-muted">
+            Customer prices are sale prices; supplier prices are recorded costs. Check the source date and specification before reusing any price.
+          </p>
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader title="Where the search looked" description="Only connected sources are searched. Nothing is scraped past a block." />
@@ -458,7 +508,7 @@ export default async function SourcingDetailPage({
                 </label>
                 <select id="supplierId" name="supplierId" className={inputClass} required>
                   <option value="">Choose a supplier…</option>
-                  {suppliers.map((supplier) => (
+                  {supplierOptions.map((supplier) => (
                     <option key={supplier.id} value={supplier.id}>
                       {supplier.name}
                       {supplier.email ? ` — ${supplier.email}` : supplier.whatsapp ? ` — WhatsApp ${supplier.whatsapp}` : " — no contact saved"}
@@ -477,7 +527,7 @@ export default async function SourcingDetailPage({
                 <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Requests for this product</p>
                 {item.supplierQuotes.map((quote) => (
                   <p key={quote.id} className="text-[11px] text-soft">
-                    {quote.supplier.name} — {quote.status === "RESPONDED" ? "replied" : quote.status === "SENT" ? "sent, waiting" : "waiting for your approval"}
+                    {quote.supplier.name} — {quote.status === "RESPONDED" ? "replied" : quote.status === "SENT" ? "sent, waiting" : quote.status === "DRAFT" ? "drafted, waiting for your approval" : "waiting for your approval"}
                     {quote.expiresAt ? ` · link expires ${formatDate(quote.expiresAt)}` : ""}
                   </p>
                 ))}
