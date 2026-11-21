@@ -7,6 +7,13 @@ import { completeJson, aiStatus, DATA_ONLY_RULE } from "./provider";
 import { inferCategoryFromDescription, ATTRIBUTE_LABELS, type AttributeKey } from "../catalog/categories";
 import { isFastenerCategory, missingFastenerFields, parseFastenerSpec } from "../fasteners/spec";
 import {
+  buildIndustrialSpec,
+  extractIndustrialAttributes,
+  industrialClarificationQuestion,
+  resolveIndustrialCategory,
+  type IndustrialSpec,
+} from "../catalog/industrialSpec";
+import {
   normalizeGrade,
   normalizeMaterial,
   normalizePressure,
@@ -29,9 +36,11 @@ export type ExtractionInput = {
   documents: SourceDocument[];
 };
 
-export type ItemDraft = ExtractedItem & {
+export type ItemDraft = Omit<ExtractedItem, "industrialSpec"> & {
   clarificationQuestion: string | null;
   missingFields: string[];
+  /** Set only when industrial schemas are enabled for the organization. */
+  industrialSpec?: IndustrialSpec | null;
 };
 
 const HEADER_WORDS = /^(description|item|product|qty|quantity|unit|price|sr\.?|s\.?no|no\.?|total|amount)$/i;
@@ -138,11 +147,25 @@ function categoryFor(item: ExtractedItem) {
   return byDescription ?? byName;
 }
 
-/** Applies deterministic normalization and computes what is missing. */
-export function finalizeItems(items: ExtractedItem[]): ItemDraft[] {
+/**
+ * Applies deterministic normalization and computes what is missing.
+ *
+ * `industrial` is opt-in per organization. It enables the OGS industrial
+ * schemas without changing MFBMT's existing generic category requirements or
+ * its versioned fastener matcher.
+ */
+export function finalizeItems(items: ExtractedItem[], options: { industrial?: boolean } = {}): ItemDraft[] {
   return items.map((item) => {
     const category = categoryFor(item);
     const fastenerCategory = isFastenerCategory(category?.name) || isFastenerCategory(item.category);
+    // Only enabled for an INDUSTRIAL organization. The industrial schema, not
+    // the generic category list, then decides which attributes are required.
+    const industrialCategory =
+      options.industrial && !fastenerCategory
+        ? resolveIndustrialCategory(item.category) ??
+          resolveIndustrialCategory(category?.name) ??
+          resolveIndustrialCategory(item.description)
+        : null;
     const normalized: ExtractedItem = {
       ...item,
       description: item.description.trim().replace(/\s{2,}/g, " "),
@@ -178,7 +201,7 @@ export function finalizeItems(items: ExtractedItem[]): ItemDraft[] {
       // Fasteners have their own required attributes. Generic size/material/grade
       // labels are replaced so the owner sees the exact missing engineering field.
       for (const field of missingFastenerFields(normalized.fastenerSpec)) missing.add(field);
-    } else if (category) {
+    } else if (category && !industrialCategory) {
       for (const key of category.required) {
         if (!attributeValue(normalized, key)) missing.add(ATTRIBUTE_LABELS[key]);
       }
@@ -187,10 +210,47 @@ export function finalizeItems(items: ExtractedItem[]): ItemDraft[] {
       }
     }
 
+    // OGS industrial schemas are deterministic: the AI may interpret the
+    // source, but only the schema decides which attributes are required.
+    let industrialSpec: IndustrialSpec | null = null;
+    if (industrialCategory) {
+      normalized.category = industrialCategory;
+      if (true) {
+        industrialSpec = buildIndustrialSpec(
+          industrialCategory,
+          extractIndustrialAttributes(industrialCategory, {
+            description: normalized.description,
+            size: normalized.size,
+            material: normalized.material,
+            grade: normalized.grade,
+            pressureRating: normalized.pressureRating,
+            schedule: normalized.schedule,
+            standard: normalized.standard,
+            brand: normalized.brand,
+            quantity: normalized.quantity,
+            unit: normalized.unit,
+            otherSpecs: normalized.otherSpecs,
+          }),
+          { confidence: normalized.confidence ?? {} },
+        );
+        for (const label of industrialSpec.missingRequired) {
+          // Avoid duplicate labels that differ only by case ("Size" vs "size").
+          const exists = [...missing].some((entry) => entry.toLowerCase() === label.toLowerCase());
+          if (!exists) missing.add(label);
+        }
+      }
+    }
+
+    const quantityMissing = normalized.quantity == null || !(normalized.quantity > 0);
     return {
       ...normalized,
       missingFields: [...missing],
-      clarificationQuestion: buildClarificationQuestion(normalized, [...missing]),
+      industrialSpec,
+      clarificationQuestion:
+        industrialSpec && !quantityMissing
+          ? industrialClarificationQuestion(industrialSpec, normalized.description) ??
+            buildClarificationQuestion(normalized, [...missing])
+          : buildClarificationQuestion(normalized, [...missing]),
     };
   });
 }
@@ -258,12 +318,18 @@ export type ExtractionOutput = {
   aiError?: string;
 };
 
-export async function extractEnquiry(input: ExtractionInput): Promise<ExtractionOutput> {
+export async function extractEnquiry(
+  input: ExtractionInput,
+  options: { industrial?: boolean } = {},
+): Promise<ExtractionOutput> {
   const documents = input.documents;
-  const ruleItems = finalizeItems([
-    ...parseLineItems(input.text, "message"),
-    ...documents.flatMap((doc) => parseLineItems(doc.text, `${doc.filename}`)),
-  ]);
+  const ruleItems = finalizeItems(
+    [
+      ...parseLineItems(input.text, "message"),
+      ...documents.flatMap((doc) => parseLineItems(doc.text, `${doc.filename}`)),
+    ],
+    options,
+  );
 
   // Nothing parseable must still become a reviewable line, never a silently
   // empty enquiry: the owner is asked for the quantity instead of the request
@@ -287,7 +353,7 @@ export async function extractEnquiry(input: ExtractionInput): Promise<Extraction
         missingFields: ["quantity"],
         confidence: {},
       },
-    ]);
+    ], options);
     ruleItems.push(...fallback);
   }
 
@@ -346,6 +412,6 @@ export async function extractEnquiry(input: ExtractionInput): Promise<Extraction
     };
   }
 
-  const items = finalizeItems(ai.data.items ?? []);
+  const items = finalizeItems(ai.data.items ?? [], options);
   return { extraction: ai.data, items, source: "ai" };
 }

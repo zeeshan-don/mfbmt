@@ -2,6 +2,10 @@ import { db } from "../db";
 import { parseJson, stringifyJson } from "../json";
 import { matchProduct } from "../inventory/matching";
 import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
+import {
+  industrialSpecFromFields,
+  parseIndustrialSpecJson,
+} from "../catalog/industrialSpec";
 import { recomputeOffersForItem } from "../costing/evaluate";
 import { buildSearchQueries } from "./queries";
 import { getSearchAdapters } from "./registry";
@@ -16,7 +20,7 @@ import type { AdapterContext, CoverageEntry, SourcingCandidate } from "./types";
 
 const PAGE_FETCH_LIMIT = 5;
 
-function candidateSpecs(candidate: SourcingCandidate) {
+function candidateSpecs(candidate: SourcingCandidate, category: string | null | undefined) {
   const stored = parseJson<Record<string, unknown>>(
     typeof candidate.evidence?.specs === "string" ? (candidate.evidence.specs as string) : "{}",
     {},
@@ -34,6 +38,16 @@ function candidateSpecs(candidate: SourcingCandidate) {
     schedule: pick("schedule"),
     standard: pick("standard"),
     brand: pick("brand"),
+    industrialSpec: industrialSpecFromFields(category, {
+      description,
+      size: pick("size"),
+      material: pick("material"),
+      grade: pick("grade"),
+      pressureRating: pick("pressureRating"),
+      schedule: pick("schedule"),
+      standard: pick("standard"),
+      brand: pick("brand"),
+    }),
     fastenerSpec: parseFastenerSpec({
       description,
       size: pick("size"),
@@ -231,6 +245,7 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
     schedule: item.schedule,
     standard: item.standard,
     fastenerSpec: parseFastenerSpecJson(item.fastenerSpecJson),
+    industrialSpec: parseIndustrialSpecJson(item.industrialSpecJson),
   };
 
   let offerCount = 0;
@@ -238,7 +253,7 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
   const supplierNames = new Set<string>();
 
   for (const candidate of uniqueCandidates) {
-    const specs = candidateSpecs(candidate);
+    const specs = candidateSpecs(candidate, item.category);
     const match = matchProduct(requestSpec, specs, { strictStandard: Boolean(item.standard), equivalences });
     supplierNames.add(candidate.supplierName);
 

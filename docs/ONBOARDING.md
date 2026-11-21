@@ -43,3 +43,17 @@ in at `/login?org=<slug>` and completes legal identity, TRN, address, currency, 
 quotation prefix, categories, inventory, suppliers, WhatsApp, email, AI/search and pricing. Nothing is
 pre-filled with fake data and no integration is marked connected without a successful provider test.
 A full checklist and the operator-only provisioning limits are in `docs/MULTITENANCY.md`.
+
+## Secure OGS owner invitation (21 November 2026)
+
+The preferred provisioning flow creates a one-time invitation; it does not set or print an initial password. The token is stored only as a hash, expires, and is written to a `0600` file for handoff (default `owner-invite-ogs.txt`). The invitee opens `/accept-invite?token=...` and sets their own password.
+
+```bash
+ORG_SLUG=ogs \
+CONFIRM_ORGANIZATION=ogs \
+OWNER_EMAIL='<approved-ogs-owner-email>' \
+OWNER_NAME='<approved-ogs-owner-name>' \
+npm run provision:owner:invite
+```
+
+The script masks any manual password prompt, verifies the organization exists and is ACTIVE, and refuses to reset an existing owner. If the email already belongs to another tenant (including MFBMT), it stops with a conflict instead of reusing or moving that account. An existing MFBMT owner is never touched. Do not run this for the real OGS owner until the owner has supplied and approved those details.

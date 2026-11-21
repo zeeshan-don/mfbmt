@@ -2,20 +2,84 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { env, MAX_UPLOAD_MB } from "./env";
+import {
+  buildTenantAttachmentKey,
+  configuredRemoteDriver,
+  storageConfigProblems,
+  storageKeyOwnership,
+  type KeyOwnership,
+} from "./storage-config";
 
 /**
  * File storage with two drivers:
- *  - `local`  persistent server volume (development, or a VPS with a mounted disk)
+ *  - `local`  a persistent server volume (development, or a self-hosted disk)
  *  - `s3`     any S3-compatible object store (Cloudflare R2, AWS S3, MinIO)
  *
- * Objects are private. Downloads go through the application (authenticated or
- * HMAC-signed) or a short-lived presigned URL; there is no public bucket URL.
+ * Production is fail-closed: an unknown driver, a half-configured bucket or
+ * local disk without an explicit persistent-volume opt-in stops every file
+ * operation with a clear error instead of silently writing to ephemeral disk.
+ *
+ * Objects are private. There is no public bucket URL and no ACL is applied.
+ * Reads go through the application (authenticated or HMAC-signed) or a
+ * short-lived presigned URL.
  */
 
 const STORAGE_ROOT = path.resolve(process.cwd(), env.STORAGE_ROOT);
-const DRIVER = env.STORAGE_DRIVER === "s3" ? "s3" : "local";
+const DRIVER = configuredRemoteDriver(env) ?? "local";
 
 export const storageDriver = DRIVER;
+
+export class StorageUnavailableError extends Error {
+  readonly problems: string[];
+
+  constructor(problems: string[]) {
+    super(
+      `Persistent file storage is not configured correctly. File operations are blocked. ${problems
+        .slice(0, 2)
+        .join(" ")}`,
+    );
+    this.name = "StorageUnavailableError";
+    this.problems = problems;
+  }
+}
+
+function configProblems(): string[] {
+  return storageConfigProblems(env).map((problem) => `${problem.variable} ${problem.problem}`);
+}
+
+export type StorageReadiness = {
+  ok: boolean;
+  driver: "local" | "s3";
+  /** `persistent` is object storage or an explicitly allowed local volume. */
+  mode: "persistent" | "ephemeral" | "misconfigured";
+  detail: string;
+};
+
+/**
+ * Reports whether files can be stored durably. It performs no network call, so
+ * it is safe in a liveness probe and never exposes credentials. The full
+ * write/read/delete self-test is `testStorage()`.
+ */
+export function storageReadiness(): StorageReadiness {
+  const problems = configProblems();
+  if (problems.length > 0) {
+    return {
+      ok: false,
+      driver: DRIVER,
+      mode: "misconfigured",
+      detail: problems[0] ?? "Storage configuration is incomplete.",
+    };
+  }
+  if (DRIVER === "local") {
+    return {
+      ok: true,
+      driver: "local",
+      mode: env.NODE_ENV === "production" ? "persistent" : "ephemeral",
+      detail: "Local storage is writable on the configured volume.",
+    };
+  }
+  return { ok: true, driver: "s3", mode: "persistent", detail: "Object storage is configured." };
+}
 
 export const ALLOWED_TYPES = {
   "application/pdf": "pdf",
@@ -78,11 +142,23 @@ export function assertSafeKey(key: string): string {
     !normalized ||
     normalized.startsWith("/") ||
     normalized.includes("\u0000") ||
-    normalized.split("/").some((segment) => segment === ".." || segment === ".")
+    normalized.split("/").some((segment) => segment === ".." || segment === ".") ||
+    normalized.length > 512
   ) {
     throw new Error("Invalid storage key.");
   }
   return normalized;
+}
+
+/**
+ * Verifies that a key read for a database record belongs to the record's
+ * tenant. New tenant-scoped keys must match exactly. Legacy keys (written before
+ * tenant prefixes existed) have no tenant in the key, so they are only allowed
+ * for an existing database record whose organizationId has already been checked.
+ */
+export function keyBelongsToOrganization(key: string, organizationId: string): { ok: boolean; ownership: KeyOwnership } {
+  const ownership = storageKeyOwnership(assertSafeKey(key), organizationId);
+  return { ok: ownership !== "foreign", ownership };
 }
 
 export function assertAllowedUpload(
@@ -110,13 +186,22 @@ type S3Module = typeof import("@aws-sdk/client-s3");
 let s3Client: InstanceType<S3Module["S3Client"]> | null = null;
 let s3Module: S3Module | null = null;
 
+/** True only for AWS S3 itself, which supports SSE-S3 without extra setup. */
+function isAwsS3(): boolean {
+  const endpoint = (env.S3_ENDPOINT ?? "").trim();
+  return endpoint.length === 0 || /(^|\.)amazonaws\.com/i.test(endpoint);
+}
+
 async function s3(): Promise<{ module: S3Module; client: InstanceType<S3Module["S3Client"]> }> {
   if (!s3Module) s3Module = await import("@aws-sdk/client-s3");
   if (!s3Client) {
+    const endpoint = (env.S3_ENDPOINT ?? "").trim();
     s3Client = new s3Module.S3Client({
-      region: env.S3_REGION || "auto",
-      endpoint: env.S3_ENDPOINT || undefined,
-      forcePathStyle: env.S3_FORCE_PATH_STYLE === "true",
+      // R2 uses "auto"; AWS needs its real region. Storage configuration
+      // validation guarantees a usable combination before this runs.
+      region: endpoint ? (env.S3_REGION?.trim() || "auto") : env.S3_REGION,
+      endpoint: endpoint || undefined,
+      forcePathStyle: (env.S3_FORCE_PATH_STYLE ?? "false").toLowerCase() === "true",
       credentials: {
         accessKeyId: env.S3_ACCESS_KEY_ID,
         secretAccessKey: env.S3_SECRET_ACCESS_KEY,
@@ -136,12 +221,15 @@ function localPath(key: string): string {
   return resolved;
 }
 
-/** Writes an object and returns its key. */
+/** Writes an object and returns its key. Fails closed on a storage misconfiguration. */
 export async function saveBuffer(
   buffer: Buffer,
   key: string,
   contentType = "application/octet-stream",
 ): Promise<{ storagePath: string; sha256: string; sizeBytes: number }> {
+  const problems = configProblems();
+  if (problems.length > 0) throw new StorageUnavailableError(problems);
+
   const safeKey = assertSafeKey(key);
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
   if (DRIVER === "s3") {
@@ -152,7 +240,9 @@ export async function saveBuffer(
         Key: safeKey,
         Body: buffer,
         ContentType: contentType,
-        ServerSideEncryption: env.S3_ENDPOINT.includes("amazonaws.com") ? "AES256" : undefined,
+        // No ACL is sent: the bucket must remain private. R2 does not implement
+        // object ACLs, and S3 buckets should deny public access at bucket level.
+        ServerSideEncryption: isAwsS3() ? "AES256" : undefined,
       }),
     );
   } else {
@@ -164,6 +254,9 @@ export async function saveBuffer(
 }
 
 export async function readBuffer(key: string): Promise<Buffer> {
+  const problems = configProblems();
+  if (problems.length > 0) throw new StorageUnavailableError(problems);
+
   const safeKey = assertSafeKey(key);
   if (DRIVER === "s3") {
     const { module, client } = await s3();
@@ -176,8 +269,14 @@ export async function readBuffer(key: string): Promise<Buffer> {
 }
 
 export async function objectExists(key: string): Promise<boolean> {
+  const safeKey = assertSafeKey(key);
   try {
-    await readBuffer(key);
+    if (DRIVER === "s3") {
+      const { module, client } = await s3();
+      await client.send(new module.HeadObjectCommand({ Bucket: env.S3_BUCKET, Key: safeKey }));
+      return true;
+    }
+    await fs.access(localPath(safeKey));
     return true;
   } catch {
     return false;
@@ -203,36 +302,46 @@ export async function presignedDownloadUrl(
   if (DRIVER !== "s3") return null;
   const { module, client } = await s3();
   const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+  const dispositionFilename = sanitizeFilename(filename).replace(/["\\\r\n]/g, "");
   return getSignedUrl(
     client,
     new module.GetObjectCommand({
       Bucket: env.S3_BUCKET,
       Key: assertSafeKey(key),
-      ResponseContentDisposition: `attachment; filename="${filename.replace(/["\\]/g, "")}"`,
+      ResponseContentDisposition: `attachment; filename="${dispositionFilename}"`,
     }),
-    { expiresIn: Math.max(30, ttlSeconds) },
+    { expiresIn: Math.min(3600, Math.max(30, ttlSeconds)) },
   );
 }
 
-export async function saveAttachment(
+/**
+ * Stores an attachment under an organization-scoped key.
+ * The organization id must come from server-side tenant context.
+ */
+export async function saveAttachmentForOrganization(
   buffer: Buffer,
   filename: string,
+  organizationId: string,
+  options: { now?: Date } = {},
 ): Promise<{ storedName: string; storagePath: string; sha256: string; sizeBytes: number }> {
-  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-  const ext = path.extname(filename).slice(0, 8);
-  const storedName = `${sha256.slice(0, 24)}-${crypto.randomBytes(6).toString("hex")}${ext}`;
-  const month = new Date().toISOString().slice(0, 7);
-  const stored = await saveBuffer(buffer, `attachments/${month}/${storedName}`);
-  return { storedName, storagePath: stored.storagePath, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
+  if (!organizationId) throw new Error("A tenant is required to store a file.");
+  const extension = path.extname(filename).slice(0, 8);
+  const objectName = crypto.randomBytes(16).toString("hex");
+  const month = (options.now ?? new Date()).toISOString().slice(0, 7);
+  const key = buildTenantAttachmentKey(organizationId, objectName, month, extension);
+  const stored = await saveBuffer(buffer, key);
+  return { storedName: path.basename(key), storagePath: stored.storagePath, sha256: stored.sha256, sizeBytes: stored.sizeBytes };
 }
 
 export async function readAttachment(storagePath: string): Promise<Buffer> {
   return readBuffer(storagePath);
 }
 
-/** Verifies the storage driver can write and read back. */
+/** Verifies the storage driver can write, read back and delete a probe object. */
 export async function testStorage(): Promise<{ ok: boolean; detail: string }> {
-  const key = `health/${Date.now()}-${crypto.randomBytes(4).toString("hex")}.txt`;
+  const readiness = storageReadiness();
+  if (!readiness.ok) return { ok: false, detail: readiness.detail };
+  const key = `system/health/${Date.now()}-${crypto.randomBytes(6).toString("hex")}.txt`;
   try {
     await saveBuffer(Buffer.from("ok"), key, "text/plain");
     const read = await readBuffer(key);
@@ -242,8 +351,8 @@ export async function testStorage(): Promise<{ ok: boolean; detail: string }> {
       ok: true,
       detail:
         DRIVER === "s3"
-          ? `Object storage ${env.S3_BUCKET} is writable and readable.`
-          : `Local storage ${env.STORAGE_ROOT} is writable and readable.`,
+          ? "Object storage is writable and readable."
+          : "Local storage volume is writable and readable.",
     };
   } catch (error) {
     return {

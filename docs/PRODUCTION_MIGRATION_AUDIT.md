@@ -427,3 +427,8 @@ Still required before Production migration:
 8. Run post-deployment health, worker, and provider checks.
 
 This report stops after Preview preparation and waits for the staging connection and explicit authorization.
+## Addendum — 21 November 2026 (production hardening; NOT applied)
+
+A new additive, forward-only migration was prepared: `20261121120000_ogs_procurement_hardening`. It adds `Organization.procurementProfile`, industrial spec JSON on enquiry items/products, supplier reply correlation fields, `SupplierEmailReply`, `Attachment.supplierReplyId`, and `OwnerInvitation`. Existing columns and records are not rewritten.
+
+This migration was applied and tested only against isolated local databases (`mfbmt_test`, `mfbmt_e2e`). It has **not** been applied to the production Neon database, and no production schema or data was modified. The historical audit above is unchanged. A future migration remains a separately authorized deployment step, after a verified backup and with the release checklist.

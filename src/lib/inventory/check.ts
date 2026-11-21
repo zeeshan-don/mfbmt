@@ -2,6 +2,10 @@ import { db } from "../db";
 import { parseJson, stringifyJson } from "../json";
 import { parseFastenerSpecJson } from "../fasteners/spec";
 import {
+  industrialSpecFromFields,
+  parseIndustrialSpecJson,
+} from "../catalog/industrialSpec";
+import {
   availableQuantity,
   isStockStale,
   matchProduct,
@@ -157,6 +161,7 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
           schedule: item.schedule,
           standard: item.standard,
           fastenerSpec: parseFastenerSpecJson(item.fastenerSpecJson),
+          industrialSpec: parseIndustrialSpecJson(item.industrialSpecJson),
         },
         {
           description: product.name,
@@ -169,6 +174,20 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
           schedule: product.schedule,
           standard: product.standard,
           fastenerSpec: parseFastenerSpecJson(product.fastenerSpecJson),
+          industrialSpec:
+            parseIndustrialSpecJson(product.industrialSpecJson) ??
+            industrialSpecFromFields(product.category, {
+              description: product.name,
+              size: product.size,
+              material: product.material,
+              grade: product.grade,
+              pressureRating: product.pressureRating,
+              schedule: product.schedule,
+              standard: product.standard,
+              brand: product.brand,
+              otherSpecs: parseJson<Record<string, string>>(product.specs, {}),
+            }),
+          otherSpecs: parseJson<Record<string, string>>(product.specs, {}),
         },
         { equivalences },
       );

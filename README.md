@@ -119,3 +119,11 @@ npm run db:seed        # local demo data only (refuses in production)
 ## Honest status
 
 The workflow, controls, privacy rules and pricing logic are implemented and covered by automated tests. Live provider calls (Meta, Google, Microsoft, AI, web search) can only be verified with MFBMT's own credentials: the code paths, setup UI and failure reporting are complete, but no live call has been made without credentials. See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before promising anything to the customer.
+
+## Production hardening — 21 November 2026
+
+Private object storage (Cloudflare R2 / AWS S3) is now required in production; local disk is development-only unless a persistent volume is explicitly allowed. New attachments and quotation PDFs use tenant-scoped keys under `organizations/{organizationId}/...`, with legacy `attachments/...` keys accepted only after an ownership check. See `docs/STORAGE.md`.
+
+OGS industrial extraction is opt-in per organization through `Organization.procurementProfile` (`GENERAL` by default, `INDUSTRIAL` for OGS). MFBMT's fastener engine is unchanged. Supplier email replies from Gmail and Microsoft 365 are correlated to RFQs using provider IDs, reply headers or a stored `RFQ-` token; ambiguous replies go to `/suppliers/replies` for owner review. Owner onboarding now uses a single-use invitation instead of an initial password, and `/integrations` exposes non-destructive provider diagnostics.
+
+Implementation details and the deployment checklist are in `docs/INDUSTRIAL_SPECS.md`, `docs/SUPPLIER_EMAIL_INGESTION.md`, `docs/ONBOARDING.md`, `docs/INTEGRATION_DIAGNOSTICS.md` and `docs/PRODUCTION_RELEASE_CHECKLIST.md`.

@@ -1,0 +1,185 @@
+# BACKLOG — OGS production readiness
+
+Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-only task (account, approval, credentials, client data, contract). A fresh session reads `STATUS.md` first, then this file, and resumes at the first unchecked non-human task.
+
+## Phase 0 — Read, baseline, memory
+
+- [ ] Read README.md and every file in docs/; record doc/code disagreements in STATUS.md.
+- [ ] Create STATUS.md with feature states and baseline command output.
+- [ ] Run `npm run check`; record typecheck, tests and build baseline.
+- [ ] Create this BACKLOG.md and commit the baseline state.
+
+## Phase 1 — Production safety
+
+- [ ] Add Vercel cron entries for `/api/cron/process-jobs` and `/api/cron/email-sync` every 5 minutes.
+- [ ] Prove two runners cannot execute the same job; add a two-runner concurrency test.
+- [ ] Add an HTTP health server to the worker and a `livenessProbe` in `vercel.json`.
+- [ ] Graceful SIGTERM/SIGINT: finish or release the current job, then close the health server and database.
+- [ ] Verify production refuses local-disk storage; document S3 requirement.
+- [ ] Add `npm run check:storage` that writes, reads and deletes a test object.
+- [ ] Bake Tesseract language data into Dockerfile.worker.
+- [ ] Make OCR failure explicit, never a silent skip.
+- [ ] Add owner alerts for dead-letter jobs, stale worker heartbeat and failing connected integrations.
+- [ ] Add a daily failure digest.
+- [ ] Add TOTP MFA for OWNER and admin roles, with hashed recovery codes and replay protection.
+- [ ] Add MFA enrollment/challenge UI and recovery-code regeneration.
+- [ ] Preserve existing login rate limiting and add MFA tests.
+- [ ] Phase 1: `npm run check` green, commit, update STATUS.md.
+
+## Phase 2 — Cost control and billing evidence
+
+- [ ] Add `AiUsage` table with organization, job type, model, input/output tokens, estimated cost, timestamp.
+- [ ] Record provider usage for every AI call; never estimate tokens when the provider supplies usage.
+- [ ] Add per-organization limits: max sourced items/enquiry (default 5), max search queries/item (default 2; OGS 3), web-search on/off, monthly AI budget, monthly enquiry allowance.
+- [ ] Enforce limits with graceful degradation and owner-visible warnings.
+- [ ] Add 80% and 100% allowance warnings.
+- [ ] Add organization-scoped search/page cache with configurable TTL (default 7 days).
+- [ ] Add monthly usage report page and CSV/PDF export with AED conversion.
+- [ ] Include enquiries, RFQs, AI tokens/cost, search credits, quotations sent in the report.
+- [ ] Add optional stronger-model second pass for low-confidence extraction, off by default, separately metered.
+- [ ] Add tenant-isolation and deterministic-cost tests.
+- [ ] Phase 2: `npm run check` green, commit, update STATUS.md.
+
+## Phase 3 — OGS product coverage
+
+- [ ] Wire all six existing OGS categories end to end: extraction prompt, deterministic fallback, review UI, inventory matching, sourcing, comparison, quotation lines.
+- [ ] Add Gaskets schema: type, size, pressure class, material/filler, standard.
+- [ ] Add Insulation Kit schema.
+- [ ] Add Bolting schema: stud/hex bolts, nuts, washers, U-bolts, threaded bars; ASTM A193 B7/B7M/B8/B8M/L7/L7M; A194 2H/2HM/8/8M/7/4.
+- [ ] Fix fastener grade parsing for A194 nut grades and add tests.
+- [ ] Decide/document bolting engine choice (fastener vs industrial) with a test proving the decision.
+- [ ] Detect service lines (machining, hydrotesting, plating, NDT, PMI); flag them and route to manual quoting without sourcing.
+- [ ] Add domain vocabulary: UNS, ASTM/API/ASME, schedules, classes 150–2500, RF/FF/RTJ, BW/SW/THD/FLGD, NPS/DN, per-meter/length, random/double random, NACE/sour service.
+- [ ] Make unknown/conflicting attributes produce INSUFFICIENT or NO_MATCH; never guess.
+- [ ] Require an explicitly approved substitution for material equivalence.
+- [ ] Add stated/configured unit conversions for meters, lengths, pieces and sets; never assume.
+- [ ] Use SDS/COA fields for chemicals; flag missing SDS in quotation checklist; no compliance claim.
+- [ ] Phase 3: `npm run check` green, commit, update STATUS.md.
+
+## Phase 4 — Supplier workflow
+
+- [ ] Put a reference token in every supplier RFQ subject and body; match replies by token and thread id.
+- [ ] Extract prices, MOQ, lead time, validity and currency from replies/PDF/Excel with AI + zod.
+- [ ] Store extracted replies as unverified draft offers with one-click human confirmation; never auto-approve.
+- [ ] Respect robots.txt, SSRF and size limits when fetching public supplier pages.
+- [ ] Extract and retain public emails, contact-page links and phones with source URL and retrieval time.
+- [ ] Create deduplicated prospect supplier records by domain, with category/country/source evidence.
+- [ ] Draft supplier RFQs from item specs when a result has no visible price, attaching prospect recipients.
+- [ ] Show all drafted RFQs for one enquiry on one screen with one recorded “approve and send selected” action.
+- [ ] Add optional auto-send to owner-verified suppliers only; default manual; full audit.
+- [ ] Add daily send limit per organization.
+- [ ] Add do-not-contact list enforcement.
+- [ ] Handle bounces and suppress bad addresses.
+- [ ] Enforce max one RFQ per supplier per item.
+- [ ] Send automatic reminder after configurable days without reply.
+- [ ] Add supplier directory fields: categories, countries, currencies, payment terms, typical lead time, last quoted prices.
+- [ ] Rank suppliers by category fit and past quotes.
+- [ ] Add supplier CSV import.
+- [ ] Show previous quoted/purchased prices for same item/customer with date and currency on sourcing/quotation screens.
+- [ ] Add provider-backed FX with daily caching and SAR, INR, EUR, CNY, KRW support.
+- [ ] Store FX rate and timestamp on every conversion; no rate => incomplete total, never assumed.
+- [ ] Phase 4: `npm run check` green, commit, update STATUS.md.
+
+## Phase 5 — Quotation quality
+
+- [ ] Add per-line full technical description, country of origin, certification offered, lead time, delivery terms, validity.
+- [ ] Add quotation revisions R0/R1/R2 with visible change summary.
+- [ ] Add Excel export beside PDF.
+- [ ] Use organization letterhead, terms and numbering from tenant settings.
+- [ ] Add pricing rules by organization, category and customer tier.
+- [ ] Add margin floors that block sending below floor without owner override and recorded reason.
+- [ ] Add outcome tracking: won/lost/no-response with reason.
+- [ ] Add report: response time, conversion rate, margin by category.
+- [ ] Add customer master (companies/contacts), linked to enquiries with quote history.
+- [ ] Phase 5: `npm run check` green, commit, update STATUS.md.
+
+## Phase 6 — Owner speed at 40 enquiries/day
+
+- [ ] Add approval email notifications with deep links.
+- [ ] Add WhatsApp approval notification only where the Cloud API window allows.
+- [ ] Add daily pending-approval digest.
+- [ ] Add inbox views: needs review, waiting on suppliers, ready to quote, overdue.
+- [ ] Add bulk actions for safe confirmation steps only; keep three approvals individual.
+- [ ] Add SLA timers with configurable overdue highlight.
+- [ ] Add dashboard: today's volume, backlog, median time to quote, spend vs monthly limits.
+- [ ] Phase 6: `npm run check` green, commit, update STATUS.md.
+
+## Phase 7 — Proof
+
+- [ ] Build golden dataset of ≥60 synthetic OGS enquiries across pipes, valves, flanges, fittings, bolting, gaskets, spares, chemicals, services, messy WhatsApp, Excel, text/scanned PDFs, ambiguous/incomplete and non-RFQ messages.
+- [ ] Store expected structured results alongside every golden case.
+- [ ] Add `npm run eval:extraction` with field-level accuracy by category, wrong-but-confident count, AI cost/enquiry.
+- [ ] Run eval with rules-only parser and with AI when a key exists.
+- [ ] Add `npm run verify:live` for AI, search, FX, storage, Gmail/Microsoft and WhatsApp when credentials exist.
+- [ ] Never mark Connected without a passing live test.
+- [ ] Add 60-enquiries/hour load test with attachments; report queue latency, CPU, memory, DB connections, dead letters.
+- [ ] Add OGS demo seed: ten synthetic enquiries, message to approved quotation PDF, checked by automated test.
+- [ ] Phase 7: `npm run check` green, commit, update STATUS.md.
+
+## Phase 8 — Documentation
+
+- [ ] Update README.md and docs/ to match verified reality.
+- [ ] Add docs/OGS_ONBOARDING.md with required client inputs.
+- [ ] Add docs/RUNBOOK.md: deploy, rollback, backup/restore, incidents.
+- [ ] Add docs/SERVICE_SCOPE.md: included, limits, out of scope.
+- [ ] Keep docs/LIMITATIONS.md honest and current.
+- [ ] Phase 8: `npm run check` green, commit, update STATUS.md.
+
+## Phase 9 — Audit gaps
+
+- [ ] Add .xls parsing.
+- [ ] Add .docx parsing.
+- [ ] Add safe .zip handling with count/size/nesting limits and no path traversal/execution.
+- [ ] Safely handle legacy .doc/.xlsb with a maintained library or retain + clearly flag manual entry.
+- [ ] Document each new parser/library choice and license.
+- [ ] Add per-organization WhatsApp approved-template configuration (name, language, variable mapping).
+- [ ] Use templates for supplier RFQs and customer quotations outside the 24-hour window.
+- [ ] Fail visibly with reason and offer email fallback when no template is configured.
+- [ ] Detect expired/revoked Gmail/Microsoft refresh tokens.
+- [ ] Add persistent reconnect banner and owner alert email.
+- [ ] Enforce soft stock reservations when a quotation is approved, with owner override.
+- [ ] Implement multi-unit conversions for inventory/quotation.
+- [ ] Add saved inventory column-mapping profiles with diff preview on re-import.
+- [ ] Add Arabic and mixed Arabic/English golden cases; ensure classification/extraction/review layout holds.
+- [ ] Add configurable message/attachment retention per organization.
+- [ ] Add per-organization data export and safe cascading delete, fully audited.
+- [ ] Add GitHub Actions CI with PostgreSQL service: typecheck, lint, unit tests, build.
+- [ ] Add Playwright main-pipeline test including phone viewport.
+- [ ] Add structured logs with request/job ids.
+- [ ] Add optional error tracking configured only by env var.
+- [ ] Add Settings observability page: queue depth, last heartbeat, last sync, failed jobs with retry.
+- [ ] Add scripted pg_dump backup/restore and run a restore drill against a scratch database; record in STATUS.
+- [ ] Extend operator CLI: create organization + first owner, suspend/reactivate, rotate credential key safely, export monthly usage.
+- [ ] Document operator CLI.
+- [ ] Phase 9: `npm run check` green, commit, update STATUS.md.
+
+## Phase 10 — Go-live automation and human hand-off
+
+- [ ] Add `npm run check:golive` for ogs: env, DB/migrations, storage round trip, worker heartbeat, cron secret, integration live results, FX, letterhead/terms, inventory, one verified supplier.
+- [ ] Print PASS/FAIL per line and exact human remediation for every FAIL.
+- [ ] Complete and comment `.env.production.example` with every variable and where to obtain it.
+- [ ] Add docs/HUMAN_TASKS.md generated from code/capabilities, ordered, with owner/time/links; human tasks only.
+- [ ] Add docs/DEMO_SCRIPT.md with exact 15-minute click path and synthetic data.
+- [ ] Add seed command creating demo data only outside production.
+- [ ] Phase 10: `npm run check` green, commit, update STATUS.md.
+
+## Phase 11 — Self-audit finish line
+
+- [ ] Search repo for TODO, FIXME, stub, mock, placeholder, “not implemented”, unused routes/screens/exports, broken-default feature flags.
+- [ ] Run check, Playwright, eval:extraction, load test and check:golive.
+- [ ] Fix every finding; update BACKLOG/STATUS; commit.
+- [ ] Final report: built work, test/eval results, unverified items, exact human tasks, risks.
+- [ ] Definition of done verified: check/tenant/eval/load pass; OGS onboardable from docs; STATUS has every feature state; no non-human unchecked tasks; golive fails only on HUMAN_TASKS; final risk table.
+
+## Human tasks (not code)
+
+- [H] Approve and supply OGS owner name/email; authorize owner provisioning.
+- [H] Create/approve Meta app, Business verification, WhatsApp number and templates.
+- [H] Google OAuth consent/verification and mailbox access.
+- [H] Microsoft app registration/admin consent and mailbox access.
+- [H] Provide AI, search and FX API accounts/keys.
+- [H] Create Vercel, Neon/PostgreSQL and private bucket accounts; set production env vars.
+- [H] Provide domain/DNS and TLS.
+- [H] Supply inventory file, supplier list, letterhead, terms, approval users, customer data.
+- [H] Approve production migration window/backup and production deployment.
+- [H] Run supervised pilot, send real supplier/customer messages, and accept commercial terms.

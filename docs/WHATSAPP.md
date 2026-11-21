@@ -40,3 +40,9 @@ that company's tenant context. Each company stores its own WABA ID, Phone Number
 a phone ID may be active for only one company. Delivery/read events, duplicate retries and send
 failures remain idempotent and tenant-scoped. Embedded Signup state is signed and bound to the
 initiating user and organization. Live Meta verification still requires real credentials.
+
+## Intake concurrency and industrial extraction (21 November 2026)
+
+Concurrent messages from one WhatsApp sender now resolve to a single conversation via an atomic database constraint with a unique-violation fallback, instead of a racy read-then-create. This was found by the 30-request synthetic burst. Inbound processing remains idempotent by provider message id, and WhatsApp sending still requires explicit owner approval and the existing template/window rules.
+
+For `INDUSTRIAL` organizations, WhatsApp text and supported attachments feed the OGS industrial extraction path; `GENERAL` organizations keep the existing fastener behavior.

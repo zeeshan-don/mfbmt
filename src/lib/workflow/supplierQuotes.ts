@@ -8,6 +8,7 @@ import { activeEmailProvider, sendEmail } from "../email/send";
 import { getWhatsAppCredentials } from "../integrations/whatsapp";
 import { buildSpecSummary } from "../catalog/normalize";
 import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
+import { industrialSpecFromFields, parseIndustrialSpecJson } from "../catalog/industrialSpec";
 import { getCurrentOrganization } from "../organization";
 
 function quoteLink(token: string): string {
@@ -20,8 +21,10 @@ export function draftSupplierMessage(input: {
   enquiryRef: string;
   items: Array<{ description: string; quantity: number; unit: string; specs?: string | null }>;
   link: string;
+  correlationToken?: string | null;
 }): { subject: string; body: string } {
-  const subject = `Quotation request ${input.enquiryRef} — ${input.companyName}`;
+  const reference = input.correlationToken ? ` [RFQ-${input.correlationToken}]` : "";
+  const subject = `Quotation request ${input.enquiryRef} — ${input.companyName}${reference}`;
   const lines = input.items.map(
     (item, index) =>
       `${index + 1}. ${item.description} — ${item.quantity} ${item.unit}${
@@ -36,6 +39,7 @@ export function draftSupplierMessage(input: {
     ...lines,
     "",
     "Kindly confirm unit price, minimum order quantity, availability, lead time and quote validity.",
+    ...(input.correlationToken ? [`Reference: RFQ-${input.correlationToken}`] : []),
     `You can submit your quotation securely here: ${input.link}`,
     "",
     "Thank you,",
@@ -66,11 +70,16 @@ export async function createSupplierQuoteRequest(input: {
 
   const crypto = await import("node:crypto");
   const token = crypto.randomBytes(24).toString("base64url");
+  // Opaque reference embedded in the RFQ so a reply can be correlated even when
+  // the provider does not preserve thread headers. It is not a secret and grants
+  // no access by itself.
+  const correlationToken = crypto.randomBytes(8).toString("hex").toUpperCase();
   const quote = await db.supplierQuote.create({
     data: {
       supplierId: supplier.id,
       enquiryItemId: item.id,
       token,
+      correlationToken,
       status: "AWAITING_APPROVAL",
       expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
       items: {
@@ -116,6 +125,7 @@ export async function createSupplierQuoteRequest(input: {
       },
     ],
     link: quoteLink(token),
+    correlationToken,
   });
 
   await db.supplierQuote.update({
@@ -191,7 +201,19 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
   if (quote.supplier.email && emailProvider !== "none") {
     const sent = await sendEmail({ to: quote.supplier.email, subject, text: body });
     if (!sent.ok) return { ok: false, detail: sent.error };
-    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date() } });
+    // The Gmail send response carries the provider ids needed to correlate the
+    // reply. When the provider does not return them, the RFQ token is still used.
+    const providerIds = sent.providerIds ?? null;
+    await db.supplierQuote.update({
+      where: { id: quote.id },
+      data: {
+        status: "SENT",
+        sentAt: new Date(),
+        sentTo: quote.supplier.email,
+        providerThreadId: providerIds?.threadId ?? null,
+        providerMessageId: providerIds?.messageId ?? null,
+      },
+    });
     return { ok: true, detail: `Sent to ${quote.supplier.email}.` };
   }
 
@@ -302,6 +324,22 @@ export async function recordSupplierResponse(
   if (input.propertyClass) offeredSpec.propertyClass = input.propertyClass;
   if (input.finish) offeredSpec.finish = input.finish as typeof offeredSpec.finish;
 
+  const requestedIndustrial = parseIndustrialSpecJson(requested.industrialSpecJson);
+  const offeredIndustrial = requestedIndustrial
+    ? industrialSpecFromFields(
+        requestedIndustrial.category,
+        {
+          description: input.offeredDescription ?? requested.description,
+          size: input.size ?? null,
+          material: input.material ?? null,
+          grade: input.grade ?? null,
+          pressureRating: input.pressureRating ?? null,
+          standard: input.standard ?? null,
+        },
+        { source: "SUPPLIER_CONFIRMED" },
+      )
+    : null;
+
   const equivalences = await db.materialEquivalence.findMany({
     where: { isActive: true },
     select: { requestedMaterial: true, offeredMaterial: true, requestedGrade: true, offeredGrade: true, reason: true },
@@ -319,6 +357,7 @@ export async function recordSupplierResponse(
       schedule: requested.schedule,
       standard: requested.standard,
       fastenerSpec: parseFastenerSpecJson(requested.fastenerSpecJson),
+      industrialSpec: requestedIndustrial,
     },
     {
       description: input.offeredDescription ?? requested.description,
@@ -328,6 +367,7 @@ export async function recordSupplierResponse(
       pressureRating: input.pressureRating ?? null,
       standard: input.standard ?? null,
       fastenerSpec: offeredSpec,
+      industrialSpec: offeredIndustrial,
     },
     { strictStandard: Boolean(requested.standard), equivalences },
   );

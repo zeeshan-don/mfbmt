@@ -5,7 +5,15 @@ import { parseJson, stringifyJson } from "../json";
 import { classifyMessage } from "../ai/classify";
 import { extractEnquiry, type SourceDocument } from "../ai/extract";
 import { extractDocument } from "../intake/documents";
-import { assertAllowedUpload, saveAttachment, readAttachment, sniffType } from "../storage";
+import {
+  assertAllowedUpload,
+  saveAttachmentForOrganization,
+  readAttachment,
+  sniffType,
+  storageReadiness,
+} from "../storage";
+import { requireTenantId } from "../tenant";
+import { getCurrentOrganization } from "../organization";
 import { applyInventoryCheck } from "../inventory/check";
 import { enqueueJob } from "./jobs";
 import { nextEnquiryRef } from "./sequences";
@@ -131,18 +139,35 @@ export async function ingestInboundMessage(input: IngestInput): Promise<IngestRe
     identity.email ??
     (identity.phone || input.from).toLowerCase();
 
-  const conversation =
-    (await db.conversation.findFirst({
-      where: { channel: input.channel, externalId: conversationKey },
-    })) ??
-    (await db.conversation.create({
-      data: {
+  // Concurrent messages from the same sender must share one conversation. A
+  // read-then-create is not safe under a burst (two workers both see nothing),
+  // so let the database resolve the unique key atomically.
+  const conversationOrganizationId = await requireTenantId();
+  const conversationWhere = {
+    organizationId_channel_externalId: {
+      organizationId: conversationOrganizationId,
+      channel: input.channel,
+      externalId: conversationKey,
+    },
+  };
+  // The tenant guard adds an extra filter to `where`, which makes Prisma fall
+  // back to a read-then-write upsert. If two senders race, the loser gets P2002;
+  // the winner's row is already committed, so resolve it rather than failing.
+  const conversation = await db.conversation
+    .upsert({
+      where: conversationWhere,
+      update: {},
+      create: {
         channel: input.channel,
         externalId: conversationKey,
         contactId: contact.id,
         subject: excluded ? null : (input.subject ?? null),
       },
-    }));
+    })
+    .catch((error: unknown) => {
+      if ((error as { code?: string } | null)?.code !== "P2002") throw error;
+      return db.conversation.findUniqueOrThrow({ where: conversationWhere });
+    });
 
   const bodyText = excluded ? "" : input.body.slice(0, 20_000);
 
@@ -187,13 +212,29 @@ export async function ingestInboundMessage(input: IngestInput): Promise<IngestRe
   }
 
   const warnings: string[] = [];
+  // Fail closed: a misconfigured storage driver must never write a file to
+  // ephemeral disk and pretend it is saved.
+  const organizationId = await requireTenantId();
+  const readiness = storageReadiness();
+  const hasIncomingFiles = (input.attachments?.length ?? 0) > 0 || (input.mediaRefs?.length ?? 0) > 0;
+  if (hasIncomingFiles && !readiness.ok) {
+    warnings.push(`Files could not be stored: ${readiness.detail}`);
+    await writeAudit({
+      action: "storage.unavailable",
+      entityType: "Message",
+      entityId: message.id,
+      actorLabel: "system",
+      meta: { detail: readiness.detail, files: (input.attachments?.length ?? 0) + (input.mediaRefs?.length ?? 0) },
+    });
+  }
   for (const file of input.attachments ?? []) {
+    if (!readiness.ok) break;
     const check = assertAllowedUpload(file.buffer, file.filename);
     if (!check.ok) {
       warnings.push(`${file.filename}: ${check.error}`);
       continue;
     }
-    const stored = await saveAttachment(file.buffer, check.filename);
+    const stored = await saveAttachmentForOrganization(file.buffer, check.filename, organizationId);
     try {
       await db.attachment.create({
         data: {
@@ -234,6 +275,12 @@ async function resolvePendingMedia(message: {
   const pending = meta.pendingMedia ?? [];
   if (pending.length === 0) return { downloaded: 0, failures: [] };
 
+  const readiness = storageReadiness();
+  if (!readiness.ok) {
+    return { downloaded: 0, failures: [readiness.detail] };
+  }
+  const organizationId = await requireTenantId();
+
   const failures: string[] = [];
   let downloaded = 0;
   const remaining: WhatsAppMediaRef[] = [];
@@ -257,7 +304,7 @@ async function resolvePendingMedia(message: {
       failures.push(`${filename}: ${check.error}`);
       continue;
     }
-    const stored = await saveAttachment(result.buffer, check.filename);
+    const stored = await saveAttachmentForOrganization(result.buffer, check.filename, organizationId);
     try {
       await db.attachment.create({
         data: {
@@ -563,11 +610,16 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
   }
 
   const sourceMessage = await db.message.findUnique({ where: { enquiryId: enquiry.id } });
-  const extraction = await extractEnquiry({
-    text: enquiry.rawText,
-    subject: sourceMessage?.subject ?? null,
-    documents,
-  });
+  const organization = await getCurrentOrganization();
+  const industrialSpecs = organization?.procurementProfile === "INDUSTRIAL";
+  const extraction = await extractEnquiry(
+    {
+      text: enquiry.rawText,
+      subject: sourceMessage?.subject ?? null,
+      documents,
+    },
+    { industrial: industrialSpecs },
+  );
 
   const unreadable = extraction.extraction.unreadableParts ?? [];
   let lineNo = 1;
@@ -594,6 +646,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
         clarificationQuestion: item.clarificationQuestion,
         reviewStatus: item.clarificationQuestion ? "NEEDS_CLARIFICATION" : "PENDING",
         extractedJson: stringifyJson(item),
+        industrialSpecJson: item.industrialSpec ? stringifyJson(item.industrialSpec) : null,
         fastenerSpecJson: item.fastenerSpec ? stringifyJson(item.fastenerSpec) : null,
         fastenerType: item.fastenerSpec?.type ?? null,
         diameter: item.fastenerSpec?.diameter ?? null,

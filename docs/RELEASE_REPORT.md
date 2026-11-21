@@ -186,3 +186,9 @@ configured in `.env`.
 - No billing/subscription implementation (out of scope; no fake billing state exists).
 - No automated accessibility, penetration or load audit.
 - Approvals are in-app only; the owner must sign in. The app never purchases or pays.
+
+## Addendum — 21 November 2026 (production hardening)
+
+Implemented private S3/R2 storage with tenant-scoped keys and fail-closed production behavior, OGS industrial extraction/matching behind `procurementProfile=INDUSTRIAL`, Gmail/Microsoft supplier-reply correlation with UNVERIFIED offer drafts and owner review, single-use owner invitations, organization-scoped integration diagnostics, and concurrency/idempotency fixes found by load testing. The two items listed under "Known limitations" as open above — OGS extraction-screen wiring and automatic supplier email reply matching — are now implemented; the original limitation list is retained as historical context.
+
+Verification in this working tree: typecheck passed, 24 Vitest files / 206 tests passed, Playwright 7/7 passed, production build passed, and a 30-request local synthetic burst completed with 30/30 ingested and 60/60 jobs completed after the conversation-race fix. No production migration, production env change, real outbound message, owner provisioning or deployment was performed.

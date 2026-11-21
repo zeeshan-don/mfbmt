@@ -98,3 +98,13 @@ The application is now tenant-aware end to end. `src/lib/db.ts` scopes every ten
 caller's async context (not inside a Prisma extension, which loses `AsyncLocalStorage`). Explicit
 webhook, supplier-token and job work runs inside `runWithTenant`. `Organization` is global; every
 business model carries `organizationId`. See `docs/MULTITENANCY.md`.
+
+## Production hardening (21 November 2026)
+
+File storage is a separate, fail-closed subsystem: `src/lib/storage-config.ts` validates driver configuration and builds/classifies tenant keys, while `src/lib/storage.ts` implements private S3/R2 or explicitly allowed local volumes. Web and worker share the same configuration; `/api/health` reports storage readiness separately instead of failing the whole application.
+
+Industrial enrichment is gated by `Organization.procurementProfile`. `INDUSTRIAL` organizations run the category schemas in `src/lib/catalog/industrialSpec.ts` through extraction, enquiry persistence, owner corrections, inventory matching and supplier matching. `GENERAL` organizations keep the existing fastener path.
+
+Supplier replies flow through `src/lib/email/sync.ts` into `src/lib/workflow/supplierReply.ts`, which correlates evidence, stores an organization-scoped `SupplierEmailReply`, retains attachments and creates an UNVERIFIED offer draft. Owner review is required before any offer is treated as confirmed.
+
+Integration diagnostics (`src/lib/integrations/diagnostics.ts`, `/integrations`, `/api/integrations/diagnostics`) only mark a provider connected after a real non-destructive check; stored credentials alone are reported as NOT_VERIFIED.

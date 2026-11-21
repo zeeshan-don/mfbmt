@@ -172,3 +172,9 @@ and restart web and worker. Each worker claim carries the job's `organizationId`
 mailbox-bound routing; Graph subscriptions must be renewed to carry the per-organization clientState;
 inbound email forwarders must send `x-organization-slug`. Health checks and queue/worker checks are
 unchanged. Roll back by restoring the pre-migration backup; the migration is forward-only.
+
+## Production storage and migration status (21 November 2026)
+
+Set `STORAGE_DRIVER=s3` with a private bucket and the provider-specific `S3_*` values before deploying file features. R2 requires its account endpoint with `S3_REGION=auto` and typically `S3_FORCE_PATH_STYLE=true`; AWS S3 uses the real AWS region and no endpoint. Local storage is refused in production unless `STORAGE_ALLOW_LOCAL_VOLUME=true` is set for a genuinely persistent volume. The worker must receive the same storage variables.
+
+The additive migration `20261121120000_ogs_procurement_hardening` is prepared and was tested only against isolated local databases. It has **not** been applied to production, and no production environment variable was changed. Apply it only in a separately authorized deployment with a verified backup, then run `npm run audit:attachments` and a storage self-test. Follow `docs/PRODUCTION_RELEASE_CHECKLIST.md`.

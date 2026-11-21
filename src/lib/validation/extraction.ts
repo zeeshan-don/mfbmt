@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FastenerSpecSchema } from "../fasteners/spec";
+import { IndustrialSpecSchema } from "../catalog/industrialSpec";
 
 export const CLASSIFICATION_VALUES = [
   "RFQ",
@@ -37,6 +38,8 @@ export const ExtractedItemSchema = z.object({
   otherSpecs: z.record(z.string(), z.string()).optional(),
   /** Structured fastener fields. Optional: the deterministic parser fills gaps from the text. */
   fastenerSpec: FastenerSpecSchema.optional(),
+  /** Versioned OGS industrial specification. Only present for industrial categories. */
+  industrialSpec: IndustrialSpecSchema.optional().nullable(),
   sourceRef: z.string().max(120).nullable().optional(),
   missingFields: z.array(z.string()).default([]),
   confidence: z.record(z.number().min(0).max(1)).default({}),

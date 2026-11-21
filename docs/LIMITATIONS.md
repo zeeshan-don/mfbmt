@@ -79,3 +79,11 @@ Everything below is a known, deliberate limit of this build. None of it is disgu
   category is not yet wired into the enquiry extraction screens.
 - A support-access workflow with explicit authorization and audit is not implemented; operators
   cannot read customer data.
+
+## Current verific
+
+## Current verification limits (21 November 2026)
+
+Live Gmail, Microsoft 365, WhatsApp, AI, web-search and exchange-rate checks were NOT executed because no provider credentials or dashboard access were used in this work. Their diagnostics report NOT_CONFIGURED or NOT_VERIFIED until an owner runs a real check; stored credentials alone are not treated as proof.
+
+The load test ran against an isolated local PostgreSQL database with mocked providers and one worker. Its timings are machine-specific and are not a production capacity guarantee. No production migration, production data change, real supplier/customer message, OGS owner provisioning or production deployment was performed.

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { storageDriver, testStorage } from "@/lib/storage";
+import { storageDriver, storageReadiness, testStorage } from "@/lib/storage";
 import { queueStats, workerLiveness } from "@/lib/workflow/jobs";
 
 export const runtime = "nodejs";
@@ -32,13 +32,21 @@ export async function GET(request: Request) {
   }
 
   const worker = await workerLiveness();
-  const overall = worker.status === "HEALTHY" ? "ok" : worker.status === "STALE" ? "degraded" : "unknown";
+  const storage = storageReadiness();
+  const overall =
+    worker.status === "HEALTHY" && storage.ok
+      ? "ok"
+      : worker.status === "STALE" || !storage.ok
+        ? "degraded"
+        : "unknown";
 
   const body: Record<string, unknown> = {
     status: overall,
     checks: {
       database: "reachable",
       worker: worker.status.toLowerCase(),
+      // Readiness only; the public body never includes bucket names, endpoints or credentials.
+      storage: storage.ok ? "ready" : "unavailable",
     },
     worker: {
       lastSeenAt: worker.lastSeenAt ? worker.lastSeenAt.toISOString() : null,
@@ -49,13 +57,19 @@ export async function GET(request: Request) {
 
   if (deep) {
     try {
-      const [queue, storage] = await Promise.all([queueStats(), testStorage()]);
+      const [queue, probe] = await Promise.all([queueStats(), testStorage()]);
       body.queue = queue;
-      body.storage = { driver: storageDriver, ok: storage.ok, detail: storage.detail };
+      body.storage = {
+        driver: storageDriver,
+        mode: storage.mode,
+        configured: storage.ok,
+        ok: probe.ok,
+        detail: probe.detail,
+      };
       body.workers = worker.workersSeen;
     } catch {
       body.queue = null;
-      body.storage = { driver: storageDriver, ok: false, detail: "Probe failed." };
+      body.storage = { driver: storageDriver, mode: storage.mode, configured: storage.ok, ok: false, detail: "Probe failed." };
     }
   }
 

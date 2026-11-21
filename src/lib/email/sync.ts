@@ -10,6 +10,7 @@ import { parseEmailAddress, parseEmailDisplayName } from "../intake/identity";
 import { activeEmailProvider } from "./send";
 import { graphClientState } from "./routing";
 import { requireTenantId } from "../tenant";
+import { ingestSupplierReply } from "../workflow/supplierReply";
 
 /**
  * Automatic mailbox intake.
@@ -203,6 +204,8 @@ async function gmailMessage(
 
   const subject = header(payload, "Subject") ?? "";
   const messageId = header(payload, "Message-ID") ?? `gmail-${message.id}`;
+  const inReplyTo = header(payload, "In-Reply-To");
+  const references = header(payload, "References");
   const acc = { plain: "", html: "", attachments: [] as Array<{ filename: string; attachmentId: string }> };
   collectParts(payload, acc);
 
@@ -226,14 +229,46 @@ async function gmailMessage(
   }
 
   const accepted = await ingestAttachmentSet(attachments, attachmentFailures);
+  const plainBody = bodyText(acc);
+  const receivedAt = message.internalDate ? new Date(Number(message.internalDate)) : new Date();
+
+  // A reply from a known supplier is routed to the RFQ ingestion path first. If
+  // it is not a supplier email, normal customer intake continues unchanged.
+  const supplierReply = await ingestSupplierReply({
+    provider: "GMAIL",
+    externalMessageId: messageId,
+    providerThreadId: message.threadId ?? null,
+    internetMessageId: messageId,
+    inReplyTo,
+    references,
+    from,
+    fromName: parseEmailDisplayName(rawFrom),
+    subject,
+    body: plainBody,
+    receivedAt,
+    attachments: accepted,
+  });
+  if (supplierReply.handled) {
+    if (attachmentFailures.length > 0) {
+      await writeAudit({
+        action: "email.attachment_failed",
+        entityType: "SupplierEmailReply",
+        entityId: supplierReply.replyId ?? null,
+        actorLabel: "system",
+        meta: { failures: attachmentFailures },
+      });
+    }
+    return { ok: true, ingested: !supplierReply.duplicate };
+  }
+
   const result = await ingestInboundMessage({
     channel: "EMAIL",
     externalMessageId: messageId,
     from,
     fromName: parseEmailDisplayName(rawFrom),
     subject,
-    body: bodyText(acc),
-    receivedAt: message.internalDate ? new Date(Number(message.internalDate)) : new Date(),
+    body: plainBody,
+    receivedAt,
     conversationExternalId: message.threadId ?? null,
     attachments: accepted,
   });
@@ -419,7 +454,7 @@ async function ensureGmailWatch(
 // ---------------------------------------------------------------------------
 
 const GRAPH_SELECT =
-  "id,conversationId,internetMessageId,subject,from,receivedDateTime,body,hasAttachments";
+  "id,conversationId,internetMessageId,internetMessageHeaders,subject,from,receivedDateTime,body,hasAttachments";
 
 type GraphMessage = {
   id: string;
@@ -430,7 +465,12 @@ type GraphMessage = {
   receivedDateTime?: string;
   body?: { content?: string; contentType?: string };
   hasAttachments?: boolean;
+  internetMessageHeaders?: Array<{ name?: string; value?: string }>;
 };
+
+function graphHeader(message: GraphMessage, name: string): string | null {
+  return message.internetMessageHeaders?.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value ?? null;
+}
 
 async function graphIngest(token: string, message: GraphMessage): Promise<{ ingested: boolean }> {
   const attachmentFailures: string[] = [];
@@ -463,6 +503,34 @@ async function graphIngest(token: string, message: GraphMessage): Promise<{ inge
 
   const bodyTextValue =
     message.body?.contentType === "html" ? htmlToText(message.body.content ?? "") : (message.body?.content ?? "");
+  const receivedAt = message.receivedDateTime ? new Date(message.receivedDateTime) : new Date();
+
+  const supplierReply = await ingestSupplierReply({
+    provider: "MICROSOFT365",
+    externalMessageId: message.internetMessageId ?? `graph-${message.id}`,
+    providerThreadId: message.conversationId ?? null,
+    internetMessageId: message.internetMessageId ?? null,
+    inReplyTo: graphHeader(message, "In-Reply-To"),
+    references: graphHeader(message, "References"),
+    from,
+    fromName: message.from?.emailAddress?.name ?? null,
+    subject: message.subject ?? null,
+    body: bodyTextValue,
+    receivedAt,
+    attachments: accepted,
+  });
+  if (supplierReply.handled) {
+    if (attachmentFailures.length > 0) {
+      await writeAudit({
+        action: "email.attachment_failed",
+        entityType: "SupplierEmailReply",
+        entityId: supplierReply.replyId ?? null,
+        actorLabel: "system",
+        meta: { failures: attachmentFailures },
+      });
+    }
+    return { ingested: !supplierReply.duplicate };
+  }
 
   const result = await ingestInboundMessage({
     channel: "EMAIL",
@@ -471,7 +539,7 @@ async function graphIngest(token: string, message: GraphMessage): Promise<{ inge
     fromName: message.from?.emailAddress?.name ?? null,
     subject: message.subject ?? null,
     body: bodyTextValue,
-    receivedAt: message.receivedDateTime ? new Date(message.receivedDateTime) : new Date(),
+    receivedAt,
     conversationExternalId: message.conversationId ?? null,
     attachments: accepted,
   });

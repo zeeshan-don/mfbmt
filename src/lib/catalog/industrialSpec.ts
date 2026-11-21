@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { normalizeMaterial, normalizePressure, normalizeSchedule, normalizeSize, sizeToMm } from "./normalize";
 
 /**
@@ -117,6 +118,29 @@ export function requiredAttributes(category: string | null | undefined): Industr
   return (schemaFor(category) ?? []).filter((attribute) => attribute.required);
 }
 
+export const INDUSTRIAL_SPEC_VERSION = 1 as const;
+
+export const IndustrialSpecSchema = z.object({
+  version: z.literal(INDUSTRIAL_SPEC_VERSION),
+  category: z.enum(["Pipes", "Valves", "Flanges", "Fittings", "Chemicals", "Industrial Spares"]),
+  attributes: z.record(z.string(), z.string()),
+  missingRequired: z.array(z.string()).default([]),
+  missingOptional: z.array(z.string()).default([]),
+  confidence: z.record(z.number().min(0).max(1)).default({}),
+  source: z.enum(["EXTRACTED", "MANUAL", "SUPPLIER_CONFIRMED"]).default("EXTRACTED"),
+});
+export type IndustrialSpec = z.infer<typeof IndustrialSpecSchema>;
+
+export function parseIndustrialSpecJson(raw: string | null | undefined): IndustrialSpec | null {
+  if (!raw) return null;
+  try {
+    const parsed = IndustrialSpecSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 export type IndustrialMatchStatus = "EXACT" | "EQUIVALENT" | "INSUFFICIENT" | "NO_MATCH";
 
 export type IndustrialMatch = {
@@ -162,6 +186,187 @@ function sameValue(attribute: IndustrialAttribute, requested: string, offered: s
  * information is INSUFFICIENT. Approving a material substitution requires an
  * explicit equivalence rule.
  */
+/**
+ * Deterministic attribute extraction. Only values stated in the customer's text
+ * or fields are recorded; nothing is invented. Unrecognised attributes stay
+ * absent so `buildIndustrialSpec` can report them as missing.
+ */
+function capture(text: string, pattern: RegExp): string | null {
+  return text.match(pattern)?.[1]?.trim() ?? null;
+}
+
+function clean(value: string | null | undefined): string | undefined {
+  const trimmed = (value ?? "").trim().replace(/\s{2,}/g, " ");
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export type IndustrialAttributeInput = {
+  description: string;
+  extraText?: string | null;
+  size?: string | null;
+  material?: string | null;
+  grade?: string | null;
+  pressureRating?: string | null;
+  schedule?: string | null;
+  standard?: string | null;
+  brand?: string | null;
+  quantity?: number | null;
+  unit?: string | null;
+  otherSpecs?: Record<string, string> | null;
+};
+
+/** Extracts the attributes a category schema asks for, when the source states them. */
+export function extractIndustrialAttributes(
+  category: IndustrialCategory,
+  input: IndustrialAttributeInput,
+): Record<string, string> {
+  const text = `${input.description} ${input.extraText ?? ""}`.replace(/\s+/g, " ").trim();
+  const lower = text.toLowerCase();
+  const other = input.otherSpecs ?? {};
+  const attrs: Record<string, string> = {};
+
+  const size = clean(input.size) ?? text.match(/\b(?:dn\s*\d+|\d+(?:\.\d+)?\s*(?:inch|in|"|mm)|\d+\/\d+(?:\s*(?:inch|in|"))?)\b/i)?.[0];
+  const material = clean(input.material) ?? text.match(/\b(?:ss\s*-?\s*(?:316l?|304l?)|stainless\s*steel(?:\s*(?:316l?|304l?))?|carbon\s*steel|mild\s*steel|cast\s*iron|ductile\s*iron|copper|brass|pvc|upvc|ppr|hdpe|alloy\s*steel|monel|duplex)\b/i)?.[0];
+  const grade = clean(input.grade) ?? text.match(/\b(?:gr\.?\s*[0-9a-z.]+|astm\s*a\d+(?:\s*(?:gr\.?|grade)\s*[a-z0-9]+)?|a\d{3}\s*(?:gr\.?|grade)?\s*[a-z]?)\b/i)?.[0];
+  const pressure = clean(input.pressureRating) ?? text.match(/\b(?:class\s*\d+|pn\s*\d+|\d+(?:\.\d+)?\s*(?:bar|psi))\b/i)?.[0];
+  const schedule = clean(input.schedule) ?? text.match(/\b(?:sch\s*-?\s*\d+|schedule\s*\d+)\b/i)?.[0];
+  const standard = clean(input.standard) ?? text.match(/\b(?:asme\s*[a-z]?\d+(?:\.\d+)?|ansi\s*[a-z]?\d+(?:\.\d+)?|astm\s*[a-z]\d+|api\s*\d+[a-z]?|din\s*\d+|bs\s*\d+|en\s*\d+|iso\s*\d+)\b/i)?.[0];
+  const brand = clean(input.brand) ?? clean(other.brand);
+
+  const set = (key: string, value: string | null | undefined) => {
+    const cleaned = clean(value);
+    if (cleaned) attrs[key] = cleaned;
+  };
+
+  switch (category) {
+    case "Pipes": {
+      set("material", material);
+      set("grade", grade);
+      set("nominalSize", size);
+      set("schedule", schedule);
+      set("standard", standard);
+      set("outsideDiameter", other.outsideDiameter ?? capture(text, /\b(?:od|outside\s*diameter)\s*[:=]?\s*([\d.,]+\s*mm)/i));
+      set("wallThickness", other.wallThickness ?? capture(text, /\b(?:wt|wall\s*thickness|thickness)\s*[:=]?\s*([\d.,]+\s*mm)/i));
+      set("length", other.length ?? capture(text, /\b(?:length|long)\s*[:=]?\s*([\d.,]+\s*(?:m|mm|ft))/i));
+      set("manufacturingType", other.manufacturingType ?? (/seamless/i.test(lower) ? "Seamless" : /erw|welded/i.test(lower) ? "Welded" : null));
+      set("endPreparation", other.endPreparation ?? (/bevel/i.test(lower) ? "Bevelled" : /plain\s*end/i.test(lower) ? "Plain end" : /thread/i.test(lower) ? "Threaded" : /socket/i.test(lower) ? "Socket" : null));
+      set("coating", other.coating ?? (/galvan/i.test(lower) ? "Galvanized" : /epoxy|fbe/i.test(lower) ? "Epoxy/FBE" : /paint/i.test(lower) ? "Painted" : null));
+      set("certification", other.certification ?? (/en\s*10204\s*3\.1/i.test(lower) ? "EN 10204 3.1" : /mill\s*certificate/i.test(lower) ? "Mill certificate" : null));
+      break;
+    }
+    case "Valves": {
+      set("valveType", other.valveType ?? (lower.match(/\b(gate|ball|globe|check|butterfly|needle|plug|diaphragm|safety|relief)\s+valve\b/i)?.[1]));
+      set("size", size);
+      set("pressureClass", pressure);
+      set("endConnection", other.endConnection ?? (/butt\s*weld|\bbw\b/i.test(lower) ? "Butt weld" : /socket\s*weld|\bsw\b/i.test(lower) ? "Socket weld" : /flang/i.test(lower) ? "Flanged" : /thread|npt/i.test(lower) ? "Threaded" : null));
+      set("bodyMaterial", clean(input.material) ?? other.bodyMaterial ?? material);
+      set("trimMaterial", other.trimMaterial ?? capture(text, /\btrim\s*[:=]?\s*([a-z0-9 /-]{2,30})/i));
+      set("operation", other.operation ?? (/hand\s*wheel|handwheel/i.test(lower) ? "Handwheel" : /lever/i.test(lower) ? "Lever" : /pneumatic/i.test(lower) ? "Pneumatic" : /electric|motor/i.test(lower) ? "Electric" : null));
+      set("standard", standard ?? other.standard);
+      set("testing", other.testing ?? (/api\s*598/i.test(lower) ? "API 598" : null));
+      break;
+    }
+    case "Flanges": {
+      set("flangeType", other.flangeType ?? (/weld\s*neck|\bwn\b/i.test(lower) ? "Weld neck" : /slip[\s-]*on|\bso\b/i.test(lower) ? "Slip on" : /blind/i.test(lower) ? "Blind" : /lap\s*joint/i.test(lower) ? "Lap joint" : /thread/i.test(lower) ? "Threaded" : /socket/i.test(lower) ? "Socket weld" : null));
+      set("nominalSize", size);
+      set("pressureClass", pressure);
+      set("facing", other.facing ?? (/\brtj\b|ring\s*type\s*joint/i.test(lower) ? "RTJ" : /\bff\b|flat\s*face/i.test(lower) ? "FF" : /\brf\b|raised\s*face/i.test(lower) ? "RF" : null));
+      set("material", material);
+      set("grade", grade);
+      set("standard", standard);
+      set("dimensions", other.dimensions ?? clean(input.size));
+      break;
+    }
+    case "Fittings": {
+      set("fittingType", other.fittingType ?? (lower.match(/\b(elbow|tee|reducer|coupling|union|cap|nipple|bend|cross|plug|bushing)\b/i)?.[1]));
+      set("size", size);
+      set("schedule", schedule);
+      set("material", material);
+      set("grade", grade);
+      set("connection", other.connection ?? (/butt\s*weld|\bbw\b/i.test(lower) ? "Butt weld" : /socket\s*weld|\bsw\b/i.test(lower) ? "Socket weld" : /flang/i.test(lower) ? "Flanged" : /thread|npt/i.test(lower) ? "Threaded" : null));
+      set("standard", standard);
+      break;
+    }
+    case "Chemicals": {
+      set("productName", other.productName ?? clean(input.description.split(/[,;|]/)[0]?.slice(0, 90)));
+      set("manufacturer", other.manufacturer ?? brand);
+      set("casNumber", other.casNumber ?? capture(text, /\b(\d{2,7}-\d{2}-\d)\b/));
+      set("chemicalGrade", other.chemicalGrade ?? (lower.match(/\b(technical|industrial|food|pharmaceutical|pharma|reagent|analytical)\s*(?:grade)?\b/i)?.[1]));
+      set("purity", other.purity ?? text.match(/(\d{1,3}(?:\.\d+)?\s*%)/)?.[1]);
+      set("physicalForm", other.physicalForm ?? (lower.match(/\b(flakes?|powder|liquid|granules?|pellets?|crystals?|solution|gas)\b/i)?.[1]));
+      set("packaging", other.packaging ?? text.match(/\b(\d+(?:\.\d+)?\s*(?:kg|g|l|litre|liter|ml)\s*(?:bag|drum|ibc|tanker|bottle|can|container)?|\d+\s*(?:bag|drum|ibc|tanker|bottle|can)s?)\b/i)?.[0]);
+      if (input.quantity != null && input.quantity > 0) set("quantity", String(input.quantity));
+      set("unit", clean(input.unit));
+      set("sds", other.sds ?? (/\bsds\b|\bmsds\b|safety\s*data\s*sheet/i.test(lower) ? "Stated" : null));
+      set("coa", other.coa ?? (/\bcoa\b|certificate\s*of\s*analysis/i.test(lower) ? "Stated" : null));
+      set("hazardClass", other.hazardClass);
+      break;
+    }
+    case "Industrial Spares": {
+      set("manufacturer", other.manufacturer ?? brand ?? (text.match(/\b([A-Z][A-Za-z0-9&.-]{2,30})\b/)?.[1]));
+      set("partNumber", other.partNumber ?? capture(text, /\b(?:part\s*(?:no\.?|number)|p\/n|model\s*no\.?)\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9./_-]{1,40})/i));
+      set("model", other.model ?? capture(text, /\bmodel\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9./ _-]{1,40})/i));
+      set("compatibleEquipment", other.compatibleEquipment ?? capture(text, /\b(?:for|compatible\s*with|fits)\s+([A-Za-z0-9][A-Za-z0-9 ./_-]{2,60})/i));
+      set("specifications", other.specifications ?? clean(input.description));
+      set("documentation", other.documentation ?? (/datasheet|drawing|manual|certificate/i.test(lower) ? "Stated" : null));
+      break;
+    }
+  }
+
+  return attrs;
+}
+
+export function buildIndustrialSpec(
+  category: IndustrialCategory,
+  attributes: Record<string, string | null | undefined>,
+  options: { source?: IndustrialSpec["source"]; confidence?: Record<string, number> } = {},
+): IndustrialSpec {
+  const schema = INDUSTRIAL_SCHEMAS[category];
+  const present: Record<string, string> = {};
+  for (const attribute of schema) {
+    const value = clean(attributes[attribute.key]);
+    if (value) present[attribute.key] = value;
+  }
+  const missingRequired = schema
+    .filter((attribute) => attribute.required && !present[attribute.key])
+    .map((attribute) => attribute.label);
+  const missingOptional = schema
+    .filter((attribute) => !attribute.required && !present[attribute.key])
+    .map((attribute) => attribute.label);
+
+  return {
+    version: INDUSTRIAL_SPEC_VERSION,
+    category,
+    attributes: present,
+    missingRequired,
+    missingOptional,
+    confidence: options.confidence ?? {},
+    source: options.source ?? "EXTRACTED",
+  };
+}
+
+/** Builds a spec from the generic enquiry fields, without inventing values. */
+export function industrialSpecFromFields(
+  category: string | null | undefined,
+  input: IndustrialAttributeInput,
+  options: { source?: IndustrialSpec["source"] } = {},
+): IndustrialSpec | null {
+  const resolved = resolveIndustrialCategory(category);
+  if (!resolved) return null;
+  return buildIndustrialSpec(resolved, extractIndustrialAttributes(resolved, input), options);
+}
+
+/** Customer clarification for missing required industrial attributes. */
+export function industrialClarificationQuestion(spec: IndustrialSpec, description?: string): string | null {
+  if (spec.missingRequired.length === 0) return null;
+  const subject = (description ?? spec.attributes.productName ?? spec.category)
+    .split(/\s+/)
+    .slice(0, 5)
+    .join(" ");
+  const list = spec.missingRequired.map((label) => label.toLowerCase()).join(", ");
+  return `Please confirm the ${list} for ${subject}.`;
+}
+
 export function compareIndustrialSpec(
   category: string | null | undefined,
   requested: Record<string, string | null | undefined>,

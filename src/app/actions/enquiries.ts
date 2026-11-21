@@ -34,6 +34,12 @@ export async function updateItemAction(formData: FormData) {
 
   const rawQuantity = String(formData.get("quantity") ?? "");
   const parsed = parseQuantityInput(rawQuantity);
+  // Category-specific OGS attributes are submitted as industrial_<attribute>.
+  const industrialAttributes = Object.fromEntries(
+    [...formData.entries()]
+      .filter(([key, value]) => key.startsWith("industrial_") && typeof value === "string")
+      .map(([key, value]) => [key.slice("industrial_".length), String(value).trim() || null]),
+  );
 
   try {
     await updateEnquiryItemValues({
@@ -61,6 +67,7 @@ export async function updateItemAction(formData: FormData) {
               finish: (str(formData.get("finish")) as never) ?? undefined,
             }
           : undefined,
+        industrialAttributes: Object.keys(industrialAttributes).length > 0 ? industrialAttributes : undefined,
       },
       confirm: str(formData.get("confirm")) === "1",
     });

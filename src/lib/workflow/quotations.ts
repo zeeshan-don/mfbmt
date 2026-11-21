@@ -10,6 +10,7 @@ import { money } from "../costing/landed";
 import { marginPct } from "../pricing/rules";
 import { nextQuoteNumber } from "./sequences";
 import { saveBuffer, readBuffer } from "../storage";
+import { requireTenantId } from "../tenant";
 import { sendEmail } from "../email/send";
 import { sendWhatsAppDocument, sendWhatsAppText } from "../intake/whatsapp";
 import { env } from "../env";
@@ -410,9 +411,13 @@ export async function generateAndStoreQuotationPdf(
     },
   });
 
+  // Quotation PDFs are files too: keep them under the owning organization's
+  // prefix so one tenant's document can never be fetched through another.
+  const organizationId = await requireTenantId();
+  const safeNumber = quotation.quoteNumber.replace(/[^A-Za-z0-9._-]/g, "_");
   const stored = await saveBuffer(
     buffer,
-    `quotations/${quotation.quoteNumber}.pdf`,
+    `organizations/${organizationId}/quotations/${safeNumber}-v${quotation.version}.pdf`,
     "application/pdf",
   );
 

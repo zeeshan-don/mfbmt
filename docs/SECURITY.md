@@ -96,3 +96,11 @@ token, job row). Browser-supplied organization IDs are ignored. Integration secr
 AES-256-GCM encrypted per organization. `tests/tenant-isolation.test.ts` proves cross-company reads
 return nothing and credentials do not cross tenants. Platform operators cannot read customer data
 through the provisioning CLI.
+
+## Hardening changes (21 November 2026)
+
+Production file storage is private and fail-closed; no public ACL is applied, MIME is detected from content, size limits are enforced, filenames are sanitized, and database ownership is checked before a signed download. Tenant prefixes prevent cross-organization object access, with legacy keys handled by ownership checks.
+
+Owner invitations store only a token hash, are single-use and expire. Provisioning masks password entry, never accepts passwords on the command line, logs an audit record, and refuses cross-tenant email reuse or implicit owner resets.
+
+Integration diagnostics are owner-only and tenant-scoped, display no secrets, and perform no outbound customer/supplier messages. Regression coverage includes cross-tenant file access, supplier reply correlation/isolation, invitation conflicts and diagnostics isolation.

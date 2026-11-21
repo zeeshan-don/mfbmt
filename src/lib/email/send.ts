@@ -79,12 +79,16 @@ function buildMime(input: {
 }
 
 /** Sends through the connected company mailbox. Returns a real error, never a fake success. */
+export type SendEmailResult =
+  | { ok: true; simulated?: boolean; providerIds?: { messageId?: string; threadId?: string } }
+  | { ok: false; error: string };
+
 export async function sendEmail(input: {
   to: string;
   subject: string;
   text: string;
   attachments?: OutgoingAttachment[];
-}): Promise<{ ok: true; simulated?: boolean } | { ok: false; error: string }> {
+}): Promise<SendEmailResult> {
   // Demo mode is an adapter, not a warning: no provider request is made.
   if (isDemoMode) return { ok: true, simulated: true };
   const provider = await activeEmailProvider();
@@ -121,7 +125,8 @@ export async function sendEmail(input: {
         const detail = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
         return { ok: false, error: detail.error?.message ?? `Gmail returned HTTP ${response.status}.` };
       }
-      return { ok: true };
+      const data = (await response.json().catch(() => ({}))) as { id?: string; threadId?: string };
+      return { ok: true, providerIds: { messageId: data.id, threadId: data.threadId } };
     }
 
     const token = await getAccessToken("microsoft");

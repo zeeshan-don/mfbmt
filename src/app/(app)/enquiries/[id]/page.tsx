@@ -5,6 +5,7 @@ import { requirePermission, canSeeSupplierCosts } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
 import { buildSpecSummary } from "@/lib/catalog/normalize";
 import { fastenerSpecSummary, parseFastenerSpecJson, lengthApplies, FASTENER_TYPE_LABELS } from "@/lib/fasteners/spec";
+import { INDUSTRIAL_SCHEMAS, parseIndustrialSpecJson } from "@/lib/catalog/industrialSpec";
 import {
   ENQUIRY_STATUS_LABELS,
   INVENTORY_STATUS_LABELS,
@@ -150,6 +151,8 @@ export default async function EnquiryDetailPage({
             enquiry.items.map((item) => {
               const missing = parseJson<string[]>(item.missingFields, []);
               const fastener = parseFastenerSpecJson(item.fastenerSpecJson);
+              const industrial = parseIndustrialSpecJson(item.industrialSpecJson);
+              const industrialSchema = industrial ? INDUSTRIAL_SCHEMAS[industrial.category] : null;
               const inline = parseJson<{ candidates?: unknown[]; note?: string | null }>(item.matchedStockJson, {});
               const offers = item.offers;
               const eligible = offers.filter((offer) => offer.isEligible);
@@ -226,6 +229,41 @@ export default async function EnquiryDetailPage({
                               </span>
                             ))}
                           </div>
+                        </div>
+                      ) : null}
+                      {industrial && industrialSchema ? (
+                        <div className="mt-2 rounded-control border border-line bg-elevated/50 px-2.5 py-2">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-muted">
+                            {industrial.category} specification ·{" "}
+                            {industrial.source === "MANUAL"
+                              ? "reviewed by owner"
+                              : industrial.source === "SUPPLIER_CONFIRMED"
+                                ? "supplier confirmed"
+                                : item.specSource === "MANUAL"
+                                  ? "corrected — confirm before sourcing"
+                                  : "extracted — confirm before sourcing"}
+                            {item.specConfirmedAt ? ` · ${new Date(item.specConfirmedAt).toLocaleDateString("en-GB")}` : ""}
+                          </p>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {industrialSchema.map((attribute) => {
+                              const value = industrial.attributes[attribute.key];
+                              return (
+                                <span
+                                  key={attribute.key}
+                                  className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                                    value ? "border-line text-soft" : attribute.required ? "border-warn/40 bg-warn/5 text-warn" : "border-line text-muted"
+                                  }`}
+                                >
+                                  {attribute.label}: {value ?? (attribute.required ? "missing" : "not stated")}
+                                </span>
+                              );
+                            })}
+                          </div>
+                          {industrial.missingRequired.length > 0 ? (
+                            <p className="mt-1 text-[11px] text-warn">
+                              Required before an exact match: {industrial.missingRequired.join(", ")}.
+                            </p>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -427,6 +465,29 @@ export default async function EnquiryDetailPage({
                           </label>
                         </div>
                       </fieldset>
+                      {industrialSchema && industrial ? (
+                        <fieldset className="rounded-control border border-line px-3 py-2">
+                          <legend className="px-1 text-[11px] font-medium text-muted">
+                            {industrial.category} attributes (OGS industrial specification)
+                          </legend>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {industrialSchema.map((attribute) => (
+                              <label key={attribute.key} className="block text-xs text-soft">
+                                {attribute.label}
+                                {attribute.required ? " *" : ""}
+                                <input
+                                  name={`industrial_${attribute.key}`}
+                                  defaultValue={industrial.attributes[attribute.key] ?? ""}
+                                  className={`${inputClass} mt-1`}
+                                />
+                              </label>
+                            ))}
+                          </div>
+                          <p className="mt-1 text-[11px] text-muted">
+                            Only what the customer or supplier stated is stored. Leave a field blank when it is unknown — it is never guessed.
+                          </p>
+                        </fieldset>
+                      ) : null}
                       <div className="flex items-center justify-between">
                         <p className="text-[11px] text-muted">Saving rechecks stock and asks the supplier search to use the corrected details.</p>
                         <Button size="sm" variant="primary">

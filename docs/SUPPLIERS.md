@@ -114,3 +114,7 @@ approvals are all organization-scoped. Supplier discovery and reliability eviden
 companies. Supplier response tokens resolve their owning organization server-side; a token cannot
 read another company's enquiry or documents. RFQ sending still requires the separate outreach
 approval, is idempotent and records provider failures.
+
+## Supplier email replies (21 November 2026)
+
+Supplier replies received through Gmail or Microsoft 365 are ingested idempotently by provider message id. Accepted PDF/Excel/CSV/data-sheet attachments use tenant-scoped private storage. Extracted unit price, currency, lead time, MOQ and other terms remain UNVERIFIED until the owner reviews them; unknown shipping, tax and other charges remain null and are never treated as zero. Review and manual matching are available at `/suppliers/replies`.

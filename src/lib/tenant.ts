@@ -60,6 +60,8 @@ export const TENANT_MODELS = new Set([
   "SupplierOffer",
   "SupplierQuote",
   "SupplierQuoteItem",
+  "SupplierEmailReply",
+  "OwnerInvitation",
   "Approval",
   "CustomerQuotation",
   "CustomerQuotationItem",

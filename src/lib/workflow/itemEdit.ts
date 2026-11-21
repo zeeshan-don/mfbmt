@@ -4,6 +4,11 @@ import { finalizeItems } from "../ai/extract";
 import { inferCategoryFromDescription } from "../catalog/categories";
 import { normalizeUnit, parseQuantity } from "../catalog/normalize";
 import {
+  industrialClarificationQuestion,
+  industrialSpecFromFields,
+  parseIndustrialSpecJson,
+} from "../catalog/industrialSpec";
+import {
   isFastenerCategory,
   normalizeFinishValue,
   normalizeThreadSeriesValue,
@@ -32,6 +37,8 @@ export async function updateEnquiryItemValues(input: {
     standard?: string | null;
     /** Explicit structured fastener values entered/corrected by the owner. */
     fastenerSpec?: Partial<FastenerSpec> | null;
+    /** Owner-entered OGS industrial attributes, keyed by schema attribute. */
+    industrialAttributes?: Record<string, string | null> | null;
   };
   /** Set when the owner has reviewed and confirmed the line. */
   confirm?: boolean;
@@ -97,8 +104,41 @@ export async function updateEnquiryItemValues(input: {
   }
 
   const [finalized] = finalizeItems([{ ...merged, fastenerSpec: merged.fastenerSpec ?? undefined }]);
-  const missing = finalized?.missingFields ?? [];
+  const missing = [...(finalized?.missingFields ?? [])];
   const spec = finalized?.fastenerSpec ?? merged.fastenerSpec ?? null;
+
+  // OGS lines keep their versioned industrial specification through owner
+  // corrections. Only stated values are recorded; clearing a field makes it
+  // missing again instead of silently retaining a stale value.
+  const existingIndustrial = parseIndustrialSpecJson(existing.industrialSpecJson);
+  let industrialSpec = existingIndustrial;
+  if (existingIndustrial) {
+    industrialSpec = industrialSpecFromFields(
+      existingIndustrial.category,
+      {
+        description: merged.description,
+        size: merged.size,
+        material: merged.material,
+        grade: merged.grade,
+        pressureRating: merged.pressureRating,
+        schedule: merged.schedule,
+        standard: merged.standard,
+        brand: merged.brand,
+        quantity: merged.quantity,
+        unit: merged.unit,
+        otherSpecs: Object.fromEntries(
+          Object.entries({
+            ...existingIndustrial.attributes,
+            ...(input.values.industrialAttributes ?? {}),
+          }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0),
+        ),
+      },
+      { source: input.values.industrialAttributes || input.confirm ? "MANUAL" : "EXTRACTED" },
+    );
+    for (const label of industrialSpec?.missingRequired ?? []) {
+      if (!missing.some((entry) => entry.toLowerCase() === label.toLowerCase())) missing.push(label);
+    }
+  }
 
   const updated = await db.enquiryItem.update({
     where: { id: existing.id },
@@ -115,8 +155,12 @@ export async function updateEnquiryItemValues(input: {
       schedule: finalized?.schedule ?? merged.schedule,
       standard: finalized?.standard ?? merged.standard,
       missingFields: stringifyJson(missing),
-      clarificationQuestion: finalized?.clarificationQuestion ?? null,
+      clarificationQuestion:
+        industrialSpec && missing.length > 0
+          ? industrialClarificationQuestion(industrialSpec, merged.description) ?? finalized?.clarificationQuestion ?? null
+          : finalized?.clarificationQuestion ?? null,
       reviewStatus: missing.length > 0 ? "NEEDS_CLARIFICATION" : "CONFIRMED",
+      industrialSpecJson: industrialSpec ? stringifyJson(industrialSpec) : null,
       fastenerSpecJson: spec ? stringifyJson(spec) : null,
       fastenerType: spec?.type ?? null,
       diameter: spec?.diameter ?? null,
@@ -126,11 +170,9 @@ export async function updateEnquiryItemValues(input: {
       propertyClass: spec?.propertyClass ?? null,
       finish: spec?.finish ?? null,
       specSource:
-        input.values.fastenerSpec || input.confirm
+        input.values.fastenerSpec || input.values.industrialAttributes || input.confirm
           ? "MANUAL"
-          : missing.length === 0
-            ? existing.specSource
-            : existing.specSource,
+          : existing.specSource,
       specConfirmedAt: input.confirm ? new Date() : existing.specConfirmedAt,
     },
   });

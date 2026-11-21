@@ -135,3 +135,9 @@ independent. `tests/industrial-spec.test.ts` covers the OGS category rules.
   terms, inventory and integrations from Settings/Onboarding.
 - Never run `db:seed` in production (it refuses when `NODE_ENV=production` and demo data is off).
 - Do not delete `org_mfbmt`; it owns all historical records.
+
+## Tenant-scoped files and diagnostics (21 November 2026)
+
+New storage keys are `organizations/{organizationId}/attachments/{yyyy-mm}/{random}` and `organizations/{organizationId}/quotations/{quote}-v{version}.pdf`. The organization id is taken from server-side tenant context, never from the request. Downloads verify the attachment's database ownership before a short-lived signed URL is issued. Legacy `attachments/...` keys remain readable through the same ownership check and are not rewritten automatically; use `npm run audit:attachments` to inventory them.
+
+Supplier email replies, owner invitations and integration diagnostics are all organization-scoped models/operations. Diagnostics never read or refresh another tenant's credentials, and a supplier reply can only match an RFQ owned by the same organization.

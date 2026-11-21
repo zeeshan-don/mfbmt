@@ -43,6 +43,9 @@ model Organization {
   taxInLandedCost       Boolean   @default(false)
   // Explicit procurement policy: does the company hold stock, or source first?
   inventoryMode         String    @default("STOCK_FIRST") // STOCK_FIRST | SOURCING_FIRST
+  // GENERAL keeps MFBMT's generic category requirements. INDUSTRIAL enables
+  // the versioned OGS industrial extraction and matching schemas.
+  procurementProfile    String    @default("GENERAL") // GENERAL | INDUSTRIAL
   inventoryConfiguredAt DateTime?
   // Set when the owner has finished the first-time setup checklist.
   onboardingCompletedAt DateTime?
@@ -79,8 +82,10 @@ model Organization {
   pricingRules           PricingRule[]
   materialEquivalences   MaterialEquivalence[]
   integrations           Integration[]
+  supplierEmailReplies   SupplierEmailReply[]
+  ownerInvitations       OwnerInvitation[]
   backgroundJobs         BackgroundJob[]
-  webhookEvents          WebhookEvent[]
+  webhookEvents           WebhookEvent[]
   numberSequences        NumberSequence[]
   auditLogs              AuditLog[]
   notifications          Notification[]
@@ -228,6 +233,8 @@ model Attachment {
   message          Message?     @relation(fields: [messageId], references: [id], onDelete: Cascade)
   enquiryId        String?
   enquiry          Enquiry?     @relation(fields: [enquiryId], references: [id])
+  supplierReplyId  String?
+  supplierReply    SupplierEmailReply? @relation(fields: [supplierReplyId], references: [id], onDelete: SetNull)
   filename         String // sanitized display name
   storedName       String       @unique // random name in storage
   mimeType         String
@@ -243,6 +250,65 @@ model Attachment {
 
   @@unique([messageId, sha256])
   @@index([organizationId, enquiryId])
+  @@index([supplierReplyId])
+}
+
+/// An inbound supplier email reply, stored before any offer is derived from it.
+/// Idempotent on the provider's external message id so repeated mailbox syncs
+/// never duplicate replies or offers.
+model SupplierEmailReply {
+  id                String        @id @default(cuid())
+  organizationId    String        @default("__unset__")
+  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplierQuoteId   String?
+  supplierQuote     SupplierQuote? @relation(fields: [supplierQuoteId], references: [id], onDelete: SetNull)
+  supplierId        String?
+  supplier          Supplier?     @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  externalMessageId String
+  provider          String // GMAIL | MICROSOFT365
+  providerThreadId  String?
+  internetMessageId String?
+  inReplyTo         String?
+  referencesHeader  String?
+  fromAddress       String
+  fromName          String?
+  subject           String?
+  bodySummary       String? // retained summary, never a full uncontrolled body dump
+  attachmentsJson   String        @default("[]")
+  extractedJson     String? // deterministic extraction of the supplier's terms
+  extractionStatus  String        @default("PENDING") // PENDING | EXTRACTED | FAILED | NO_TERMS
+  matchingStatus    String        @default("UNMATCHED") // MATCHED | NEEDS_REVIEW | UNMATCHED | DUPLICATE
+  reviewStatus      String        @default("PENDING") // PENDING | REVIEWED | DISMISSED
+  correlationJson   String        @default("{}")
+  receivedAt        DateTime      @default(now())
+  processedAt       DateTime?
+  createdAt         DateTime      @default(now())
+  attachments       Attachment[]
+
+  @@unique([organizationId, provider, externalMessageId])
+  @@index([organizationId, matchingStatus, receivedAt])
+  @@index([supplierQuoteId])
+  @@index([supplierId])
+}
+
+/// One-time, high-entropy owner invitation. Only the SHA-256 hash is stored; the
+/// token is shown once by the provisioning tool and is never emailed or logged
+/// by the application. The invitee sets their own password.
+model OwnerInvitation {
+  id              String       @id @default(cuid())
+  organizationId  String       @default("__unset__")
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email           String
+  name            String
+  role            String       @default("OWNER")
+  tokenHash       String       @unique
+  expiresAt       DateTime
+  usedAt          DateTime?
+  createdByLabel  String       @default("provisioning")
+  createdAt       DateTime     @default(now())
+
+  @@index([organizationId, email])
+  @@index([expiresAt])
 }
 
 model Enquiry {
@@ -320,6 +386,9 @@ model EnquiryItem {
   matchedProductId      String?
   matchedStockJson      String? // JSON snapshot of stock rows used for the decision
   extractedJson         String? // original extracted values for this line
+  // Versioned OGS industrial specification (see src/lib/catalog/industrialSpec.ts).
+  // Null for MFBMT lines that use the generic fastener/generic category engine.
+  industrialSpecJson    String?
   approvedOfferId       String? // supplier offer approved by the owner
   // Structured fastener specification (versioned JSON, see src/lib/fasteners/spec.ts).
   // Core attributes are duplicated into columns for filtering and indexing.
@@ -362,6 +431,7 @@ model Product {
   unit             String                 @default("pcs")
   specs            String                 @default("{}") // JSON free-form extra attributes
   fastenerSpecJson String? // validated fastener specification (see src/lib/fasteners/spec.ts)
+  industrialSpecJson String? // validated OGS industrial specification (versioned JSON)
   notes            String?
   isDemo           Boolean                @default(false)
   createdAt        DateTime               @default(now())
@@ -466,6 +536,7 @@ model Supplier {
   quotes         SupplierQuote[]
 
   @@index([organizationId, name])
+  emailReplies   SupplierEmailReply[]
 }
 
 model SupplierContact {
@@ -632,6 +703,11 @@ model SupplierQuote {
   enquiryItem    EnquiryItem?        @relation(fields: [enquiryItemId], references: [id])
   token          String              @unique
   status         String              @default("REQUESTED") // REQUESTED | AWAITING_APPROVAL | SENT | RESPONDED | DECLINED | EXPIRED
+  /// Opaque reference embedded in the outgoing RFQ subject, used to correlate replies.
+  correlationToken String?           @unique
+  /// Provider thread/message ids captured from the send response when available.
+  providerThreadId String?
+  providerMessageId String?
   channel        String? // email | whatsapp | manual
   sentTo         String?
   lastError      String?
@@ -643,6 +719,7 @@ model SupplierQuote {
   responseNote   String?
   createdAt      DateTime            @default(now())
   items          SupplierQuoteItem[]
+  emailReplies   SupplierEmailReply[]
 
   @@index([supplierId])
   @@index([organizationId])

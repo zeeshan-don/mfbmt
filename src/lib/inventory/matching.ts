@@ -13,6 +13,11 @@ import {
   normalizeSize,
   sizeToMm,
 } from "../catalog/normalize";
+import {
+  compareIndustrialSpec,
+  industrialSpecFromFields,
+  type IndustrialSpec,
+} from "../catalog/industrialSpec";
 
 export type MatchStatus = "EXACT" | "EQUIVALENT" | "POSSIBLE" | "INSUFFICIENT" | "NO_MATCH";
 
@@ -28,6 +33,10 @@ export type SpecFields = {
   standard?: string | null;
   /** Structured fastener specification. Required for the Industrial Fasteners category. */
   fastenerSpec?: FastenerSpec | null;
+  /** Versioned OGS industrial specification. Only present when one was extracted. */
+  industrialSpec?: IndustrialSpec | null;
+  /** Additional category attributes (for example a valve trim material). */
+  otherSpecs?: Record<string, string> | null;
 };
 
 /** An owner-approved substitution such as SS316 → SS316L. */
@@ -197,6 +206,46 @@ export function matchProduct(
       });
     const comparison = compareFastenerSpecs(reqSpec, candSpec, { equivalences: options.equivalences });
     const score = Math.max(0, 1 - comparison.mismatches.length * 0.25 - comparison.missing.length * 0.2);
+    return {
+      status: comparison.status,
+      score,
+      reasons: comparison.reasons,
+      mismatches: comparison.mismatches,
+      missing: comparison.missing,
+      usedEquivalence: comparison.usedEquivalence,
+    };
+  }
+
+  // OGS industrial items carry a versioned specification. When it is present,
+  // the deterministic industrial comparator decides the result: a missing
+  // required attribute is never an exact match, and a conflict is NO_MATCH
+  // regardless of price. MFBMT items without an industrial spec keep the
+  // existing generic path unchanged.
+  if (requested.industrialSpec && !requestedFastener) {
+    const categoryName = requested.industrialSpec.category;
+    const offeredSpec =
+      candidate.industrialSpec ??
+      industrialSpecFromFields(categoryName, {
+        description: candidate.description,
+        size: candidate.size,
+        material: candidate.material,
+        grade: candidate.grade,
+        pressureRating: candidate.pressureRating,
+        schedule: candidate.schedule,
+        standard: candidate.standard,
+        brand: candidate.brand,
+        otherSpecs: candidate.otherSpecs ?? null,
+      });
+    const comparison = compareIndustrialSpec(
+      categoryName,
+      requested.industrialSpec.attributes,
+      offeredSpec?.attributes ?? {},
+      { equivalences: options.equivalences },
+    );
+    const score = Math.max(
+      0,
+      1 - comparison.mismatches.length * 0.25 - comparison.missing.length * 0.2,
+    );
     return {
       status: comparison.status,
       score,

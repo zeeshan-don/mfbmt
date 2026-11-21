@@ -41,3 +41,9 @@ mailbox address saved on the owning integration; Microsoft subscriptions use sig
 against another company's mailbox. Inbound forwarding now requires `x-organization-slug`; older
 forwarders without a workspace are rejected. Outgoing mail always uses the authenticated company's
 connected mailbox and sender identity. Live OAuth verification still requires provider credentials.
+
+## Automatic supplier reply ingestion (21 November 2026)
+
+Gmail and Microsoft 365 synchronization now inspects inbound mail for supplier replies. Correlation order is: provider message/thread id, `In-Reply-To`/`References`, stored `RFQ-` token, then sender identity. Subject similarity alone never attaches a reply to an RFQ. Confident matches create an UNVERIFIED supplier offer draft; ambiguous cases are marked NEEDS_REVIEW and shown at `/suppliers/replies`; unmatched supplier mail is retained rather than discarded.
+
+Outbound RFQs still require owner approval, and a supplier reply never approves an offer, purchase order or customer quotation. See `docs/SUPPLIER_EMAIL_INGESTION.md`.

@@ -1,6 +1,7 @@
 import "./load-env";
 import { z } from "zod";
 import { stagingDatabaseProblem } from "./db-target";
+import { storageConfigProblems } from "./storage-config";
 
 /**
  * Central environment access. Server-only. Values are validated once; optional
@@ -81,6 +82,8 @@ const schema = z.object({
   FIXED_USD_AED: z.coerce.number().default(3.6725),
 
   STORAGE_DRIVER: z.string().default("local"),
+  /** Explicit opt-in for a self-hosted deployment with a mounted persistent volume. */
+  STORAGE_ALLOW_LOCAL_VOLUME: z.string().default("false"),
   STORAGE_ROOT: z.string().default("./storage"),
   S3_ENDPOINT: z.string().default(""),
   S3_REGION: z.string().default("auto"),
@@ -170,13 +173,10 @@ export function productionConfigProblems(input: typeof env = env): ConfigProblem
   if (!/^https:\/\//i.test(input.APP_URL)) {
     problems.push({ variable: "APP_URL", problem: "must be the public https URL used in links and OAuth callbacks." });
   }
-  if (input.STORAGE_DRIVER === "s3") {
-    for (const name of ["S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"] as const) {
-      if (!input[name]) {
-        problems.push({ variable: name, problem: "is required when STORAGE_DRIVER=s3." });
-      }
-    }
-  }
+  // Storage is validated separately so a production build cannot start with
+  // ephemeral local disk or a half-configured bucket. The same rules are used
+  // by the storage driver itself, which fails closed on any problem.
+  problems.push(...storageConfigProblems(input));
   return problems;
 }
 
