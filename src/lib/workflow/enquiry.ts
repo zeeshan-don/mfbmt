@@ -613,7 +613,8 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
   const sourceMessage = await db.message.findUnique({ where: { enquiryId: enquiry.id } });
   const organization = await getCurrentOrganization();
   const industrialSpecs = organization?.procurementProfile === "INDUSTRIAL";
-  const extraction = await extractEnquiry(
+  const limits = await getOrgLimits();
+  let extraction = await extractEnquiry(
     {
       text: enquiry.rawText,
       subject: sourceMessage?.subject ?? null,
@@ -622,7 +623,30 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
     { industrial: industrialSpecs },
   );
 
-  const limits = await getOrgLimits();
+  // Optional second AI pass for low-confidence extractions. Only runs when the
+  // owner has enabled it; the pass is kept only if it reduces missing fields.
+  if (limits.lowConfidenceSecondPass && extraction.source === "ai") {
+    const missingCount = (result: typeof extraction) =>
+      (result.items ?? []).reduce((sum, item) => sum + (item.missingFields?.length ?? 0), 0);
+    const hasGaps = missingCount(extraction) > 0;
+    if (hasGaps) {
+      try {
+        const second = await extractEnquiry(
+          {
+            text: enquiry.rawText,
+            subject: sourceMessage?.subject ?? null,
+            documents,
+          },
+          { industrial: industrialSpecs, secondPass: true },
+        );
+        if (second.source === "ai" && missingCount(second) < missingCount(extraction)) {
+          extraction = second;
+        }
+      } catch {
+        // The first pass result is retained.
+      }
+    }
+  }
   const unreadable = extraction.extraction.unreadableParts ?? [];
   let lineNo = 1;
   for (const item of extraction.items) {

@@ -144,6 +144,9 @@ const HARD_RFQ: HardRfq[] = [
   ["Chemicals", 200, "RFQ\n200 kg calcium chloride flakes 94% industrial grade\nSignature: +971 50 888 9999", "EMAIL", ["signature", "mixed-units"]],
   ["Industrial Spares", 2, "Please quote 2 pcs - impeller part number IMP-44 for pump KSB Etanorm", "WHATSAPP", ["multi-line"]],
   ["Valves", 8, "RFQ - plese qoute\n8 pcs - 3 inch Class 150 butterfly valve EPDM lever\n> old thread: 2 pcs gate valve", "EMAIL", ["typo", "quoted-history"]],
+  ["Pipes", 10, "RFQ - الرجاء تسعير\n10 pcs - 4 inch SCH 40 carbon steel pipe ASTM A106 grade B", "WHATSAPP", ["arabic-mixed"]],
+  ["Gaskets", 6, "RFQ - الرجاء تسعير\n6 pcs - 2 inch Class 300 spiral wound gasket SS316 PTFE filler", "EMAIL", ["arabic-mixed"]],
+  ["Valves", 3, "RFQ - الرجاء تسعير\n3 pcs - 1 inch Class 300 ball valve carbon steel threaded", "WHATSAPP", ["arabic-mixed"]],
 ];
 
 const HARD_NON_RFQ: Array<[classification: string, sourceKind: EvalCase["sourceKind"], text: string, tags: string[]]> = [

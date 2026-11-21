@@ -450,6 +450,14 @@ export default async function SettingsPage({
               Phone
               <input name="phone" defaultValue={org?.phone ?? ""} className={`${inputClass} mt-1`} />
             </label>
+            <label className="block text-xs text-soft">
+              Owner WhatsApp for alerts
+              <input name="ownerWhatsappNumber" defaultValue={org?.ownerWhatsappNumber ?? ""} placeholder="+971501234567" className={`${inputClass} mt-1`} />
+            </label>
+            <label className="flex items-center gap-2 pt-5 text-xs text-soft">
+              <input type="checkbox" name="whatsappApprovalAlerts" defaultChecked={org?.whatsappApprovalAlerts ?? false} />
+              Send approval alerts on WhatsApp (Meta rules still apply)
+            </label>
             <label className="block text-xs text-soft sm:col-span-2">
               Address
               <input name="address" defaultValue={org?.address ?? ""} className={`${inputClass} mt-1`} />

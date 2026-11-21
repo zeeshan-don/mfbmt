@@ -23,6 +23,10 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 15_000 },
   reporter: [["list"]],
+  projects: [
+    { name: "desktop", use: { ...devices["Desktop Chrome"] } },
+    { name: "mobile", use: { ...devices["Pixel 5"] } },
+  ],
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? `http://127.0.0.1:${PORT}`,
     // Set PLAYWRIGHT_CHANNEL=chrome to use the installed Google Chrome instead
@@ -32,7 +36,6 @@ export default defineConfig({
       : {}),
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    ...devices["Desktop Chrome"],
   },
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined

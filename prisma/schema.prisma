@@ -29,6 +29,9 @@ model Organization {
   email                 String?
   phone                 String?
   whatsappNumber        String?
+  ownerWhatsappNumber   String?
+  whatsappApprovalAlerts Boolean @default(false)
+  messageRetentionDays  Int     @default(0)
   address               String?
   website               String?
   logo                  String? // private storage key or absolute https URL
@@ -1113,8 +1116,10 @@ model Notification {
   title          String
   body           String?
   link           String?
-  isRead         Boolean      @default(false)
-  createdAt      DateTime     @default(now())
+  isRead         Boolean   @default(false)
+  channelsJson   String   @default("{}")
+  deliveryStatus String   @default("IN_APP") // IN_APP | WHATSAPP_SENT | WHATSAPP_FAILED | WHATSAPP_OUTSIDE_WINDOW
+  createdAt      DateTime  @default(now())
 
   @@index([isRead])
   @@index([organizationId, createdAt])

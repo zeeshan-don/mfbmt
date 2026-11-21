@@ -323,7 +323,7 @@ export type ExtractionOutput = {
 
 export async function extractEnquiry(
   input: ExtractionInput,
-  options: { industrial?: boolean; allowAi?: boolean } = {},
+  options: { industrial?: boolean; allowAi?: boolean; secondPass?: boolean } = {},
 ): Promise<ExtractionOutput> {
   const documents = input.documents;
   const ruleItems = finalizeItems(
@@ -378,10 +378,13 @@ export async function extractEnquiry(
     };
   }
 
+  const secondPassNote = options.secondPass
+    ? " This is a verification pass: re-check every previously uncertain field against the source text and only fill values that are explicitly stated. "
+    : "";
   const ai = await completeJson(
     {
       system:
-        "You extract product line items from customer quotation requests for an industrial building materials trader in the UAE. " +
+        "You extract product line items from customer quotation requests for an industrial building materials trader in the UAE. " + secondPassNote +
         "Return JSON only matching this shape: {\"isRfq\":boolean,\"classification\":\"RFQ\"|\"AVAILABILITY\"|\"FOLLOW_UP\"|\"SUPPLIER\"|\"BUSINESS_OTHER\"|\"PERSONAL\"|\"UNCLEAR\",\"classificationConfidence\":0..1,\"classificationReason\":string," +
         "\"customerName\":string|null,\"customerPhone\":string|null,\"customerEmail\":string|null,\"deliveryLocation\":string|null,\"deliveryDate\":string|null,\"currency\":string|null," +
         "\"items\":[{\"description\":string,\"quantity\":number|null,\"unit\":string|null,\"category\":string|null,\"brand\":string|null,\"size\":string|null,\"material\":string|null,\"grade\":string|null,\"pressureRating\":string|null,\"schedule\":string|null,\"standard\":string|null,\"otherSpecs\":object,\"sourceRef\":string|null,\"missingFields\":string[],\"confidence\":object}]," +

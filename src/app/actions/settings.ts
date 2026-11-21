@@ -191,6 +191,8 @@ export async function saveOrganizationAction(formData: FormData) {
     taxRegistrationNumber: str(formData.get("taxRegistrationNumber")),
     email: str(formData.get("email")),
     phone: str(formData.get("phone")),
+    ownerWhatsappNumber: str(formData.get("ownerWhatsappNumber")),
+    whatsappApprovalAlerts: formData.get("whatsappApprovalAlerts") === "on",
     address: str(formData.get("address")),
     website: str(formData.get("website")),
     defaultCurrency: (str(formData.get("defaultCurrency")) ?? existing.defaultCurrency).toUpperCase().slice(0, 3),

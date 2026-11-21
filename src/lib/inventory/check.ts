@@ -13,6 +13,7 @@ import {
   type EquivalenceRule,
   type MatchResult,
 } from "./matching";
+import { convertQuantity } from "../catalog/units";
 
 const STOPWORDS = new Set([
   "and", "the", "for", "with", "pcs", "nos", "inch", "each", "qty", "need", "please",
@@ -259,7 +260,14 @@ export async function checkInventoryForItem(itemId: string): Promise<InventoryCh
     };
   }
 
-  const split = stockSplit(item.quantity, sourcingFirst ? 0 : usable.available);
+  // Convert the matched product's available stock into the requested unit when
+  // the units differ. Incompatible units mean the stock cannot be counted.
+  const convertedAvailable =
+    usable.product.unit === item.unit
+      ? usable.available
+      : convertQuantity(usable.available, usable.product.unit, item.unit);
+  const effectiveAvailable = convertedAvailable == null ? 0 : convertedAvailable;
+  const split = stockSplit(item.quantity, sourcingFirst ? 0 : effectiveAvailable);
 
   if (split.toSource === item.quantity && item.quantity > 0) {
     return {

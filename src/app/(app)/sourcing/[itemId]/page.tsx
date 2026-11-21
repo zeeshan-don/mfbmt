@@ -407,7 +407,7 @@ export default async function SourcingDetailPage({
         ) : null}
       </Card>
 
-      {priceMemory.length > 0 ? (
+      {isOwner && priceMemory.length > 0 ? (
         <Card>
           <CardHeader
             title="Recorded price memory"

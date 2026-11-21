@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { rawDb } from "./db-base";
 import { getTenantId, TenantContextError } from "./tenant";
+import { getCurrentOrganization } from "./organization";
 import { stringifyJson } from "./json";
 
 export async function writeAudit(input: {
@@ -51,13 +52,23 @@ export async function notifyOwner(input: {
 }) {
   try {
     const owners = await db.user.findMany({ where: { role: "OWNER", isActive: true }, select: { id: true, email: true, name: true } });
+    let notificationIds: string[] = [];
     if (owners.length === 0) {
-      await db.notification.create({ data: { ...input, userId: null } });
-      return;
+      const created = await db.notification.create({ data: { ...input, userId: null } });
+      notificationIds = [created.id];
+    } else {
+      await db.notification.createMany({
+        data: owners.map((owner) => ({ ...input, userId: owner.id })),
+      });
+      // Re-fetch the just-created ids so delivery state can be recorded.
+      const recent = await db.notification.findMany({
+        where: { type: input.type, title: input.title, createdAt: { gte: new Date(Date.now() - 5000) } },
+        select: { id: true },
+        orderBy: { createdAt: "desc" },
+        take: owners.length,
+      });
+      notificationIds = recent.map((n) => n.id);
     }
-    await db.notification.createMany({
-      data: owners.map((owner) => ({ ...input, userId: owner.id })),
-    });
     // In-app notification is durable; email is a best-effort deep-link. A
     // mailbox failure must never fail the business action that triggered it.
     try {
@@ -79,6 +90,35 @@ export async function notifyOwner(input: {
       }
     } catch {
       // The in-app notification remains available.
+    }
+
+    // WhatsApp approval alerts are opt-in and best-effort. Meta may reject a
+    // business-initiated message outside the 24-hour window; that outcome is
+    // recorded on the notification instead of being hidden.
+    try {
+      const org = await getCurrentOrganization();
+      if (org?.whatsappApprovalAlerts && org.ownerWhatsappNumber) {
+        const { sendWhatsAppText } = await import("./intake/whatsapp");
+        const absoluteLink = input.link ? `${process.env.APP_URL?.replace(/\/$/, "") ?? ""}${input.link}` : null;
+        const body = [input.body ?? input.title, absoluteLink ? `Open: ${absoluteLink}` : ""].filter(Boolean).join("\n");
+        const sent = await sendWhatsAppText(org.ownerWhatsappNumber, `[Procurement] ${input.title}\n${body}`);
+        const status = sent.ok
+          ? sent.simulated
+            ? "WHATSAPP_SIMULATED"
+            : "WHATSAPP_SENT"
+          : sent.outsideServiceWindow
+            ? "WHATSAPP_OUTSIDE_WINDOW"
+            : "WHATSAPP_FAILED";
+        const channels = stringifyJson({ inApp: true, whatsapp: status });
+        if (notificationIds.length > 0) {
+          await db.notification.updateMany({
+            where: { id: { in: notificationIds } },
+            data: { deliveryStatus: status, channelsJson: channels },
+          });
+        }
+      }
+    } catch {
+      // Notification delivery state is best-effort.
     }
   } catch (error) {
     console.error("[notify] failed", input.type, error);

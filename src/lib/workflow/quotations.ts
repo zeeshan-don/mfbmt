@@ -69,7 +69,7 @@ export async function createQuotationDraft(input: {
   userId: string;
   actorLabel: string;
   notes?: string | null;
-}): Promise<{ ok: true; quotationId: string; unpriced: string[] } | { ok: false; error: string }> {
+}): Promise<{ ok: true; quotationId: string; unpriced: string[]; complianceWarnings: string[] } | { ok: false; error: string }> {
   const enquiry = await db.enquiry.findUnique({
     where: { id: input.enquiryId },
     include: {
@@ -82,7 +82,7 @@ export async function createQuotationDraft(input: {
   if (enquiry.items.length === 0) return { ok: false, error: "There are no products to quote." };
 
   const existing = enquiry.quotations.find((q) => q.status === "DRAFT" || q.status === "AWAITING_APPROVAL");
-  if (existing) return { ok: true, quotationId: existing.id, unpriced: [] };
+  if (existing) return { ok: true, quotationId: existing.id, unpriced: [], complianceWarnings: [] };
 
   const org = await getCurrentOrganization();
   const rules = await db.pricingRule.findMany();
@@ -103,6 +103,7 @@ export async function createQuotationDraft(input: {
   const currency = (enquiry.currency || org?.defaultCurrency || "AED").toUpperCase();
 
   const unpriced: string[] = [];
+  const complianceWarnings: string[] = [];
   const lineDrafts: LineDraft[] = [];
 
   for (const item of enquiry.items) {
@@ -139,6 +140,16 @@ export async function createQuotationDraft(input: {
       procureUnitCost != null && quantity > 0
         ? round2((procureUnitCost * procureQuantity) / quantity)
         : null;
+
+    // Chemical lines need an SDS/MSDS on file. This is a checklist warning for the
+    // owner, not a compliance claim and never a reason to hide the line.
+    if (item.category === "Chemicals") {
+      const spec = parseJson<Record<string, unknown>>(item.industrialSpecJson, {});
+      const hasSds = Boolean(String(spec.sds ?? "").trim());
+      if (!hasSds) {
+        complianceWarnings.push(`${item.description}: SDS/MSDS not stated by the customer. Confirm safety data before supply.`);
+      }
+    }
 
     const rule = resolvePricingRule(rules, item.category, customer?.tier ?? "STANDARD");
     const price = sellingPriceFromCost(unitCost, rule, null);
@@ -247,6 +258,7 @@ export async function createQuotationDraft(input: {
         currency,
         unpriced,
         allPriced: unpriced.length === 0,
+        complianceWarnings,
       }),
     },
   });
@@ -257,7 +269,7 @@ export async function createQuotationDraft(input: {
     action: "quotation.draft_created",
     entityType: "CustomerQuotation",
     entityId: quotation.id,
-    meta: { total, currency, unpriced, internalCostComplete },
+    meta: { total, currency, unpriced, internalCostComplete, complianceWarnings },
   });
 
   await notifyOwner({
@@ -270,7 +282,7 @@ export async function createQuotationDraft(input: {
     link: `/quotations/${quotation.id}`,
   });
 
-  return { ok: true, quotationId: quotation.id, unpriced };
+  return { ok: true, quotationId: quotation.id, unpriced, complianceWarnings };
 }
 
 export function marginFloorProblem(input: {

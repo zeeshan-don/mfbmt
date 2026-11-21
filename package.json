@@ -30,7 +30,10 @@
     "test:e2e": "tsx tests/e2e/prepare.ts && playwright test",
     "test:e2e:fixture": "tsx tests/e2e/seed-fixture.ts",
     "check": "npm run typecheck && npm run test && npm run build",
-    "audit:attachments": "tsx src/scripts/audit-attachments.ts"
+    "audit:attachments": "tsx src/scripts/audit-attachments.ts",
+    "retention:cleanup": "tsx src/scripts/retention-cleanup.ts",
+    "backup:db": "tsx src/scripts/backup-db.ts",
+    "operator": "tsx src/scripts/operator.ts"
   },
   "prisma": {
     "seed": "tsx src/scripts/seed.ts"

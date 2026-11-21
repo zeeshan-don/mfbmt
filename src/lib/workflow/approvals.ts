@@ -4,6 +4,7 @@ import { parseJson, stringifyJson } from "../json";
 import { enqueueJob } from "./jobs";
 import { JOB_TYPES } from "../constants";
 import { marginPct } from "../pricing/rules";
+import { reserveStock } from "../inventory/reservations";
 
 export type ApprovalDecision = "APPROVED" | "REJECTED" | "CHANGES_REQUESTED";
 
@@ -166,6 +167,94 @@ export async function decideApproval(input: {
           entityId: quotation.id,
           meta: { reason: input.reason ?? null, unpricedLines: unpriced.map((item) => item.description) },
         });
+      }
+    }
+
+    // ---- Stock reservations for lines shipping from stock ------------------
+    // Lines that ship from stock reserve the units so two quotations cannot
+    // both promise the same on-hand quantity. An owner can override an
+    // insufficient-stock block by recording a reason (audit-logged).
+    if (input.decision === "APPROVED") {
+      const enquiryItems = await db.enquiryItem.findMany({
+        where: { id: { in: quotation.items.map((line) => line.enquiryItemId).filter(Boolean) as string[] } },
+        select: { id: true, matchedProductId: true, quantityFromStock: true, unit: true, description: true },
+      });
+      const stockLines = quotation.items
+        .map((line) => {
+          const ei = enquiryItems.find((e) => e.id === line.enquiryItemId);
+          if (!ei || !ei.matchedProductId || (ei.quantityFromStock ?? 0) <= 0) return null;
+          return { line, enquiryItem: ei };
+        })
+        .filter(Boolean) as Array<{ line: (typeof quotation.items)[number]; enquiryItem: (typeof enquiryItems)[number] }>;
+
+      const insufficient: string[] = [];
+      for (const { enquiryItem } of stockLines) {
+        const availableStock = await db.inventoryStock.findFirst({
+          where: { organizationId: quotation.organizationId, productId: enquiryItem.matchedProductId as string },
+          orderBy: { quantityOnHand: "desc" },
+        });
+        const available = availableStock
+          ? Math.max(0, availableStock.quantityOnHand - availableStock.quantityReserved)
+          : 0;
+        const need = enquiryItem.quantityFromStock ?? 0;
+        if (!availableStock || available + 1e-9 < need) {
+          insufficient.push(`${enquiryItem.description}: need ${need}, available ${available}`);
+        }
+      }
+
+      if (insufficient.length > 0) {
+        if (!input.reason?.trim()) {
+          return {
+            ok: false,
+            error: `Insufficient stock for ${insufficient.length} line(s): ${insufficient.join("; ")}. Record a reason to override, or adjust stock.`,
+          };
+        }
+        await writeAudit({
+          actorId: input.userId,
+          actorLabel: input.actorLabel,
+          action: "quotation.stock_override",
+          entityType: "CustomerQuotation",
+          entityId: quotation.id,
+          meta: { lines: insufficient, reason: input.reason ?? null },
+        });
+      } else {
+        // Reserve the units (best-effort; failures are recorded but do not block).
+        const reserved: string[] = [];
+        for (const { line, enquiryItem } of stockLines) {
+          try {
+            const stockRow = await db.inventoryStock.findFirst({
+              where: { organizationId: quotation.organizationId, productId: enquiryItem.matchedProductId as string },
+              orderBy: { quantityOnHand: "desc" },
+            });
+            if (!stockRow) continue;
+            await reserveStock({
+              productId: enquiryItem.matchedProductId as string,
+              locationId: stockRow.locationId,
+              quantity: enquiryItem.quantityFromStock ?? 0,
+              organizationId: quotation.organizationId,
+            });
+            reserved.push(line.description);
+          } catch (error) {
+            await writeAudit({
+              actorId: input.userId,
+              actorLabel: input.actorLabel,
+              action: "quotation.stock_reservation_failed",
+              entityType: "CustomerQuotation",
+              entityId: quotation.id,
+              meta: { line: line.description, error: error instanceof Error ? error.message : String(error) },
+            });
+          }
+        }
+        if (reserved.length > 0) {
+          await writeAudit({
+            actorId: input.userId,
+            actorLabel: input.actorLabel,
+            action: "quotation.stock_reserved",
+            entityType: "CustomerQuotation",
+            entityId: quotation.id,
+            meta: { lines: reserved },
+          });
+        }
       }
     }
 

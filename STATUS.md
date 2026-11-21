@@ -128,7 +128,7 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 | Human hand-off docs | Built | OGS_ONBOARDING, RUNBOOK, SERVICE_SCOPE, HUMAN_TASKS, DEMO_SCRIPT |
 | Gaskets/insulation/bolting/services | Built + tested | Gasket/insulation/service schemas; bolting deliberately stays in the fastener engine; service sourcing blocked |
 | Units/conversions | Partial | Basic units only; no stated/configured quantity conversion yet |
-| Chemical SDS checklist | Partial | SDS/COA fields exist; quotation checklist flag not yet built |
+| Chemical SDS checklist | Done | SDS/COA fields exist; missing SDS flagged in quotation approval |
 | Supplier directory/ranking/CSV | Built + tested | Categories, countries, currencies, payment terms, lead time, ranking and CSV import |
 | Price memory | Built | Previous supplier/customer prices with date and currency on the sourcing screen |
 | FX multi-currency | Partial | Provider supports arbitrary pairs; CNY/KRW price parsing and daily cache tested; live FX unverified; no fixed non-USD/AED rates |

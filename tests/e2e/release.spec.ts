@@ -66,7 +66,7 @@ test("owner login, dashboard, navigation and logout", async ({ page }) => {
   await login(page, OWNER);
   await expect(page).toHaveURL("/");
   await expect(page.getByText("Good day, MFBMT")).toBeVisible();
-  await expect(page.getByText(/Worker active|Worker status unknown/).first()).toBeVisible();
+  await expect(page.locator(":text-matches(\"Worker active|Worker status unknown\"):visible").first()).toBeVisible();
   await shot(page, "desktop-dashboard");
 
   for (const [label, heading] of [

@@ -34,6 +34,22 @@ async function fetchProviderRate(from: string, to: string): Promise<RateResult |
     };
   }
 
+  if (env.EXCHANGE_RATE_PROVIDER === "frankfurter") {
+    try {
+      const url = new URL(`https://api.frankfurter.app/latest`);
+      url.searchParams.set("from", from);
+      url.searchParams.set("to", to);
+      const response = await fetch(url, { signal: AbortSignal.timeout(8000), cache: "no-store" });
+      if (!response.ok) return null;
+      const payload = (await response.json()) as { rates?: Record<string, number> };
+      const rate = payload.rates?.[to];
+      if (!rate || !Number.isFinite(rate)) return null;
+      return { rate, source: "frankfurter.app", fetchedAt: new Date(), pair: `${from}/${to}` };
+    } catch {
+      return null;
+    }
+  }
+
   if (env.EXCHANGE_RATE_PROVIDER === "exchangerate_host" && env.EXCHANGE_RATE_API_KEY) {
     try {
       const url = new URL("https://api.exchangerate.host/convert");

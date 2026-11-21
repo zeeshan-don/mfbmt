@@ -156,7 +156,7 @@ OCR_PROVIDER=auto    # auto | tesseract | none
 ## 6. Currency rates
 
 ```
-EXCHANGE_RATE_PROVIDER=none          # none | exchangerate_host | fixed
+EXCHANGE_RATE_PROVIDER=none          # none | exchangerate_host | frankfurter | fixed
 EXCHANGE_RATE_API_KEY=
 FIXED_USD_AED=3.6725
 ```

@@ -269,6 +269,16 @@ export default async function ApprovalDetailPage({
               </p>
               <ButtonLink href={`/quotations/${quotation.id}`} size="sm">Open quotation</ButtonLink>
             </div>
+            {Array.isArray(payload.complianceWarnings) && payload.complianceWarnings.length > 0 ? (
+              <div className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-warn">Compliance checklist</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-soft">
+                  {(payload.complianceWarnings as string[]).map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             {pending ? (
               <form action={decideApprovalAction} className="space-y-2 border-t border-line pt-3">
