@@ -1,0 +1,22 @@
+{
+  "instructions": "Anonymised labels only. id = .txt filename without extension. expected.quantity/category refer to the first product line. Use rfq=false for non-quotations.",
+  "cases": [
+    {
+      "id": "enquiry-001",
+      "sourceKind": "EMAIL",
+      "expected": {
+        "rfq": true,
+        "quantity": 2,
+        "category": "Valves"
+      }
+    },
+    {
+      "id": "enquiry-002",
+      "sourceKind": "WHATSAPP",
+      "expected": {
+        "rfq": false,
+        "classification": "AVAILABILITY"
+      }
+    }
+  ]
+}
