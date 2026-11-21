@@ -10,11 +10,12 @@ import { Inbox, Search } from "lucide-react";
 export const dynamic = "force-dynamic";
 
 const FILTERS = [
-  { key: "all", label: "All" },
-  { key: "NEEDS_REVIEW", label: "Needs review" },
-  { key: "SOURCING", label: "Sourcing" },
-  { key: "AWAITING_APPROVAL", label: "Awaiting approval" },
-  { key: "QUOTED", label: "Quoted" },
+  { key: "all", label: "All", href: "/enquiries" },
+  { key: "NEEDS_REVIEW", label: "Needs review", href: "/enquiries?status=NEEDS_REVIEW" },
+  { key: "waiting_supplier", label: "Waiting on suppliers", href: "/enquiries?filter=waiting_supplier" },
+  { key: "ready_to_quote", label: "Ready to quote", href: "/enquiries?filter=ready_to_quote" },
+  { key: "overdue", label: "Overdue", href: "/enquiries?filter=overdue" },
+  { key: "QUOTED", label: "Quoted", href: "/enquiries?status=QUOTED" },
 ];
 
 export default async function EnquiriesPage({
@@ -25,12 +26,19 @@ export default async function EnquiriesPage({
   await requirePermission("enquiries.view");
   const params = await searchParams;
   const status = params.status && params.status !== "all" ? params.status : undefined;
+  const filter = params.filter;
   const query = params.q?.trim();
+  const overdueBefore = new Date(Date.now() - 48 * 60 * 60 * 1000);
 
   const enquiries = await db.enquiry.findMany({
     where: {
       ...(status ? { status } : {}),
-      ...(params.filter === "clarify" ? { items: { some: { reviewStatus: "NEEDS_CLARIFICATION" } } } : {}),
+      ...(filter === "clarify" ? { items: { some: { reviewStatus: "NEEDS_CLARIFICATION" } } } : {}),
+      ...(filter === "waiting_supplier" ? { items: { some: { supplierQuotes: { some: { status: "SENT" } } } } } : {}),
+      ...(filter === "ready_to_quote" ? { status: "APPROVED" } : {}),
+      ...(filter === "overdue"
+        ? { createdAt: { lt: overdueBefore }, status: { notIn: ["QUOTED", "CLOSED", "REJECTED", "IGNORED"] } }
+        : {}),
       ...(query
         ? {
             OR: [
@@ -72,17 +80,17 @@ export default async function EnquiriesPage({
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <nav className="flex flex-wrap gap-1" aria-label="Filter enquiries">
-          {FILTERS.map((filter) => (
+          {FILTERS.map((entry) => (
             <Link
-              key={filter.key}
-              href={filter.key === "all" ? "/enquiries" : `/enquiries?status=${filter.key}`}
+              key={entry.key}
+              href={entry.href}
               className={`rounded-control border px-2.5 py-1.5 text-xs transition-colors ${
-                (filter.key === "all" && !status) || status === filter.key
+                (entry.key === "all" && !status && !filter) || status === entry.key || filter === entry.key
                   ? "border-accent/40 bg-accent/10 font-medium text-accent"
                   : "border-line bg-surface text-soft hover:bg-elevated hover:text-ink"
               }`}
             >
-              {filter.label}
+              {entry.label}
             </Link>
           ))}
         </nav>
@@ -131,6 +139,8 @@ export default async function EnquiriesPage({
                 const partial = enquiry.items.filter((item) => item.inventoryStatus === "PARTIAL").length;
                 const sourcing = enquiry.items.filter((item) => item.sourcingStatus !== "NOT_REQUIRED").length;
                 const quotation = enquiry.quotations[0];
+                const overdue =
+                  enquiry.createdAt < overdueBefore && !["QUOTED", "CLOSED", "REJECTED", "IGNORED"].includes(enquiry.status);
                 return (
                   <tr key={enquiry.id} className="hover:bg-elevated/60">
                     <Td>
@@ -170,6 +180,7 @@ export default async function EnquiriesPage({
                           {label(SOURCING_STATUS_LABELS, "SEARCHING")}
                         </span>
                       ) : null}
+                      {overdue ? <span className="mt-1 block"><Badge tone="danger">overdue</Badge></span> : null}
                     </Td>
                     <Td>
                       {quotation ? (

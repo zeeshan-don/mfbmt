@@ -35,6 +35,9 @@ type LineDraft = {
   procureUnitCost: number | null;
   costIncomplete: boolean;
   supplierOfferId: string | null;
+  leadTimeDays: number | null;
+  deliveryTerms: string | null;
+  validityDate: Date | null;
 };
 
 type LandedSnapshot = {
@@ -71,7 +74,8 @@ export async function createQuotationDraft(input: {
     where: { id: input.enquiryId },
     include: {
       items: { include: { offers: true } },
-      quotations: { orderBy: { version: "desc" } },
+      quotations: { orderBy: { version: "desc" }, include: { items: true } },
+      customer: true,
     },
   });
   if (!enquiry) return { ok: false, error: "Enquiry not found." };
@@ -82,6 +86,20 @@ export async function createQuotationDraft(input: {
 
   const org = await getCurrentOrganization();
   const rules = await db.pricingRule.findMany();
+  let customer = enquiry.customer;
+  if (!customer && enquiry.customerName?.trim()) {
+    customer = await db.customer.findFirst({
+      where: enquiry.customerEmail
+        ? { OR: [{ email: { equals: enquiry.customerEmail, mode: "insensitive" } }, { name: enquiry.customerName }] }
+        : { name: enquiry.customerName },
+    });
+    if (!customer) {
+      customer = await db.customer.create({
+        data: { name: enquiry.customerName, email: enquiry.customerEmail, phone: enquiry.customerPhone },
+      });
+    }
+    await db.enquiry.update({ where: { id: enquiry.id }, data: { customerId: customer.id } });
+  }
   const currency = (enquiry.currency || org?.defaultCurrency || "AED").toUpperCase();
 
   const unpriced: string[] = [];
@@ -122,7 +140,7 @@ export async function createQuotationDraft(input: {
         ? round2((procureUnitCost * procureQuantity) / quantity)
         : null;
 
-    const rule = resolvePricingRule(rules, item.category);
+    const rule = resolvePricingRule(rules, item.category, customer?.tier ?? "STANDARD");
     const price = sellingPriceFromCost(unitCost, rule, null);
     if (price == null) unpriced.push(item.description);
 
@@ -153,6 +171,9 @@ export async function createQuotationDraft(input: {
       procureUnitCost,
       costIncomplete: costStatus !== "COMPLETE" || offer == null,
       supplierOfferId: offer?.id ?? null,
+      leadTimeDays: offer?.leadTimeDays ?? null,
+      deliveryTerms: offer?.deliveryLocation ?? null,
+      validityDate: offer?.validityDate ?? null,
     });
   }
 
@@ -166,9 +187,29 @@ export async function createQuotationDraft(input: {
     : null;
 
   const version = (enquiry.quotations[0]?.version ?? 0) + 1;
+  const previous = enquiry.quotations[0] ?? null;
+  const changeSummary = previous
+    ? [
+        `Revision from v${previous.version} to v${version}.`,
+        `Total ${previous.currency} ${previous.total.toFixed(2)} → ${currency} ${total.toFixed(2)}.`,
+        ...lineDrafts
+          .filter((line) => {
+            const old = previous.items?.find((item) => item.enquiryItemId === line.enquiryItemId);
+            return old && (old.unitPrice !== line.unitPrice || old.quantity !== line.quantity || old.description !== line.description);
+          })
+          .map((line) => {
+            const old = previous.items?.find((item) => item.enquiryItemId === line.enquiryItemId);
+            return `${line.description}: ${old?.unitPrice ?? "unpriced"} → ${line.unitPrice ?? "unpriced"}.`;
+          }),
+        ...lineDrafts
+          .filter((line) => !previous.items?.some((item) => item.enquiryItemId === line.enquiryItemId))
+          .map((line) => `Added ${line.description}.`),
+      ].join(" ")
+    : "Initial quotation version.";
   const quotation = await db.customerQuotation.create({
     data: {
       enquiryId: enquiry.id,
+      customerId: customer?.id ?? null,
       quoteNumber: await nextQuoteNumber(org?.quotationPrefix || "QT"),
       version,
       customerName: enquiry.customerName ?? "Customer",
@@ -186,6 +227,7 @@ export async function createQuotationDraft(input: {
       notes: input.notes?.trim() || null,
       validityDate: new Date(Date.now() + (org?.quotationValidityDays ?? 14) * 24 * 60 * 60 * 1000),
       status: "AWAITING_APPROVAL",
+      changeSummary,
       isDemo: enquiry.isDemo,
       items: { create: lineDrafts },
     },
@@ -229,6 +271,89 @@ export async function createQuotationDraft(input: {
   });
 
   return { ok: true, quotationId: quotation.id, unpriced };
+}
+
+export function marginFloorProblem(input: {
+  quotation: { internalCostComplete: boolean; internalCostTotal: number | null; subtotal: number };
+  minMarginPct: number;
+  exceptionReason: string | null;
+}): string | null {
+  if (input.minMarginPct <= 0 || !input.quotation.internalCostComplete || input.quotation.internalCostTotal == null) return null;
+  const actual = marginPct(input.quotation.internalCostTotal, input.quotation.subtotal);
+  if (actual == null || actual >= input.minMarginPct) return null;
+  if (input.exceptionReason?.trim()) return null;
+  return `This quotation's margin (${actual.toFixed(1)}%) is below the ${input.minMarginPct}% floor. Record an owner margin exception before creating or sending the PDF.`;
+}
+
+export async function updateQuotationLineTechnical(input: {
+  quotationId: string;
+  itemId: string;
+  countryOfOrigin?: string | null;
+  certification?: string | null;
+  leadTimeDays?: number | null;
+  deliveryTerms?: string | null;
+  validityDate?: Date | null;
+  technicalNotes?: string | null;
+  userId: string;
+  actorLabel: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const quotation = await db.customerQuotation.findUnique({ where: { id: input.quotationId } });
+  if (!quotation) return { ok: false, error: "Quotation not found." };
+  if (quotation.status !== "DRAFT" && quotation.status !== "AWAITING_APPROVAL") {
+    return { ok: false, error: "Technical terms can only be edited before approval. Create a new revision instead." };
+  }
+  if (input.leadTimeDays != null && (!Number.isFinite(input.leadTimeDays) || input.leadTimeDays < 0)) {
+    return { ok: false, error: "Lead time must be zero days or more." };
+  }
+  await db.customerQuotationItem.update({
+    where: { id: input.itemId },
+    data: {
+      countryOfOrigin: input.countryOfOrigin?.trim() || null,
+      certification: input.certification?.trim() || null,
+      leadTimeDays: input.leadTimeDays != null ? Math.round(input.leadTimeDays) : null,
+      deliveryTerms: input.deliveryTerms?.trim() || null,
+      validityDate: input.validityDate ?? null,
+      technicalNotes: input.technicalNotes?.trim() || null,
+    },
+  });
+  await writeAudit({
+    actorId: input.userId,
+    actorLabel: input.actorLabel,
+    action: "quotation.technical_updated",
+    entityType: "CustomerQuotationItem",
+    entityId: input.itemId,
+    meta: { quotationId: input.quotationId },
+  });
+  return { ok: true };
+}
+
+export async function setQuotationOutcome(input: {
+  quotationId: string;
+  outcome: string;
+  reason?: string | null;
+  userId: string;
+  actorLabel: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const allowed = new Set(["WON", "LOST", "NO_RESPONSE"]);
+  if (!allowed.has(input.outcome)) return { ok: false, error: "Choose won, lost or no response." };
+  const quotation = await db.customerQuotation.findUnique({ where: { id: input.quotationId } });
+  if (!quotation) return { ok: false, error: "Quotation not found." };
+  if (!["SENT", "APPROVED"].includes(quotation.status)) {
+    return { ok: false, error: "Outcome can be recorded after the quotation is approved and sent." };
+  }
+  await db.customerQuotation.update({
+    where: { id: quotation.id },
+    data: { outcome: input.outcome, outcomeReason: input.reason?.trim() || null, outcomeAt: new Date() },
+  });
+  await writeAudit({
+    actorId: input.userId,
+    actorLabel: input.actorLabel,
+    action: "quotation.outcome_recorded",
+    entityType: "CustomerQuotation",
+    entityId: quotation.id,
+    meta: { outcome: input.outcome, reason: input.reason ?? null },
+  });
+  return { ok: true };
 }
 
 async function recalculateTotals(quotationId: string) {
@@ -375,6 +500,8 @@ export async function generateAndStoreQuotationPdf(
 
   const org = await db.organization.findUnique({ where: { id: quotation.organizationId } });
   if (!org) return { ok: false, error: "The company profile could not be loaded for this quotation." };
+  const floorProblem = marginFloorProblem({ quotation, minMarginPct: org.minMarginPct, exceptionReason: quotation.marginExceptionReason });
+  if (floorProblem) return { ok: false, error: floorProblem };
   const buffer = await generateQuotationPdf({
     org: {
       name: org.name,
@@ -407,6 +534,12 @@ export async function generateAndStoreQuotationPdf(
         unit: item.unit,
         unitPrice: item.unitPrice as number,
         lineTotal: item.lineTotal as number,
+        countryOfOrigin: item.countryOfOrigin,
+        certification: item.certification,
+        leadTimeDays: item.leadTimeDays,
+        deliveryTerms: item.deliveryTerms,
+        validityDate: item.validityDate,
+        technicalNotes: item.technicalNotes,
       })),
     },
   });
@@ -456,6 +589,9 @@ export async function sendApprovedQuotation(input: {
   if (quotation.items.some((item) => item.unitPrice == null)) {
     return { ok: false, error: "This quotation has unpriced lines and cannot be released." };
   }
+  const org = await db.organization.findUnique({ where: { id: quotation.organizationId } });
+  const floorProblem = marginFloorProblem({ quotation, minMarginPct: org?.minMarginPct ?? 0, exceptionReason: quotation.marginExceptionReason });
+  if (floorProblem) return { ok: false, error: floorProblem };
 
   if (!quotation.pdfPath) {
     const generated = await generateAndStoreQuotationPdf(quotation.id);

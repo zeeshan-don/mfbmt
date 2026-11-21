@@ -3,6 +3,7 @@ import { writeAudit, notifyOwner } from "../audit";
 import { parseJson, stringifyJson } from "../json";
 import { enqueueJob } from "./jobs";
 import { JOB_TYPES } from "../constants";
+import { marginPct } from "../pricing/rules";
 
 export type ApprovalDecision = "APPROVED" | "REJECTED" | "CHANGES_REQUESTED";
 
@@ -116,6 +117,31 @@ export async function decideApproval(input: {
     if (quotation.status === "APPROVED") return { ok: false, error: "This quotation was already approved." };
 
     if (input.decision === "APPROVED") {
+      const org = await db.organization.findUnique({ where: { id: quotation.organizationId } });
+      const floor = org?.minMarginPct ?? 0;
+      if (floor > 0 && quotation.internalCostComplete && quotation.internalCostTotal != null) {
+        const actual = marginPct(quotation.internalCostTotal, quotation.subtotal);
+        if (actual != null && actual < floor && !input.reason?.trim()) {
+          return {
+            ok: false,
+            error: `This quotation's margin (${actual.toFixed(1)}%) is below the ${floor}% floor. Record an explicit owner exception reason, or change the price.`,
+          };
+        }
+        if (actual != null && actual < floor) {
+          await db.customerQuotation.update({
+            where: { id: quotation.id },
+            data: { marginExceptionReason: input.reason?.trim() },
+          });
+          await writeAudit({
+            actorId: input.userId,
+            actorLabel: input.actorLabel,
+            action: "quotation.margin_exception_approved",
+            entityType: "CustomerQuotation",
+            entityId: quotation.id,
+            meta: { actual, floor, reason: input.reason ?? null },
+          });
+        }
+      }
       const unpriced = quotation.items.filter((item) => item.unitPrice == null);
       if (unpriced.length > 0 && !input.reason?.trim()) {
         return {

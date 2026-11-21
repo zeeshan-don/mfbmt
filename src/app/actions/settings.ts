@@ -200,6 +200,7 @@ export async function saveOrganizationAction(formData: FormData) {
     taxRatePct: Number(String(formData.get("taxRatePct") ?? "5")) || 0,
     taxLabel: str(formData.get("taxLabel")) ?? "VAT",
     quotationTerms: str(formData.get("quotationTerms")),
+    minMarginPct: Math.min(100, Math.max(0, Number(String(formData.get("minMarginPct") ?? "0")) || 0)),
     inventoryMode: inventoryMode === "SOURCING_FIRST" ? "SOURCING_FIRST" : "STOCK_FIRST",
     inventoryConfiguredAt:
       inventoryMode === "SOURCING_FIRST" ? (existing.inventoryConfiguredAt ?? new Date()) : existing.inventoryConfiguredAt ?? null,
@@ -283,12 +284,14 @@ export async function savePricingRuleAction(formData: FormData) {
   const type = String(formData.get("type") ?? "PERCENT_MARKUP");
   const value = Number(String(formData.get("value") ?? "0")) || 0;
   const category = scope === "CATEGORY" ? str(formData.get("category")) : null;
+  const customerTier = str(formData.get("customerTier"))?.toUpperCase() ?? null;
   if (scope === "CATEGORY" && !category) redirect("/settings?error=Choose+a+category+for+this+rule#pricing");
 
   await db.pricingRule.create({
     data: {
       scope,
       category,
+      customerTier,
       type,
       value,
       priority: Number(String(formData.get("priority") ?? "100")) || 100,
@@ -300,7 +303,7 @@ export async function savePricingRuleAction(formData: FormData) {
     actorLabel: user.name,
     action: "pricing_rule.created",
     entityType: "PricingRule",
-    meta: { scope, type, value, category },
+    meta: { scope, type, value, category, customerTier },
   });
   revalidatePath("/settings");
   redirect("/settings?saved=1#pricing");

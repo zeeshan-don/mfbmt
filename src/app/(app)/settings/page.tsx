@@ -489,6 +489,13 @@ export default async function SettingsPage({
               Tax rate (%)
               <input name="taxRatePct" type="number" step="0.01" defaultValue={org?.taxRatePct ?? 5} className={`${inputClass} mt-1 tabular`} />
             </label>
+            <label className="block text-xs text-soft">
+              Minimum gross margin (%)
+              <input name="minMarginPct" type="number" min={0} max={100} step="0.1" defaultValue={org?.minMarginPct ?? 0} className={`${inputClass} mt-1 tabular`} />
+            </label>
+            <p className="pt-5 text-[11px] text-muted">
+              A positive floor blocks PDF creation and release below it. The owner can still approve with an explicit recorded exception.
+            </p>
             <label className="block text-xs text-soft sm:col-span-3">
               Default quotation terms
               <textarea name="quotationTerms" rows={3} defaultValue={org?.quotationTerms ?? ""} className={`${textareaClass} mt-1`} />
@@ -574,7 +581,8 @@ export default async function SettingsPage({
                 <li key={rule.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
                   <div>
                     <p className="text-xs text-ink">
-                      {rule.scope === "GLOBAL" ? "All products" : rule.category} ·{" "}
+                      {rule.scope === "GLOBAL" ? "All products" : rule.category}
+                      {rule.customerTier ? ` · ${rule.customerTier} tier` : ""} ·{" "}
                       {rule.type === "PERCENT_MARKUP"
                         ? `${rule.value}% markup`
                         : rule.type === "FIXED_MARKUP"
@@ -623,6 +631,16 @@ export default async function SettingsPage({
                   <option value="PERCENT_MARKUP">Percentage markup</option>
                   <option value="FIXED_MARKUP">Fixed markup</option>
                   <option value="MANUAL">Manual price only</option>
+                </select>
+              </label>
+              <label className="block text-xs text-soft">
+                Customer tier (optional)
+                <select name="customerTier" className={`${inputClass} mt-1`}>
+                  <option value="">All tiers</option>
+                  <option value="STANDARD">Standard</option>
+                  <option value="SILVER">Silver</option>
+                  <option value="GOLD">Gold</option>
+                  <option value="STRATEGIC">Strategic</option>
                 </select>
               </label>
               <label className="block text-xs text-soft">

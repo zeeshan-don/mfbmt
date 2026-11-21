@@ -5,7 +5,7 @@ import { requirePermission } from "@/lib/auth";
 import { marginPct } from "@/lib/pricing/rules";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, Notice, PageHeader, inputClass, statusTone } from "@/components/ui";
-import { generateQuotationPdfAction, sendQuotationAction, updateQuotationPriceAction } from "@/app/actions/quotations";
+import { generateQuotationPdfAction, sendQuotationAction, setQuotationOutcomeAction, updateQuotationPriceAction, updateQuotationTechnicalAction } from "@/app/actions/quotations";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +39,11 @@ export default async function QuotationPage({
   const costKnown = quotation.internalCostComplete && quotation.internalCostTotal != null;
   const internalMargin = costKnown ? quotation.subtotal - (quotation.internalCostTotal ?? 0) : null;
   const totalQty = quotation.items.reduce((sum, line) => sum + line.quantity, 0);
+  const org = await db.organization.findUnique({ where: { id: quotation.organizationId } });
+  const belowFloor =
+    org && org.minMarginPct > 0 && costKnown && internalMargin != null && quotation.subtotal > 0
+      ? (internalMargin / quotation.subtotal) * 100 < org.minMarginPct
+      : false;
 
   return (
     <div className="space-y-5">
@@ -58,6 +63,23 @@ export default async function QuotationPage({
       {flags.saved ? <Notice tone="ok">Quotation updated.</Notice> : null}
       {flags.pdf ? <Notice tone="ok">PDF created. Use the download button to open it.</Notice> : null}
       {flags.sent ? <Notice tone="ok">{flags.sent}</Notice> : null}
+
+      {quotation.changeSummary ? (
+        <Notice tone="info" title="What changed in this revision">
+          {quotation.changeSummary}
+        </Notice>
+      ) : null}
+      {belowFloor && !quotation.marginExceptionReason ? (
+        <Notice tone="danger" title="Below your margin floor">
+          The recorded margin is below the {org?.minMarginPct}% floor. PDF creation and release are blocked until you approve an explicit
+          margin exception on the approval screen.
+        </Notice>
+      ) : null}
+      {quotation.marginExceptionReason ? (
+        <Notice tone="warn" title="Owner margin exception recorded">
+          {quotation.marginExceptionReason}
+        </Notice>
+      ) : null}
 
       {quotation.status === "AWAITING_APPROVAL" ? (
         <Notice tone="warn" title="This quotation is not approved yet">
@@ -155,6 +177,27 @@ export default async function QuotationPage({
                 </tfoot>
               </table>
             </div>
+            <details className="border-t border-line">
+              <summary className="cursor-pointer list-none px-4 py-2.5 text-xs font-medium text-soft hover:text-ink">
+                Per-line technical terms, origin, certification and delivery
+              </summary>
+              <div className="space-y-3 border-t border-line px-4 py-3">
+                {quotation.items.map((line) => (
+                  <form key={line.id} action={updateQuotationTechnicalAction} className="grid gap-2 rounded-control border border-line p-3 sm:grid-cols-3">
+                    <input type="hidden" name="quotationId" value={quotation.id} />
+                    <input type="hidden" name="itemId" value={line.id} />
+                    <p className="text-xs font-medium text-ink sm:col-span-3">{line.description}</p>
+                    <label className="block text-[11px] text-soft">Country of origin<input name="countryOfOrigin" defaultValue={line.countryOfOrigin ?? ""} className={`${inputClass} mt-1`} /></label>
+                    <label className="block text-[11px] text-soft">Certification<input name="certification" defaultValue={line.certification ?? ""} className={`${inputClass} mt-1`} placeholder="EN 10204 3.1" /></label>
+                    <label className="block text-[11px] text-soft">Lead time (days)<input name="leadTimeDays" inputMode="numeric" defaultValue={line.leadTimeDays ?? ""} className={`${inputClass} mt-1 tabular`} /></label>
+                    <label className="block text-[11px] text-soft">Delivery terms<input name="deliveryTerms" defaultValue={line.deliveryTerms ?? ""} className={`${inputClass} mt-1`} placeholder="DAP Dubai" /></label>
+                    <label className="block text-[11px] text-soft">Line validity<input name="validityDate" type="date" defaultValue={line.validityDate ? line.validityDate.toISOString().slice(0, 10) : ""} className={`${inputClass} mt-1`} /></label>
+                    <label className="block text-[11px] text-soft">Technical note<input name="technicalNotes" defaultValue={line.technicalNotes ?? ""} className={`${inputClass} mt-1`} /></label>
+                    <div className="sm:col-span-3"><Button size="sm">Save technical terms</Button></div>
+                  </form>
+                ))}
+              </div>
+            </details>
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3">
               <p className="text-[11px] text-muted">
                 Valid until {quotation.validityDate ? formatDate(quotation.validityDate) : "not set"} · {totalQty} unit(s).
@@ -170,6 +213,9 @@ export default async function QuotationPage({
                 ) : null}
                 {quotation.pdfPath ? (
                   <ButtonLink href={`/api/quotations/${quotation.id}/pdf`} size="sm">Download PDF</ButtonLink>
+                ) : null}
+                {["APPROVED", "SENT"].includes(quotation.status) ? (
+                  <ButtonLink href={`/api/quotations/${quotation.id}/excel`} size="sm">Download Excel</ButtonLink>
                 ) : null}
                 {isOwner && quotation.status === "APPROVED" ? (
                   <form action={sendQuotationAction} className="flex flex-wrap items-end gap-2 rounded-control border border-line bg-elevated/40 px-2.5 py-2">
@@ -226,6 +272,27 @@ export default async function QuotationPage({
                   ? "Based on approved supplier landed costs and recorded stock cost at the time of preparation."
                   : "Cost is incomplete because a stock unit cost or supplier cost is missing. No margin is claimed."}
               </p>
+            </Card>
+          ) : null}
+
+          {isOwner && ["APPROVED", "SENT"].includes(quotation.status) ? (
+            <Card>
+              <CardHeader title="Outcome" description="Record what the customer decided. This drives the conversion report." />
+              <form action={setQuotationOutcomeAction} className="space-y-2 px-4 py-3">
+                <input type="hidden" name="quotationId" value={quotation.id} />
+                <label className="block text-xs text-soft">Result
+                  <select name="outcome" defaultValue={quotation.outcome ?? "NO_RESPONSE"} className={`${inputClass} mt-1`}>
+                    <option value="WON">Won</option>
+                    <option value="LOST">Lost</option>
+                    <option value="NO_RESPONSE">No response</option>
+                  </select>
+                </label>
+                <label className="block text-xs text-soft">Reason / note<input name="reason" defaultValue={quotation.outcomeReason ?? ""} className={`${inputClass} mt-1`} /></label>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-muted">{quotation.outcomeAt ? `Recorded ${formatDateTime(quotation.outcomeAt)}` : "Not recorded yet"}</span>
+                  <Button size="sm">Record outcome</Button>
+                </div>
+              </form>
             </Card>
           ) : null}
 

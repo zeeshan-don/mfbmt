@@ -33,6 +33,12 @@ type Quotation = {
     unit: string;
     unitPrice: number;
     lineTotal: number;
+    countryOfOrigin?: string | null;
+    certification?: string | null;
+    leadTimeDays?: number | null;
+    deliveryTerms?: string | null;
+    validityDate?: Date | null;
+    technicalNotes?: string | null;
   }>;
 };
 
@@ -134,11 +140,19 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
         });
         const itemHeight = doc.heightOfString(item.description.slice(0, 120), { width: descriptionWidth });
         let specHeight = 0;
-        if (item.specs && item.specs !== item.description) {
+        const detail = [
+          item.specs && item.specs !== item.description ? item.specs.slice(0, 220) : null,
+          item.countryOfOrigin ? `Origin: ${item.countryOfOrigin}` : null,
+          item.certification ? `Certification: ${item.certification}` : null,
+          item.leadTimeDays != null ? `Lead time: ${item.leadTimeDays} days` : null,
+          item.deliveryTerms ? `Delivery: ${item.deliveryTerms}` : null,
+          item.validityDate ? `Line valid to: ${prettyDate(item.validityDate)}` : null,
+          item.technicalNotes ? item.technicalNotes.slice(0, 160) : null,
+        ].filter(Boolean).join(" · ");
+        if (detail) {
           doc.font("Helvetica").fontSize(7.5).fillColor(MUTED);
-          const specs = item.specs.slice(0, 220);
-          doc.text(specs, columns.item, y + itemHeight + 1, { width: descriptionWidth });
-          specHeight = doc.heightOfString(specs, { width: descriptionWidth });
+          doc.text(detail, columns.item, y + itemHeight + 1, { width: descriptionWidth });
+          specHeight = doc.heightOfString(detail, { width: descriptionWidth });
         }
         doc.fillColor(INK).fontSize(8.5).font("Helvetica");
         doc.text(String(item.quantity), columns.qty, y, { width: qtyWidth, align: "right" });

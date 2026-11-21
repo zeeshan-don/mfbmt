@@ -50,7 +50,7 @@ export async function notifyOwner(input: {
   link?: string;
 }) {
   try {
-    const owners = await db.user.findMany({ where: { role: "OWNER", isActive: true }, select: { id: true } });
+    const owners = await db.user.findMany({ where: { role: "OWNER", isActive: true }, select: { id: true, email: true, name: true } });
     if (owners.length === 0) {
       await db.notification.create({ data: { ...input, userId: null } });
       return;
@@ -58,6 +58,28 @@ export async function notifyOwner(input: {
     await db.notification.createMany({
       data: owners.map((owner) => ({ ...input, userId: owner.id })),
     });
+    // In-app notification is durable; email is a best-effort deep-link. A
+    // mailbox failure must never fail the business action that triggered it.
+    try {
+      const [{ sendEmail }, { env }] = await Promise.all([import("./email/send"), import("./env")]);
+      const absoluteLink = input.link ? `${env.APP_URL.replace(/\/$/, "")}${input.link}` : null;
+      for (const owner of owners) {
+        await sendEmail({
+          to: owner.email,
+          subject: `[Procurement] ${input.title}`,
+          text: [
+            `Hello ${owner.name},`,
+            "",
+            input.body ?? input.title,
+            absoluteLink ? `Open: ${absoluteLink}` : "",
+            "",
+            "This is an automated notification. No customer or supplier message was sent by this alert.",
+          ].filter(Boolean).join("\n"),
+        }).catch(() => undefined);
+      }
+    } catch {
+      // The in-app notification remains available.
+    }
   } catch (error) {
     console.error("[notify] failed", input.type, error);
   }

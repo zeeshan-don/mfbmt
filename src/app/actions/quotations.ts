@@ -5,6 +5,8 @@ import { redirect } from "next/navigation";
 import { authorizeOwner } from "@/lib/auth";
 import {
   updateQuotationLinePrice,
+  updateQuotationLineTechnical,
+  setQuotationOutcome,
   generateAndStoreQuotationPdf,
   sendApprovedQuotation,
   type SendChannel,
@@ -31,6 +33,47 @@ export async function updateQuotationPriceAction(formData: FormData) {
   });
   revalidatePath(`/quotations/${quotationId}`);
   if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not update the price")}`);
+  redirect(`/quotations/${quotationId}?saved=1`);
+}
+
+export async function updateQuotationTechnicalAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const quotationId = String(formData.get("quotationId") ?? "");
+  const itemId = String(formData.get("itemId") ?? "");
+  const leadTimeRaw = String(formData.get("leadTimeDays") ?? "").trim();
+  const leadTimeDays = leadTimeRaw ? Number(leadTimeRaw) : null;
+  const validityRaw = String(formData.get("validityDate") ?? "").trim();
+  const result = await updateQuotationLineTechnical({
+    quotationId,
+    itemId,
+    countryOfOrigin: String(formData.get("countryOfOrigin") ?? ""),
+    certification: String(formData.get("certification") ?? ""),
+    leadTimeDays: leadTimeDays != null && Number.isFinite(leadTimeDays) ? leadTimeDays : null,
+    deliveryTerms: String(formData.get("deliveryTerms") ?? ""),
+    validityDate: validityRaw ? new Date(validityRaw) : null,
+    technicalNotes: String(formData.get("technicalNotes") ?? ""),
+    userId: user.id,
+    actorLabel: user.name,
+  });
+  revalidatePath(`/quotations/${quotationId}`);
+  if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not update technical terms")}`);
+  redirect(`/quotations/${quotationId}?saved=1`);
+}
+
+export async function setQuotationOutcomeAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const quotationId = String(formData.get("quotationId") ?? "");
+  const result = await setQuotationOutcome({
+    quotationId,
+    outcome: String(formData.get("outcome") ?? ""),
+    reason: String(formData.get("reason") ?? "") || null,
+    userId: user.id,
+    actorLabel: user.name,
+  });
+  revalidatePath(`/quotations/${quotationId}`);
+  if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not record outcome")}`);
   redirect(`/quotations/${quotationId}?saved=1`);
 }
 

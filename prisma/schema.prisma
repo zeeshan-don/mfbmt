@@ -36,6 +36,7 @@ model Organization {
   quotationPrefix       String    @default("QT")
   quotationValidityDays Int       @default(14)
   quotationTerms        String?
+  minMarginPct          Float     @default(0)
   taxEnabled            Boolean   @default(false)
   taxRatePct            Float     @default(5)
   taxLabel              String    @default("VAT")
@@ -79,6 +80,8 @@ model Organization {
   approvals              Approval[]
   customerQuotations     CustomerQuotation[]
   customerQuotationItems CustomerQuotationItem[]
+  customers              Customer[]
+  customerContacts       CustomerContact[]
   pricingRules           PricingRule[]
   materialEquivalences   MaterialEquivalence[]
   integrations           Integration[]
@@ -347,6 +350,8 @@ model Enquiry {
   contactId                String?
   contact                  Contact?            @relation(fields: [contactId], references: [id])
   conversationId           String?
+  customerId               String?
+  customer                 Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
   customerName             String?
   customerPhone            String?
   customerEmail            String?
@@ -820,12 +825,54 @@ model Approval {
   @@index([enquiryId])
 }
 
+/// Customer master. Enquiries and quotations link here so quote history survives
+/// changes to the original phone number or contact name.
+model Customer {
+  id             String            @id @default(cuid())
+  organizationId String            @default("__unset__")
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  email          String?
+  phone          String?
+  taxNumber      String?
+  country        String?
+  tier           String            @default("STANDARD") // STANDARD | SILVER | GOLD | STRATEGIC
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  contacts       CustomerContact[]
+  enquiries      Enquiry[]
+  quotations     CustomerQuotation[]
+
+  @@index([organizationId, name])
+  @@index([organizationId, email])
+}
+
+model CustomerContact {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name           String
+  role           String?
+  email          String?
+  phone          String?
+  isPrimary      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+
+  @@index([customerId])
+  @@index([organizationId])
+}
+
 model CustomerQuotation {
   id                     String                  @id @default(cuid())
   organizationId         String                  @default("__unset__")
   organization           Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   enquiryId              String
   enquiry                Enquiry                 @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  customerId             String?
+  customer               Customer?               @relation(fields: [customerId], references: [id], onDelete: SetNull)
   quoteNumber            String
   version                Int                     @default(1)
   customerName           String
@@ -841,6 +888,11 @@ model CustomerQuotation {
   notes                  String?
   validityDate           DateTime?
   status                 String                  @default("DRAFT") // DRAFT | AWAITING_APPROVAL | APPROVED | SENT | VOID
+  changeSummary          String?
+  outcome                String? // WON | LOST | NO_RESPONSE
+  outcomeReason          String?
+  outcomeAt              DateTime?
+  marginExceptionReason  String?
   approvedById           String?
   approvedBy             User?                   @relation("QuoteApprover", fields: [approvedById], references: [id])
   approvedAt             DateTime?
@@ -864,6 +916,7 @@ model CustomerQuotation {
   @@unique([enquiryId, version])
   @@index([enquiryId])
   @@index([organizationId])
+  @@index([customerId])
 }
 
 model CustomerQuotationItem {
@@ -883,6 +936,12 @@ model CustomerQuotationItem {
   lineTotal       Float?
   priceStatus     String            @default("UNPRICED") // PRICED | UNPRICED
   costStatus      String            @default("UNKNOWN") // COMPLETE | PARTIAL | UNKNOWN
+  countryOfOrigin String?
+  certification   String?
+  leadTimeDays    Int?
+  deliveryTerms   String?
+  validityDate    DateTime?
+  technicalNotes  String?
   pricingSource   String? // RULE | MANUAL | OWNER_OVERRIDE
   overrideReason  String?
   overrideById    String?
@@ -906,6 +965,7 @@ model PricingRule {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   scope          String       @default("GLOBAL") // GLOBAL | CATEGORY
   category       String?
+  customerTier   String? // STANDARD | SILVER | GOLD | STRATEGIC
   type           String       @default("PERCENT_MARKUP") // PERCENT_MARKUP | FIXED_MARKUP | MANUAL
   value          Float        @default(0)
   priority       Int          @default(100)

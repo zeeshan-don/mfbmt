@@ -65,6 +65,18 @@ The baseline check was run before behavior changes. `npm run check` does not inc
 
 Prospect discovery creates unverified supplier records only from a public result and visibly extracted contacts. The RFQ sender now enforces do-not-contact, contact exclusions, bounced-address suppression, one request per supplier/item and a per-organization daily cap. Drafts are never sent without an approval row; optional auto-send is off by default and only applies to owner-verified suppliers.
 
+## Phase 5 verification
+
+| Command | Result |
+| --- | --- |
+| `npm run check` | **PASS** — 34 test files / **243 tests**, typecheck, production build |
+| Focused quotation tests | 24/24 passed (margin floor, customer linkage/outcome, production release controls) |
+| `npm run build` | PASS — `/customers`, `/customers/[id]`, `/reports` and `/api/quotations/[id]/excel` compiled |
+| Additive migrations | `20261121170000_phase5_quotation_quality`, `20261121180000_customer_master` applied with `prisma migrate deploy` |
+| Live providers | **NOT VERIFIED** — no credentials |
+
+Phase 5 adds per-line origin/certification/lead-time/delivery/validity terms, revision summaries, customer-tier pricing, margin floors with recorded owner exceptions, won/lost/no-response outcomes, an Excel export and a customer master linked to enquiry/quote history. The report uses only recorded quotations and outcomes.
+
 ## Phase 4/7/10 verification
 
 | Command | Result |
@@ -120,8 +132,8 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 | Supplier directory/ranking/CSV | Built + tested | Categories, countries, currencies, payment terms, lead time, ranking and CSV import |
 | Price memory | Built | Previous supplier/customer prices with date and currency on the sourcing screen |
 | FX multi-currency | Partial | Provider supports arbitrary pairs; CNY/KRW price parsing and daily cache tested; live FX unverified; no fixed non-USD/AED rates |
-| Quotation technical fields/revisions/Excel | Partial | Version/PDF exist; fields/exports/outcome missing |
-| Customer master | Not built | Contact model exists but no company master/quote history |
+| Quotation technical fields/revisions/Excel | Built + tested | Per-line origin/certification/lead time/delivery/validity, visible revision summary, PDF/Excel, outcome, margin floor |
+| Customer master | Built + tested | Customer/contact records, tier, enquiry and quote history, automatic linking on draft |
 | Approval notifications/digest | Not built | In-app notifications only |
 | Inbox/SLA/dashboard | Partial | Enquiries/activity exist; views/timers/metrics missing |
 | Golden dataset/eval | Not built | No dataset/harness |
@@ -156,6 +168,7 @@ The evaluation corpus is deliberately simple, one-line synthetic text. The 100% 
 - Phase 1: crons, authenticated cron calls, worker health/graceful release, storage round-trip command, baked OCR assets, operational alerts/digest and TOTP MFA with recovery codes implemented. `npm run check` PASS (27 files, 218 tests). Live S3/OCR-image checks remain unverified.
 - Phase 2: AI usage table/cost, budget refusal, per-org limits and warnings, item/query caps, search cache and monthly usage page/CSV/PDF implemented. `npm run check` PASS. Optional second pass remains **not built** and is called out above.
 - Phase 3: added gasket/insulation/service schemas, NACE/length vocabulary, A194 nut grades and U-bolt parsing, and a deterministic service-sourcing block. `npm run check` PASS (28 files, 225 tests). Unit conversions and the chemical SDS quotation checklist remain open.
+- Phase 5: added quotation technical terms, revision summaries, customer-tier pricing, customer master, margin floor with owner exception, outcomes, Excel export and the quotation report. `npm run check` PASS (34 files, 243 tests).
 - Phase 4: added prospect discovery and public-contact evidence, domain deduplication, drafted RFQ queue with batch approval, daily/DNC/bounce safeguards, reminders, supplier ranking/CSV fields and recorded price memory. `npm run check` PASS. AI+zod supplier-reply extraction and live FX remain open.
 - Phase 7 evidence: added a 60-case synthetic OGS corpus, `npm run eval:extraction`, and rules-only results (100% on this simple corpus; 0 wrong-but-confident; $0 AI). AI-mode, real-mail and attachment/OCR evaluation remain unverified.
 - Partial Phase 8/10: added OGS onboarding, runbook, service scope, human-task list, demo script and `npm run check:golive`. The gate fails closed locally on missing production credentials/data as expected.

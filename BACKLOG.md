@@ -82,27 +82,27 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 5 — Quotation quality
 
-- [ ] Add per-line full technical description, country of origin, certification offered, lead time, delivery terms, validity.
-- [ ] Add quotation revisions R0/R1/R2 with visible change summary.
-- [ ] Add Excel export beside PDF.
-- [ ] Use organization letterhead, terms and numbering from tenant settings.
-- [ ] Add pricing rules by organization, category and customer tier.
-- [ ] Add margin floors that block sending below floor without owner override and recorded reason.
-- [ ] Add outcome tracking: won/lost/no-response with reason.
-- [ ] Add report: response time, conversion rate, margin by category.
-- [ ] Add customer master (companies/contacts), linked to enquiries with quote history.
-- [ ] Phase 5: `npm run check` green, commit, update STATUS.md.
+- [x] Add per-line full technical description, country of origin, certification offered, lead time, delivery terms, validity.
+- [x] Add quotation revisions R0/R1/R2 with visible change summary.
+- [x] Add Excel export beside PDF.
+- [x] Use organization letterhead, terms and numbering from tenant settings.
+- [x] Add pricing rules by organization, category and customer tier.
+- [x] Add margin floors that block sending below floor without owner override and recorded reason.
+- [x] Add outcome tracking: won/lost/no-response with reason.
+- [x] Add report: response time, conversion rate, margin by category.
+- [x] Add customer master (companies/contacts), linked to enquiries with quote history.
+- [x] Phase 5: `npm run check` green, commit, update STATUS.md.
 
 ## Phase 6 — Owner speed at 40 enquiries/day
 
-- [ ] Add approval email notifications with deep links.
-- [ ] Add WhatsApp approval notification only where the Cloud API window allows.
-- [ ] Add daily pending-approval digest.
-- [ ] Add inbox views: needs review, waiting on suppliers, ready to quote, overdue.
-- [ ] Add bulk actions for safe confirmation steps only; keep three approvals individual.
-- [ ] Add SLA timers with configurable overdue highlight.
-- [ ] Add dashboard: today's volume, backlog, median time to quote, spend vs monthly limits.
-- [ ] Phase 6: `npm run check` green, commit, update STATUS.md.
+- [x] Add approval email notifications with deep links.
+- [ ] Add WhatsApp approval notification only where the Cloud API window allows. **Not built**; email/in-app only.
+- [x] Add daily pending-approval digest.
+- [x] Add inbox views: needs review, waiting on suppliers, ready to quote, overdue.
+- [ ] Add bulk actions for safe confirmation steps only; keep three approvals individual. **Not built**.
+- [x] Add SLA timers with configurable overdue highlight. Overdue highlighting is 48 hours; the threshold is not yet tenant-configurable.
+- [ ] Add dashboard: today's volume, backlog, median time to quote, spend vs monthly limits. **Partial**: existing live attention/dashboard; median and spend cards not added.
+- [ ] Phase 6: `npm run check` green, commit, update STATUS.md. **Partial**: email approval links, digest and inbox/SLA added; WhatsApp, bulk actions and the full metric cards remain open.
 
 ## Phase 7 — Proof
 
