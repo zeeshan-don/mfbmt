@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { requireTenantId } from "@/lib/tenant";
@@ -81,7 +81,7 @@ export async function runInventoryImportAction(formData: FormData) {
       params.set("errors", String(report.errors.length));
       params.set("firstError", `Row ${report.errors[0].row}: ${report.errors[0].message}`);
     }
-    revalidatePath("/inventory");
+    revalidateOrgPath(user.organizationId, "/inventory");
     redirect(`/inventory?${params.toString()}`);
   } catch (error) {
     redirect(`/inventory/import?token=${token}&error=${encodeURIComponent(error instanceof Error ? error.message : "Import failed")}`);
@@ -133,7 +133,7 @@ export async function createProductAction(formData: FormData) {
   } catch (error) {
     redirect(`/inventory?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not create product")}`);
   }
-  revalidatePath("/inventory");
+  revalidateOrgPath(user.organizationId, "/inventory");
   redirect("/inventory?saved=1");
 }
 
@@ -173,6 +173,6 @@ export async function adjustStockAction(formData: FormData) {
     entityId: productId,
     meta: { delta, next },
   });
-  revalidatePath("/inventory");
+  revalidateOrgPath(user.organizationId, "/inventory");
   redirect("/inventory?saved=1");
 }

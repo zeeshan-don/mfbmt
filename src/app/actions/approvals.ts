@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { authorizeOwner } from "@/lib/auth";
 import { decideApproval, type ApprovalDecision } from "@/lib/workflow/approvals";
@@ -31,8 +31,8 @@ export async function decideApprovalAction(formData: FormData) {
 
   if (!result.ok) redirect(`/approvals/${approvalId}?error=${encodeURIComponent(result.error)}`);
 
-  revalidatePath("/approvals");
-  revalidatePath(result.redirectTo);
+  revalidateOrgPath(user.organizationId, "/approvals");
+  revalidateOrgPath(user.organizationId, result.redirectTo);
   if (returnTo === "list") redirect(`/approvals?decided=1`);
   redirect(result.redirectTo);
 }
@@ -44,6 +44,6 @@ export async function markNotificationsReadAction() {
     where: { OR: [{ userId: user.id }, { userId: null }] },
     data: { isRead: true },
   });
-  revalidatePath("/activity");
+  revalidateOrgPath(user.organizationId, "/activity");
   redirect("/activity#notifications");
 }

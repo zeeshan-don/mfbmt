@@ -8,6 +8,7 @@ import { sendSupplierQuoteRequest, sendSupplierReminder } from "./supplierQuotes
 import { JOB_TYPES } from "../constants";
 import { runWithTenant } from "../tenant";
 import { recoverStaleOutboundClaims } from "../outbound/messages";
+import { broadcastOrgRefresh } from "../realtime";
 
 /**
  * Executes one job. Handlers are idempotent: a retried job must not duplicate
@@ -135,5 +136,8 @@ export async function runNextJob(workerId: string): Promise<boolean> {
     const outcome = await failJob(job.id, workerId, error instanceof Error ? error.message : "Unknown job error");
     if (outcome === "lost") console.warn(`[worker] lost the lease for job ${job.id} while handling an error.`);
   }
+  // Any job can change data the UI is showing. Tell the owning company's open
+  // tabs to re-render, regardless of whether this attempt succeeded or failed.
+  await broadcastOrgRefresh(job.organizationId, "job");
   return true;
 }

@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { authorizeOwner } from "@/lib/auth";
@@ -143,7 +143,7 @@ export async function recordManualOfferAction(formData: FormData) {
     meta: { supplierName, unitPrice, currency, matchStatus: match.status },
   });
 
-  revalidatePath(`/sourcing/${itemId}`);
+  revalidateOrgPath(user.organizationId, `/sourcing/${itemId}`);
   redirect(`/sourcing/${itemId}?saved=1`);
 }
 
@@ -167,7 +167,7 @@ export async function approveOfferAction(formData: FormData) {
   });
 
   if (!result.ok) redirect(`/sourcing/${itemId}?error=${encodeURIComponent(result.error)}`);
-  revalidatePath(`/sourcing/${itemId}`);
+  revalidateOrgPath(user.organizationId, `/sourcing/${itemId}`);
   redirect(`/sourcing/${itemId}?approved=1`);
 }
 
@@ -183,7 +183,7 @@ export async function requestMoreQuotesAction(formData: FormData) {
     entityType: "EnquiryItem",
     entityId: itemId,
   });
-  revalidatePath(`/sourcing/${itemId}`);
+  revalidateOrgPath(user.organizationId, `/sourcing/${itemId}`);
   redirect(`/sourcing/${itemId}?queued=1`);
 }
 
@@ -200,7 +200,7 @@ export async function createSupplierQuoteAction(formData: FormData) {
     userId: user.id,
     actorLabel: user.name,
   });
-  revalidatePath(`/sourcing/${itemId}`);
+  revalidateOrgPath(user.organizationId, `/sourcing/${itemId}`);
   if (!result.ok) redirect(`/sourcing/${itemId}?error=${encodeURIComponent(result.error)}`);
   redirect(`/sourcing/${itemId}?requested=1`);
 }

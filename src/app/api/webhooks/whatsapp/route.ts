@@ -7,6 +7,7 @@ import { ingestInboundMessage, isSenderExcluded } from "@/lib/workflow/enquiry";
 import { resolveWhatsAppOrganization } from "@/lib/integrations/whatsapp";
 import { writeAudit } from "@/lib/audit";
 import { runWithTenant } from "@/lib/tenant";
+import { broadcastOrgRefresh } from "@/lib/realtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -170,6 +171,10 @@ export async function POST(request: Request) {
           receivedAt: message.timestamp,
           mediaRefs: exclusion.excluded ? [] : message.media ? [message.media] : [],
         });
+
+        if (!result.duplicate && !result.ignored) {
+          await broadcastOrgRefresh(organizationId, "whatsapp");
+        }
 
         await db.webhookEvent.updateMany({
           where: { provider: "WHATSAPP", externalId: message.externalId },

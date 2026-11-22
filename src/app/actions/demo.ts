@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
@@ -26,7 +26,7 @@ export async function resetDemoWalkthroughAction() {
     entityId: "demo-walkthrough",
     meta: { refs: Object.values(FASTENER_DEMO_REFS), sample: true },
   });
-  revalidatePath("/demo");
+  revalidateOrgPath(user.organizationId, "/demo");
   redirect("/demo?reset=1");
 }
 
@@ -64,6 +64,6 @@ export async function simulateDemoSendAction() {
     entityId: quotation.id,
     meta: { channel: "DEMO", simulated: true, to: quotation.customerEmail ?? quotation.customerPhone },
   });
-  revalidatePath("/demo");
+  revalidateOrgPath(user.organizationId, "/demo");
   redirect("/demo?simulated=1");
 }

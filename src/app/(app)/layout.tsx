@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { SideNav, MobileNav } from "@/components/nav";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { RealtimeRefresh } from "@/components/realtime-refresh";
 import { Badge } from "@/components/ui";
 import { isDemoMode } from "@/lib/env";
 import { workerLiveness } from "@/lib/workflow/jobs";
@@ -52,6 +53,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex min-h-screen bg-bg">
+      <RealtimeRefresh organizationId={user.organizationId} />
       <aside className="hidden w-56 shrink-0 flex-col border-r border-line bg-surface px-3 py-4 lg:flex">
         <Link href="/" className="mb-6 block px-2">
           <span className="block truncate text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">

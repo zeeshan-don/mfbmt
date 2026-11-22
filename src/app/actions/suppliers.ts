@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { authorize, authorizeOwner } from "@/lib/auth";
@@ -51,7 +51,7 @@ export async function createSupplierAction(formData: FormData) {
     entityId: supplier.id,
     meta: { name },
   });
-  revalidatePath("/suppliers");
+  revalidateOrgPath(user.organizationId, "/suppliers");
   redirect(`/suppliers/${supplier.id}?saved=1`);
 }
 
@@ -88,7 +88,7 @@ export async function updateSupplierAction(formData: FormData) {
     entityType: "Supplier",
     entityId: supplierId,
   });
-  revalidatePath(`/suppliers/${supplierId}`);
+  revalidateOrgPath(user.organizationId, `/suppliers/${supplierId}`);
   redirect(`/suppliers/${supplierId}?saved=1`);
 }
 
@@ -124,7 +124,7 @@ export async function addSupplierProductAction(formData: FormData) {
     entityId: supplierId,
     meta: { title, price },
   });
-  revalidatePath(`/suppliers/${supplierId}`);
+  revalidateOrgPath(user.organizationId, `/suppliers/${supplierId}`);
   redirect(`/suppliers/${supplierId}?saved=1`);
 }
 
@@ -208,6 +208,6 @@ export async function importSuppliersAction(formData: FormData) {
   } catch (error) {
     redirect(`/suppliers?error=${encodeURIComponent(error instanceof Error ? error.message : "Import failed")}`);
   }
-  revalidatePath("/suppliers");
+  revalidateOrgPath(user.organizationId, "/suppliers");
   redirect(`/suppliers?imported=${created}&skipped=${skipped}`);
 }

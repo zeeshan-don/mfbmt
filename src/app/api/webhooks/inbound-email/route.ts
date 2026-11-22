@@ -4,6 +4,7 @@ import { rawDb } from "@/lib/db-base";
 import { timingSafeEqual } from "@/lib/crypto";
 import { ingestInboundMessage } from "@/lib/workflow/enquiry";
 import { runWithTenant } from "@/lib/tenant";
+import { broadcastOrgRefresh } from "@/lib/realtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -86,6 +87,10 @@ export async function POST(request: Request) {
       attachments,
     }),
   );
+
+  if (!result.duplicate && !result.ignored) {
+    await broadcastOrgRefresh(organization.id, "email");
+  }
 
   return NextResponse.json({ ok: true, duplicate: result.duplicate, ignored: result.ignored, warnings: result.warnings });
 }

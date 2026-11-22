@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { authorizeOwner } from "@/lib/auth";
 import { integrationKeys, type IntegrationKey } from "@/lib/constants";
@@ -14,6 +14,6 @@ export async function runDiagnosticAction(formData: FormData) {
   if (!integrationKeys.includes(key)) redirect("/integrations?error=Unknown+integration");
 
   const result = await runIntegrationDiagnostic(key);
-  revalidatePath("/integrations");
+  revalidateOrgPath(user.organizationId, "/integrations");
   redirect(`/integrations?checked=${encodeURIComponent(key)}&result=${encodeURIComponent(result.detail)}`);
 }

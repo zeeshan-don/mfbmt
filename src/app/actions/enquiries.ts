@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { authorize, authorizeOwner } from "@/lib/auth";
@@ -83,7 +83,7 @@ export async function updateItemAction(formData: FormData) {
   } catch (error) {
     redirect(`/enquiries/${enquiryId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not save")}`);
   }
-  revalidatePath(`/enquiries/${enquiryId}`);
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   redirect(`/enquiries/${enquiryId}?saved=1`);
 }
 
@@ -100,7 +100,7 @@ export async function recheckStockAction(formData: FormData) {
     entityType: "Enquiry",
     entityId: enquiryId,
   });
-  revalidatePath(`/enquiries/${enquiryId}`);
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   redirect(`/enquiries/${enquiryId}?stock=checked`);
 }
 
@@ -127,7 +127,7 @@ export async function runSourcingAction(formData: FormData) {
     entityType: "EnquiryItem",
     entityId: itemId,
   });
-  revalidatePath(`/enquiries/${enquiryId}`);
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   redirect(`/enquiries/${enquiryId}?queued=1`);
 }
 
@@ -140,7 +140,7 @@ export async function retryExtractionAction(formData: FormData) {
     data: { status: "EXTRACTING", requiresReview: false, reviewReason: null },
   });
   await extractEnquiryById(enquiryId);
-  revalidatePath(`/enquiries/${enquiryId}`);
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   redirect(`/enquiries/${enquiryId}?saved=1`);
 }
 
@@ -173,7 +173,7 @@ export async function markAsRfqAction(formData: FormData) {
     entityType: "Enquiry",
     entityId: enquiryId,
   });
-  revalidatePath(`/enquiries/${enquiryId}`);
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   redirect(`/enquiries/${enquiryId}?saved=1`);
 }
 
@@ -194,7 +194,7 @@ export async function closeEnquiryAction(formData: FormData) {
     entityId: enquiryId,
     meta: { status },
   });
-  revalidatePath(`/enquiries/${enquiryId}`);
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   redirect(`/enquiries/${enquiryId}?saved=1`);
 }
 
@@ -203,7 +203,7 @@ export async function buildQuotationAction(formData: FormData) {
   if (!user) redirect("/login");
   const enquiryId = String(formData.get("enquiryId") ?? "");
   const result = await createQuotationDraft({ enquiryId, userId: user.id, actorLabel: user.name });
-  revalidatePath(`/enquiries/${enquiryId}`);
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   if (!result.ok) redirect(`/enquiries/${enquiryId}?error=${encodeURIComponent(result.error)}`);
   redirect(`/quotations/${result.quotationId}`);
 }

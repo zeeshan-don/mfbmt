@@ -16,7 +16,7 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https://*.fbcdn.net https://*.facebook.com",
   "font-src 'self' data:",
-  `connect-src 'self' https://graph.facebook.com https://www.facebook.com https://web.facebook.com${isDev ? " ws: wss:" : ""}`,
+  `connect-src 'self' https://graph.facebook.com https://www.facebook.com https://web.facebook.com https://*.pusher.com wss://*.pusher.com${isDev ? " ws: wss:" : ""}`,
   "frame-src https://www.facebook.com https://web.facebook.com https://connect.facebook.net",
   "frame-ancestors 'none'",
   "object-src 'none'",

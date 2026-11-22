@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { requireOwner } from "@/lib/auth";
 import { reconcileOutbound } from "@/lib/outbound/messages";
@@ -36,6 +36,6 @@ export async function reconcileOutboundAction(formData: FormData) {
       }),
   );
 
-  revalidatePath("/observability");
+  revalidateOrgPath(user.organizationId, "/observability");
   redirect(result.ok ? "/observability?outbound=reconciled" : "/observability?outbound=stale");
 }

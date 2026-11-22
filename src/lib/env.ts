@@ -32,6 +32,12 @@ const schema = z.object({
   QSTASH_CURRENT_SIGNING_KEY: z.string().default(""),
   QSTASH_NEXT_SIGNING_KEY: z.string().default(""),
   QSTASH_DEV: z.string().default(""),
+
+  /** Pusher realtime (optional). All four are required for live updates. */
+  PUSHER_APP_ID: z.string().default(""),
+  PUSHER_KEY: z.string().default(""),
+  PUSHER_SECRET: z.string().default(""),
+  PUSHER_CLUSTER: z.string().default(""),
   WORKER_STALE_MS: z.coerce.number().default(120_000),
   WORKER_HEARTBEAT_MS: z.coerce.number().default(20_000),
   WORKER_HEALTH_PORT: z.coerce.number().default(3001),

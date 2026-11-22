@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { authorizeOwner } from "@/lib/auth";
@@ -54,7 +54,7 @@ export async function createCustomerAction(formData: FormData) {
     entityId: customer.id,
     meta: { name, tier: customer.tier },
   });
-  revalidatePath("/customers");
+  revalidateOrgPath(user.organizationId, "/customers");
   redirect(`/customers/${customer.id}?saved=1`);
 }
 
@@ -87,7 +87,7 @@ export async function updateCustomerAction(formData: FormData) {
     entityId: customerId,
     meta: { tier },
   });
-  revalidatePath("/customers");
-  revalidatePath(`/customers/${customerId}`);
+  revalidateOrgPath(user.organizationId, "/customers");
+  revalidateOrgPath(user.organizationId, `/customers/${customerId}`);
   redirect(`/customers/${customerId}?saved=1`);
 }

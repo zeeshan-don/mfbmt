@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { authorizeOwner, hashPassword } from "@/lib/auth";
@@ -150,7 +150,7 @@ export async function testIntegrationAction(formData: FormData) {
     meta: { status, detail },
   });
 
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect(`/settings?tested=${encodeURIComponent(key)}&result=${encodeURIComponent(`${status}: ${detail}`)}#integrations`);
 }
 
@@ -158,8 +158,8 @@ export async function syncEmailNowAction() {
   const user = await authorizeOwner();
   if (!user) redirect("/login");
   const result = await syncEmailIntake({ trigger: "manual" });
-  revalidatePath("/settings");
-  revalidatePath("/enquiries");
+  revalidateOrgPath(user.organizationId, "/settings");
+  revalidateOrgPath(user.organizationId, "/enquiries");
   redirect(`/settings?sync=${encodeURIComponent(result.detail)}#integrations`);
 }
 
@@ -175,7 +175,7 @@ export async function disconnectEmailAction(formData: FormData) {
     entityType: "Integration",
     entityId: provider === "gmail" ? "GMAIL" : "MICROSOFT365",
   });
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings?disconnected=1#integrations");
 }
 
@@ -216,8 +216,8 @@ export async function saveOrganizationAction(formData: FormData) {
     entityId: existing?.id ?? "new",
     meta: { inventoryMode: data.inventoryMode },
   });
-  revalidatePath("/settings");
-  revalidatePath("/onboarding");
+  revalidateOrgPath(user.organizationId, "/settings");
+  revalidateOrgPath(user.organizationId, "/onboarding");
   redirect("/settings?saved=1#company");
 }
 
@@ -259,7 +259,7 @@ export async function addExcludedContactAction(formData: FormData) {
     entityId: identifier,
     meta: { category },
   });
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings?saved=1#contacts");
 }
 
@@ -275,7 +275,7 @@ export async function removeExcludedContactAction(formData: FormData) {
     entityType: "ExcludedContact",
     entityId: id,
   });
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings?saved=1#contacts");
 }
 
@@ -307,7 +307,7 @@ export async function savePricingRuleAction(formData: FormData) {
     entityType: "PricingRule",
     meta: { scope, type, value, category, customerTier },
   });
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings?saved=1#pricing");
 }
 
@@ -319,7 +319,7 @@ export async function togglePricingRuleAction(formData: FormData) {
   if (rule) {
     await db.pricingRule.update({ where: { id }, data: { isActive: !rule.isActive } });
   }
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings#pricing");
 }
 
@@ -327,7 +327,7 @@ export async function deletePricingRuleAction(formData: FormData) {
   const user = await authorizeOwner();
   if (!user) redirect("/login");
   await db.pricingRule.deleteMany({ where: { id: String(formData.get("id") ?? "") } });
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings#pricing");
 }
 
@@ -357,7 +357,7 @@ export async function saveLimitsAction(formData: FormData) {
     entityType: "Organization",
     meta: saved,
   });
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings?saved=1#limits");
 }
 
@@ -395,7 +395,7 @@ export async function createUserAction(formData: FormData) {
     entityType: "User",
     meta: { email, permissions },
   });
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings?saved=1#team");
 }
 
@@ -409,7 +409,7 @@ export async function toggleUserAction(formData: FormData) {
     await db.user.update({ where: { id }, data: { isActive: !target.isActive } });
     await db.session.deleteMany({ where: { userId: id } });
   }
-  revalidatePath("/settings");
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect("/settings?saved=1#team");
 }
 
@@ -422,7 +422,7 @@ export async function retryJobAction(formData: FormData) {
   } catch (error) {
     redirect(`/activity?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not retry")}#jobs`);
   }
-  revalidatePath("/activity");
+  revalidateOrgPath(user.organizationId, "/activity");
   redirect("/activity?saved=1#jobs");
 }
 
@@ -441,6 +441,6 @@ export async function completeOnboardingAction() {
     entityType: "Organization",
     entityId: org?.id ?? "new",
   });
-  revalidatePath("/onboarding");
+  revalidateOrgPath(user.organizationId, "/onboarding");
   redirect("/?onboarded=1");
 }

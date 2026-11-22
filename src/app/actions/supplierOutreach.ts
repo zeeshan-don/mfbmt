@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { authorizeOwner } from "@/lib/auth";
@@ -93,8 +93,8 @@ export async function approveSupplierDraftsAction(formData: FormData) {
     }
   }
 
-  revalidatePath("/suppliers/outreach");
-  revalidatePath("/suppliers");
+  revalidateOrgPath(user.organizationId, "/suppliers/outreach");
+  revalidateOrgPath(user.organizationId, "/suppliers");
   const query = new URLSearchParams({ sent: String(sent) });
   if (failures.length) query.set("error", failures.join(" · ").slice(0, 700));
   redirect(`/suppliers/outreach?${query.toString()}`);

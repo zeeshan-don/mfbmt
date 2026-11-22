@@ -63,6 +63,8 @@
     "next": "^15.5.29",
     "pdf-parse": "1.1.1",
     "pdfkit": "0.15.1",
+    "pusher": "^5.3.4",
+    "pusher-js": "^8.6.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "server-only": "^0.0.1",

@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { authorizeOwner } from "@/lib/auth";
 import {
@@ -31,7 +31,7 @@ export async function updateQuotationPriceAction(formData: FormData) {
     userId: user.id,
     actorLabel: user.name,
   });
-  revalidatePath(`/quotations/${quotationId}`);
+  revalidateOrgPath(user.organizationId, `/quotations/${quotationId}`);
   if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not update the price")}`);
   redirect(`/quotations/${quotationId}?saved=1`);
 }
@@ -56,7 +56,7 @@ export async function updateQuotationTechnicalAction(formData: FormData) {
     userId: user.id,
     actorLabel: user.name,
   });
-  revalidatePath(`/quotations/${quotationId}`);
+  revalidateOrgPath(user.organizationId, `/quotations/${quotationId}`);
   if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not update technical terms")}`);
   redirect(`/quotations/${quotationId}?saved=1`);
 }
@@ -72,7 +72,7 @@ export async function setQuotationOutcomeAction(formData: FormData) {
     userId: user.id,
     actorLabel: user.name,
   });
-  revalidatePath(`/quotations/${quotationId}`);
+  revalidateOrgPath(user.organizationId, `/quotations/${quotationId}`);
   if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not record outcome")}`);
   redirect(`/quotations/${quotationId}?saved=1`);
 }
@@ -82,7 +82,7 @@ export async function generateQuotationPdfAction(formData: FormData) {
   if (!user) redirect("/login");
   const quotationId = String(formData.get("quotationId") ?? "");
   const result = await generateAndStoreQuotationPdf(quotationId);
-  revalidatePath(`/quotations/${quotationId}`);
+  revalidateOrgPath(user.organizationId, `/quotations/${quotationId}`);
   if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not create the PDF")}`);
   redirect(`/quotations/${quotationId}?pdf=1`);
 }
@@ -111,7 +111,7 @@ export async function sendQuotationAction(formData: FormData) {
     userId: user.id,
     actorLabel: user.name,
   });
-  revalidatePath(`/quotations/${quotationId}`);
+  revalidateOrgPath(user.organizationId, `/quotations/${quotationId}`);
   if (!result.ok) {
     redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not release the quotation")}`);
   }

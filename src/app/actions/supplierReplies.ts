@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { authorizeOwner } from "@/lib/auth";
 import { assignSupplierReplyToQuote, setSupplierReplyReviewStatus } from "@/lib/workflow/supplierReply";
@@ -18,7 +18,7 @@ export async function assignSupplierReplyAction(formData: FormData) {
     userId: user.id,
     actorLabel: user.name,
   });
-  revalidatePath("/suppliers/replies");
+  revalidateOrgPath(user.organizationId, "/suppliers/replies");
   if (!result.ok) redirect(`/suppliers/replies?error=${encodeURIComponent(result.error)}`);
   redirect("/suppliers/replies?saved=1");
 }
@@ -36,7 +36,7 @@ export async function dismissSupplierReplyAction(formData: FormData) {
     userId: user.id,
     actorLabel: user.name,
   });
-  revalidatePath("/suppliers/replies");
+  revalidateOrgPath(user.organizationId, "/suppliers/replies");
   if (!result.ok) redirect(`/suppliers/replies?error=${encodeURIComponent(result.error)}`);
   redirect("/suppliers/replies?saved=1");
 }

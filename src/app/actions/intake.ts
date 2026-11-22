@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { randomUUID } from "node:crypto";
 import { authorize } from "@/lib/auth";
@@ -77,7 +77,7 @@ export async function createManualEnquiryAction(formData: FormData) {
     meta: { warnings: result.warnings },
   });
 
-  revalidatePath("/enquiries");
+  revalidateOrgPath(user.organizationId, "/enquiries");
   redirect(`/enquiries?filter=all&created=1`);
 }
 
