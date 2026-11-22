@@ -168,7 +168,7 @@ export function normalizeDiameter(raw: string | null | undefined): { diameter: s
   if (imperial) return { diameter: imperial[1].replace(/\s+/g, " "), system: "IMPERIAL" };
   const bareFraction = text.match(/^\s*(\d+\/\d+)\s*$/);
   if (bareFraction) return { diameter: bareFraction[1], system: "IMPERIAL" };
-  return { diameter: text.toUpperCase(), system: null };
+  return { diameter: null, system: null };
 }
 
 export function normalizeFinishValue(value: string | null | undefined): FastenerFinish | null {
@@ -193,19 +193,19 @@ export function normalizeThreadSeriesValue(value: string | null | undefined): Th
 
 function parseFastenerType(text: string): FastenerType | null {
   const t = text.toLowerCase();
-  if (/\bu[\s-]*bolt\b/.test(t)) return "U_BOLT";
+  if (/\bu[\s-]*bolts?\b/.test(t)) return "U_BOLT";
   // "Stud bolt" is a stud assembly, not a hex bolt; check the specific type first.
-  if (/\bstud\s*bolt\b|\bstud\b/.test(t)) return "STUD";
-  if (/\bsocket\s*(?:head)?\s*cap\s*screw\b|\bsocket\s*head\s*screw\b/.test(t)) return "SOCKET_HEAD_CAP_SCREW";
-  if (/\bhex\s*(?:head)?\s*bolt\b|\bhex\s*head\s*screw\b|\bbolt\b/.test(t)) return "HEX_BOLT";
-  if (/\bmachine\s*screw\b/.test(t)) return "MACHINE_SCREW";
-  if (/\bthreaded\s*rod\b|\bthread\s*rod\b|\ball\s*thread\b/.test(t)) return "THREADED_ROD";
-  if (/\block\s*nut\b|\bnyloc\b|\bnylon\s*insert\s*nut\b/.test(t)) return "LOCK_NUT";
-  if (/\bhex\s*nut\b|\bnut\b/.test(t)) return "HEX_NUT";
-  if (/\bspring\s*washer\b|\bwave\s*washer\b/.test(t)) return "SPRING_WASHER";
-  if (/\bflat\s*washer\b|\bplain\s*washer\b|\bwasher\b/.test(t)) return "FLAT_WASHER";
-  if (/\banchor\b/.test(t)) return "ANCHOR";
-  if (/\bfastener\b|\bscrew\b/.test(t)) return "OTHER";
+  if (/\bstud\s*bolts?\b|\bstuds?\b/.test(t)) return "STUD";
+  if (/\bsocket\s*(?:head)?\s*cap\s*screws?\b|\bsocket\s*head\s*screws?\b/.test(t)) return "SOCKET_HEAD_CAP_SCREW";
+  if (/\bhex\s*(?:head)?\s*bolts?\b|\bhex\s*head\s*screws?\b|\bbolts?\b/.test(t)) return "HEX_BOLT";
+  if (/\bmachine\s*screws?\b/.test(t)) return "MACHINE_SCREW";
+  if (/\bthreaded\s*rods?\b|\bthread\s*rods?\b|\ball\s*thread\b/.test(t)) return "THREADED_ROD";
+  if (/\block\s*nuts?\b|\bnyloc\b|\bnylon\s*insert\s*nuts?\b/.test(t)) return "LOCK_NUT";
+  if (/\bhex\s*nuts?\b|\bnuts?\b/.test(t)) return "HEX_NUT";
+  if (/\bspring\s*washers?\b|\bwave\s*washers?\b/.test(t)) return "SPRING_WASHER";
+  if (/\bflat\s*washers?\b|\bplain\s*washers?\b|\bwashers?\b/.test(t)) return "FLAT_WASHER";
+  if (/\banchors?\b/.test(t)) return "ANCHOR";
+  if (/\bfasteners?\b|\bscrews?\b/.test(t)) return "OTHER";
   return null;
 }
 
@@ -307,10 +307,19 @@ export function parseFastenerSpec(input: {
   else if (/\bmetric\s*fine\b|\bfine\s*(?:thread|pitch)\b/i.test(text)) threadSeries = "METRIC_FINE";
   else if (system === "METRIC" || /\bmetric\b/i.test(text)) threadSeries = "METRIC_COARSE";
 
-  // Pitch: "M10 x 1.5 x 30", "M10-1.5", "1.5 mm pitch".
+  // Pitch: "M10 x 1.5 x 30", "M10-1.5", "1.5 mm pitch", "pitch 1.5",
+  // "1.25mm pitch" or "1.25 mm pitch".
   let pitchMm: number | null = null;
   const explicitPitch = text.match(/\bpitch\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*mm?\b/i);
   if (explicitPitch) pitchMm = Number(explicitPitch[1]);
+  if (pitchMm == null) {
+    const pitchBeforeWord = text.match(/(\d+(?:\.\d+)?)\s*mm\s*pitch\b/i);
+    if (pitchBeforeWord) pitchMm = Number(pitchBeforeWord[1]);
+  }
+  if (pitchMm == null) {
+    const pitchBeforeLoose = text.match(/(\d+(?:\.\d+)?)\s*pitch\b/i);
+    if (pitchBeforeLoose) pitchMm = Number(pitchBeforeLoose[1]);
+  }
   if (pitchMm == null) {
     const twoNumber = text.match(/\bM\s*\d+(?:\.\d+)?\s*[x×X-]\s*(\d+(?:\.\d+)?)\s*[x×X-]\s*(\d+(?:\.\d+)?)/);
     if (twoNumber) pitchMm = Number(twoNumber[1]);

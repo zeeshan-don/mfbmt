@@ -101,13 +101,32 @@ export function ruleClassify(input: ClassifyInput): ClassificationResult {
     };
   }
 
-  if (availabilityScore > 0 && rfqScore === 0) {
+  if (availabilityScore > 0 && rfqScore === 0 && !input.hasAttachments) {
     return {
       classification: "AVAILABILITY",
       confidence: 0.7,
       reason: "This asks whether a product is available rather than requesting a formal quotation.",
       mentionsProducts: productScore > 0,
       isQuotationRequest: false,
+    };
+  }
+
+  // An attachment is usually the actual RFQ (price list, BOQ, enquiry sheet).
+  // Treat it as a quotation request unless the text is clearly personal,
+  // a supplier offer, an invoice/ledger or an availability question with no
+  // product context at all.
+  if (
+    input.hasAttachments &&
+    personalScore === 0 &&
+    supplierScore < 2 &&
+    businessScore === 0
+  ) {
+    return {
+      classification: "RFQ",
+      confidence: input.text.trim().length === 0 ? 0.6 : 0.65,
+      reason: "An attachment was received and looks like a quotation request.",
+      mentionsProducts: true,
+      isQuotationRequest: true,
     };
   }
 

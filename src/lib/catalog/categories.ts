@@ -141,6 +141,10 @@ export const CATEGORIES: CategoryRule[] = [
 export function findCategory(raw: string | null | undefined): CategoryRule | null {
   if (!raw) return null;
   const text = raw.toLowerCase();
+  if (/\b(bolts?|nuts?|washers?|screws?|studs?|anchors?|fasteners?)\b/.test(text)) {
+    const fastener = CATEGORIES.find((rule) => rule.name === "Industrial Fasteners");
+    if (fastener) return fastener;
+  }
   for (const category of CATEGORIES) {
     if (category.name.toLowerCase() === text) return category;
     if (category.synonyms.some((syn) => text.includes(syn))) return category;
@@ -150,6 +154,12 @@ export function findCategory(raw: string | null | undefined): CategoryRule | nul
 
 export function inferCategoryFromDescription(description: string): CategoryRule | null {
   const text = description.toLowerCase();
+  // Fasteners are a distinct, safety-critical category. A stainless-steel
+  // token such as SS304 must never turn a bolt or nut into a generic fitting.
+  if (/\b(bolts?|nuts?|washers?|screws?|studs?|anchors?|fasteners?)\b/.test(text)) {
+    const fastener = CATEGORIES.find((rule) => rule.name === "Industrial Fasteners");
+    if (fastener) return fastener;
+  }
   let best: { rule: CategoryRule; score: number } | null = null;
   for (const rule of CATEGORIES) {
     let score = 0;

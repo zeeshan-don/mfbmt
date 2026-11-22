@@ -218,7 +218,7 @@ function cellToString(value: unknown): string {
 }
 
 const HEADER_HINTS: Record<string, string[]> = {
-  description: ["description", "item", "product", "particular", "material description", "goods", "item description", "description of goods"],
+  description: ["description", "product", "particular", "material description", "goods", "item description", "description of goods", "part name", "product name", "item name", "article"],
   quantity: ["qty", "quantity", "required qty", "order qty", "req qty", "required quantity"],
   unit: ["unit", "uom", "u/m", "units"],
   size: ["size", "dimension", "dia", "diameter", "n.b", "nb"],

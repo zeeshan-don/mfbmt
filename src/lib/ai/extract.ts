@@ -43,7 +43,6 @@ export type ItemDraft = Omit<ExtractedItem, "industrialSpec"> & {
   industrialSpec?: IndustrialSpec | null;
 };
 
-const HEADER_WORDS = /^(description|item|product|qty|quantity|unit|price|sr\.?|s\.?no|no\.?|total|amount)$/i;
 const NARRATIVE_LINE =
   /^(please|pls|kindly|quote|quotation|rfq|request(ing)?|regards|thanks|thank you|dear|hi|hello|subject|urgent|asap|attached|delivery|we need|we require|need|required)\b/i;
 
@@ -62,68 +61,22 @@ function extractAttributes(description: string) {
 
 /** Rule-based line item parsing. Runs without an AI provider; lower confidence. */
 export function parseLineItems(text: string, sourceRef: string): ItemDraft[] {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter((line) => line.length > 2);
-
+  const segments = splitProductSegments(text);
   const items: ItemDraft[] = [];
-  for (const line of lines) {
-    if (HEADER_WORDS.test(line)) continue;
-    if (/^(dear|hi|hello|regards|thanks|please find|kindly|attached|subject|to|from|date)\b/i.test(line)) continue;
-
-    let quantity: number | null = null;
-    let unit: string | null = null;
-    let description = "";
-
-    const leading = line.match(
-      /^(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|m|meters?|metres?|boxes?|box|rolls?|drums?|bags?|litres?|liters?|tonnes?|tons?)?\b[\s.:\-–—]*([A-Za-z][A-Za-z0-9'"./% -]*)$/i,
-    );
-    const trailing = line.match(
-      /^([A-Za-z].*?)\s*[-–—:]\s*(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|m|boxes?|box|rolls?|drums?|bags?)?$/i,
-    );
-
-    if (leading) {
-      const rest = leading[3].trim();
-      const firstWord = rest.split(/\s+/)[0]?.toLowerCase() ?? "";
-      // "1 inch SS316 elbow" states a size, not a quantity.
-      const looksLikeSize = /^(inch|inches|in|mm|dn|")$/.test(firstWord) || /^\d+\/\d+$/.test(firstWord);
-      if (!looksLikeSize) {
-        quantity = Number(leading[1].replace(",", ""));
-        unit = leading[2] ?? null;
-        description = rest;
-      } else {
-        description = line;
-      }
-    } else if (trailing) {
-      quantity = Number(trailing[2].replace(",", ""));
-      unit = trailing[3] ?? null;
-      description = trailing[1];
-    } else {
-      // Real WhatsApp and email requests are prose: "Please quote 20 pcs SS316
-      // elbow, 1 inch." The quantity sits mid-sentence, so it must be found
-      // before the line is dismissed as narrative.
-      const inline = line.match(
-        /\b(\d+(?:[.,]\d+)?)\s*(pcs?|pieces?|nos?|units?|sets?|kgs?|meters?|metres?|m|boxes?|box|rolls?|litres?|liters?)\b\.?\s+([A-Za-z].*)$/i,
-      );
-      if (inline) {
-        quantity = Number(inline[1].replace(",", ""));
-        unit = inline[2];
-        description = inline[3];
-      } else {
-        description = line;
-      }
-    }
-
+  for (const segment of segments) {
+    const parsed = parseQuantityAndDescription(segment);
+    const quantity = parsed.quantity;
+    const unit = parsed.unit;
+    let description = parsed.description;
     description = description
       .replace(/\s{2,}/g, " ")
-      .replace(/^[-–—:.\s]+/, "")
+      .replace(/^[-��:.\s]+/, "")
       .replace(/[.;,]+$/, "")
       .trim();
     if (description.length < 3) continue;
     if (!/[a-z]/i.test(description)) continue;
-    if (description.split(" ").length > 25) continue;
-    // Narrative lines ("Please quote:", "Kindly advise") are not products.
+    if (/^sheet\s*:/i.test(description)) continue;
+    if (description.split(" ").length > 40) description = description.split(" ").slice(0, 40).join(" ");
     if (quantity == null && NARRATIVE_LINE.test(description)) continue;
 
     const attrs = extractAttributes(description);
@@ -139,6 +92,90 @@ export function parseLineItems(text: string, sourceRef: string): ItemDraft[] {
     });
   }
   return items;
+}
+
+function stripLeadingConnectors(value: string): string {
+  return value.replace(/^(we need|required|please quote|kindly quote|quote|also quote|and quote|pls quote)\b[\s,:-]*/i, "").trim();
+}
+
+function isNarrativeSentence(value: string): boolean {
+  const trimmed = value.trim();
+  return /^(dear|hi|hello|regards|thanks|thank you|please find|kindly|attached|subject|to|from|date|please quote|pls quote|quote)\b/i.test(trimmed) || NARRATIVE_LINE.test(trimmed);
+}
+
+function isSpecContinuation(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/compatible with the (bolts?|nuts?|above)/i.test(trimmed)) return false;
+  if (isNarrativeSentence(trimmed)) return false;
+  if (/\b(din|iso|astm|ss\d|stainless|metric|thread|pitch|finish|plain|zinc|class|grade|a[24]|material|hex|bolt|nut|washer)\b/i.test(trimmed)) return true;
+  return trimmed.split(/\s+/).length <= 6;
+}
+
+function splitProductSegments(text: string): string[] {
+  const sentences = text
+    .replace(/\r?\n/g, ". ")
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter((part) => part.length > 0);
+
+  const segments: string[][] = [];
+  let current: string[] | null = null;
+  for (const sentence of sentences) {
+    const candidate = stripLeadingConnectors(sentence);
+    const quantity = parseLeadingQuantity(candidate);
+    if (quantity) {
+      if (current) segments.push(current);
+      current = [sentence];
+    } else if (current && isSpecContinuation(sentence)) {
+      current.push(sentence);
+    } else if (!current && !isNarrativeSentence(sentence)) {
+      current = [sentence];
+    }
+  }
+  if (current) segments.push(current);
+
+  const chunks = segments
+    .map((parts) => parts.join(" ").replace(/\s+/g, " ").trim())
+    .filter((chunk) => chunk.length > 2);
+  return chunks.length > 0 ? chunks : [text.replace(/\s+/g, " ").trim()];
+}
+
+function parseLeadingQuantity(value: string): { quantity: number; unit: string | null } | null {
+  const leading = value.match(/^(\d[\d,\.]*)\s*(pieces?|pcs?|nos?|units?|sets?|kgs?|m|meters?|metres?|boxes?|box|rolls?|drums?|bags?|litres?|liters?|tonnes?|tons?)?\b[\s.:,\-��]*(.*)$/i);
+  if (!leading) return null;
+  const rest = leading[3].trim();
+  const firstWord = rest.split(/\s+/)[0]?.toLowerCase() ?? "";
+  const looksLikeSize = /^(inch|inches|in|mm|dn|")$/.test(firstWord) || /^\d+\/\d+$/.test(firstWord);
+  if (looksLikeSize) return null;
+  const quantity = Number(leading[1].replace(/,/g, ""));
+  if (!Number.isFinite(quantity) || quantity <= 0) return null;
+  return { quantity, unit: leading[2] ?? null };
+}
+
+function parseQuantityAndDescription(chunk: string): { quantity: number | null; unit: string | null; description: string } {
+  const text = stripLeadingConnectors(chunk.replace(/\s+/g, " ").trim());
+  const leading = parseLeadingQuantity(text);
+  if (leading) {
+    const match = text.match(/^(\d[\d,\.]*)\s*(pieces?|pcs?|nos?|units?|sets?|kgs?|m|meters?|metres?|boxes?|box|rolls?|drums?|bags?|litres?|liters?|tonnes?|tons?)?\b[\s.:,\-��]*(.*)$/i);
+    const description = match ? match[3].trim() : text;
+    return { quantity: leading.quantity, unit: leading.unit, description: description.replace(/^of\s+/i, "") };
+  }
+  const inline = text.match(/\b(\d[\d,\.]*)\s*(pieces?|pcs?|nos?|units?|sets?|kgs?|meters?|metres?|m|boxes?|box|rolls?|litres?|liters?)\b\.?\s+([A-Za-z].*)$/i);
+  if (inline) {
+    return { quantity: Number(inline[1].replace(/,/g, "")), unit: inline[2], description: inline[3].trim() };
+  }
+  const trailing = text.match(/^([A-Za-z].*?)\s*[-��:]\s*(\d[\d,\.]*)\s*(pieces?|pcs?|nos?|units?|sets?|kgs?|m|boxes?|box|rolls?|drums?|bags?)?$/i);
+  if (trailing) {
+    return { quantity: Number(trailing[2].replace(/,/g, "")), unit: trailing[3] ?? null, description: trailing[1].trim() };
+  }
+  return { quantity: null, unit: null, description: text };
+}
+
+
+function extractFastenerDimension(description: string): string | null {
+  const match = description.match(/\bM\s*\d+(?:\.\d+)?(?:\s*[x×X]\s*\d+(?:\.\d+)?\s*mm)?\b/i);
+  return match ? match[0].replace(/\s+/g, " ").trim() : null;
 }
 
 function categoryFor(item: ExtractedItem) {
@@ -173,7 +210,9 @@ export function finalizeItems(items: ExtractedItem[], options: { industrial?: bo
       ...item,
       description: item.description.trim().replace(/\s{2,}/g, " "),
       unit: normalizeUnit(item.unit),
-      size: normalizeSize(item.size) ?? item.size ?? extractAttributes(item.description).size,
+      size: fastenerCategory
+        ? (extractFastenerDimension(item.description) ?? item.size)
+        : normalizeSize(item.size) ?? item.size ?? extractAttributes(item.description).size,
       material: normalizeMaterial(item.material) ?? normalizeMaterial(extractAttributes(item.description).material),
       grade: normalizeGrade(item.grade ?? extractAttributes(item.description).grade),
       pressureRating: normalizePressure(item.pressureRating ?? extractAttributes(item.description).pressureRating),
@@ -185,7 +224,7 @@ export function finalizeItems(items: ExtractedItem[], options: { industrial?: bo
         ? (item.fastenerSpec ??
           parseFastenerSpec({
             description: item.description,
-            size: item.size,
+            size: extractFastenerDimension(item.description) ?? item.size,
             material: item.material,
             grade: item.grade,
             standard: item.standard,
@@ -391,6 +430,8 @@ export async function extractEnquiry(
         "\"notes\":string|null,\"unreadableParts\":string[]}. " +
         "Rules: extract only what the document states. Never invent sizes, materials, grades, ratings, quantities, brands, prices or delivery promises. " +
         "If a quantity is not stated, use null and add \"quantity\" to missingFields. If a description is generic (e.g. 'hammer', 'valve'), add the missing type detail to missingFields. " +
+        "Each distinct product specification must become its own item, even when several products are mentioned in one sentence. " +
+        "For fasteners, populate type, size, material, grade, standard and, when stated, thread/pitch and length; do not convert the customer's stated units. " +
         "Keep the customer's wording in description; put recognized attributes in their own fields. " +
         "For each item, set sourceRef to the page number, sheet/row or message where it was found. " +
         "Give per-field confidence between 0 and 1. If part of a document cannot be read, list it in unreadableParts. " +

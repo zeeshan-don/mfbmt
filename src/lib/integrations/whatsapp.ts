@@ -214,13 +214,34 @@ export async function subscribeWabaWebhook(wabaId: string, accessToken: string):
   return result.ok;
 }
 
-export async function subscribePhoneWebhook(phoneNumberId: string, accessToken: string): Promise<boolean> {
-  const result = await graphJson(`${graphUrl(`${phoneNumberId}/subscribed_apps`)}?access_token=${encodeURIComponent(accessToken)}`, {
+/**
+ * Meta routes inbound messages to a phone-number-level alternate callback URL
+ * before the WABA or app default. A number that was previously connected to
+ * another provider can keep sending messages there, so (re)assert our own
+ * endpoint and verify token every time we connect.
+ */
+export async function setPhoneWebhookOverride(phoneNumberId: string, accessToken: string): Promise<boolean> {
+  if (!env.WHATSAPP_VERIFY_TOKEN) return false;
+  const callbackUrl = `${env.APP_URL.replace(/\/$/, "")}/api/webhooks/whatsapp`;
+  const result = await graphJson(`${graphUrl(phoneNumberId)}?access_token=${encodeURIComponent(accessToken)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subscribed_fields: ["messages", "message_deliveries", "message_reads"] }),
+    body: JSON.stringify({
+      webhook_configuration: {
+        override_callback_uri: callbackUrl,
+        verify_token: env.WHATSAPP_VERIFY_TOKEN,
+      },
+    }),
   });
   return result.ok;
+}
+
+export async function clearPhoneWebhookOverride(phoneNumberId: string, accessToken: string): Promise<void> {
+  await graphJson(`${graphUrl(phoneNumberId)}?access_token=${encodeURIComponent(accessToken)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ webhook_configuration: { override_callback_uri: "" } }),
+  }).catch(() => undefined);
 }
 
 export async function registerPhoneNumber(
@@ -322,12 +343,21 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
     return { ok: false, code: "missing_phone", error: "No WhatsApp phone number was returned by Meta." };
   }
 
+  // WhatsApp delivers inbound events at the WABA level: subscribing the app to
+  // the WABA covers every phone number under it. There is no phone-number-level
+  // subscribed_apps edge in the Graph API, so attempting one always fails and
+  // must not gate the connection.
   const wabaSubscribed = await subscribeWabaWebhook(resolvedWabaId, accessToken);
-  const phoneSubscribed = await subscribePhoneWebhook(phoneNumberId, accessToken);
-  console.log("[whatsapp] webhook subscription", { wabaSubscribed, phoneSubscribed });
-  if (!wabaSubscribed || !phoneSubscribed) {
+  const phoneWebhookReady = await setPhoneWebhookOverride(phoneNumberId, accessToken);
+  console.log("[whatsapp] webhook subscription", { wabaSubscribed, phoneWebhookReady });
+  if (!wabaSubscribed) {
     notes.push(
-      "Inbound webhooks could not be fully subscribed. Messages will not arrive until the subscription succeeds — use “Test connection” to retry.",
+      "Inbound webhooks could not be subscribed. Messages will not arrive until the subscription succeeds — use “Test connection” to retry.",
+    );
+  }
+  if (!phoneWebhookReady) {
+    notes.push(
+      "The phone-number webhook route could not be set to this app. Inbound messages may be delivered elsewhere until “Test connection” succeeds.",
     );
   }
 
@@ -349,13 +379,15 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
 
   await saveIntegration({
     key: "WHATSAPP",
-    status: wabaSubscribed && phoneSubscribed ? "CONNECTED" : "NEEDS_ATTENTION",
+    status: wabaSubscribed && phoneWebhookReady ? "CONNECTED" : "NEEDS_ATTENTION",
     accountLabel: [businessName, phoneInfo?.phoneNumber].filter(Boolean).join(" · ") || null,
     lastError:
-      wabaSubscribed && phoneSubscribed
+      wabaSubscribed && phoneWebhookReady
         ? null
-        : "Webhook subscription failed. Inbound messages will not arrive until it succeeds.",
-    markSuccess: wabaSubscribed && phoneSubscribed,
+        : !wabaSubscribed
+          ? "Webhook subscription failed. Inbound messages will not arrive until it succeeds."
+          : "The phone-number webhook route could not be set to this app. Inbound messages may be delivered elsewhere.",
+    markSuccess: wabaSubscribed && phoneWebhookReady,
     secrets: {
       ACCESS_TOKEN: accessToken,
       WABA_ID: resolvedWabaId,
@@ -367,7 +399,7 @@ export async function completeSignup(input: CompleteSignupInput): Promise<Comple
       businessName,
       phoneNumber: phoneInfo?.phoneNumber ?? null,
       coexistence,
-      webhookStatus: wabaSubscribed && phoneSubscribed ? "active" : "pending",
+      webhookStatus: wabaSubscribed && phoneWebhookReady ? "active" : "pending",
       tokenExpiresAt: tokenExpiresAt.toISOString(),
       signedUpAt: new Date().toISOString(),
       qualityRating: phoneInfo?.qualityRating ?? null,
@@ -507,6 +539,22 @@ export async function testWhatsAppConnection(): Promise<{
     };
   }
 
+  const overrideReady = await setPhoneWebhookOverride(credentials.phoneNumberId, credentials.accessToken);
+  if (!overrideReady) {
+    await saveIntegration({
+      key: "WHATSAPP",
+      status: "NEEDS_ATTENTION",
+      accountLabel: `${name} · ${display}`,
+      lastError: "The phone-number webhook route could not be set to this app.",
+    });
+    return {
+      ok: false,
+      needsAttention: true,
+      detail: `Reached ${name} (${display}) but could not set the phone-number webhook route.${quality}`,
+      account: display,
+    };
+  }
+
   await saveIntegration({
     key: "WHATSAPP",
     status: "CONNECTED",
@@ -531,6 +579,7 @@ export async function disconnectWhatsApp(actor: string) {
     await graphJson(`${graphUrl(`${credentials.wabaId}/subscribed_apps`)}?access_token=${encodeURIComponent(credentials.accessToken)}`, {
       method: "DELETE",
     }).catch(() => undefined);
+    await clearPhoneWebhookOverride(credentials.phoneNumberId, credentials.accessToken);
   }
   await clearIntegration("WHATSAPP");
   void actor;

@@ -478,8 +478,12 @@ export async function processInboundMessage(messageId: string): Promise<{ outcom
         processingStatus: cls === "UNCLEAR" ? "NEEDS_REVIEW" : "PROCESSING",
       },
     });
+    await db.attachment.updateMany({
+      where: { messageId: message.id },
+      data: { enquiryId: enquiry.id },
+    });
 
-    if (cls === "RFQ" && !attachmentTrouble) {
+    if ((cls === "RFQ" || (cls === "UNCLEAR" && attachmentCount > 0)) && !attachmentTrouble) {
       await enqueueJob({
         type: JOB_TYPES.EXTRACT_ENQUIRY,
         payload: { enquiryId: enquiry.id },
@@ -498,6 +502,10 @@ export async function processInboundMessage(messageId: string): Promise<{ outcom
     await db.message.update({
       where: { id: message.id },
       data: { enquiryId: enquiry.id, processingStatus: "NEEDS_REVIEW" },
+    });
+    await db.attachment.updateMany({
+      where: { messageId: message.id },
+      data: { enquiryId: enquiry.id },
     });
     const { notifyOwner } = await import("../audit");
     await notifyOwner({
@@ -527,6 +535,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
   await db.enquiry.update({ where: { id: enquiry.id }, data: { status: "EXTRACTING" } });
 
   const documents: SourceDocument[] = [];
+  const newlyExtractedDocs: SourceDocument[] = [];
   for (const attachment of enquiry.attachments) {
     if (!attachment.textExtract) {
       try {
@@ -543,7 +552,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
           },
         });
         if (doc.text || doc.unreadable) {
-          documents.push({
+          const sourceDoc = {
             filename: attachment.filename,
             kind: attachment.mimeType.includes("pdf")
               ? "pdf"
@@ -555,7 +564,9 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
             text: doc.text,
             pageCount: doc.pageCount,
             unreadable: doc.unreadable,
-          });
+          } as SourceDocument;
+          documents.push(sourceDoc);
+          newlyExtractedDocs.push(sourceDoc);
         }
       } catch (error) {
         await db.attachment.update({
@@ -587,7 +598,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
     where: { enquiryId: enquiry.id, extractionStatus: { in: ["NEEDS_REVIEW", "FAILED"] } },
   });
 
-  if (enquiry.items.length > 0) {
+  if (enquiry.items.length > 0 && newlyExtractedDocs.length === 0) {
     for (const item of enquiry.items) {
       if (item.inventoryStatus === "UNCHECKED") await applyInventoryCheck(item.id);
     }
@@ -614,11 +625,13 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
   const organization = await getCurrentOrganization();
   const industrialSpecs = organization?.procurementProfile === "INDUSTRIAL";
   const limits = await getOrgLimits();
+  const extractionText = enquiry.items.length > 0 ? "" : enquiry.rawText;
+  const extractionDocuments = enquiry.items.length > 0 ? newlyExtractedDocs : documents;
   let extraction = await extractEnquiry(
     {
-      text: enquiry.rawText,
+      text: extractionText,
       subject: sourceMessage?.subject ?? null,
-      documents,
+      documents: extractionDocuments,
     },
     { industrial: industrialSpecs },
   );
