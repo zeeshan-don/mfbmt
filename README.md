@@ -43,11 +43,13 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 npx prisma generate
 npx prisma migrate deploy
 
-# 3. Create the first owner — there is no public sign-up and no default password
-npm run provision:owner
-#   or non-interactive:
-#   MBFMT_OWNER_EMAIL=owner@mfbmt.ae MBFMT_OWNER_NAME="Owner" \
-#   MBFMT_OWNER_PASSWORD='a long password' npm run provision:owner
+# 3. Create a tenant + one-time owner invitation (no password on the CLI)
+npm run operator -- create-org --name "OGS & Chemicals FZC" --slug ogs \
+  --owner-email owner@ogs.example --owner-name "OGS Owner"
+#   The command prints a single-use invitation URL once. The owner sets their
+#   own password. Passwords are refused on the command line and in the environment.
+#   Existing tenant: ORG_SLUG=ogs CONFIRM_ORGANIZATION=ogs OWNER_EMAIL=... \
+#     OWNER_NAME=... npm run provision:owner:invite
 
 # 4. Web app + worker (two terminals)
 npm run dev        # http://localhost:3000
@@ -80,16 +82,16 @@ purchase order or payment is created.
 | WhatsApp intake | Meta **Embedded Signup** in Settings → WhatsApp (ported from CoolCare v4 flow), encrypted per-account credentials, signature-verified webhook, durable receipt before acknowledgement, media downloaded by the worker with retry |
 | Personal/family numbers | Exclusion list checked on canonical E.164/email **before** any body, subject, attachment or job is written; excluded content is never sent to an AI provider |
 | Email intake | Gmail (history + optional Pub/Sub push) and Microsoft Graph (delta + subscription renewal), or the authenticated forwarding endpoint; persistent cursors, pagination, dedupe, no manual sync required |
-| Documents | Text, text PDF, **scanned PDF via page render + Tesseract OCR**, Excel (multi-sheet, header detection) and CSV, JPEG/PNG/WebP and HEIC/HEIF (converted when `sharp` supports it); page/sheet/row references preserved |
+| Documents | Text, text PDF, **scanned PDF via page render + Tesseract OCR**, XLSX (multi-sheet, header detection), CSV, DOCX and bounded ZIP extraction, JPEG/PNG/WebP and HEIC/HEIF (converted when `sharp` supports it); page/sheet/row references preserved. Legacy `.xls`, `.xlsb` and `.doc` are rejected with a re-save instruction, never guessed |
 | Fastener specification | Structured, versioned model (type, diameter, thread/pitch, length, head/drive, material, property class, finish, standard, certification, pack basis). Deterministic matching: conflicts are `NO_MATCH`, unstated required fields are `INSUFFICIENT`. Other categories keep the generic matcher |\n| Inventory | Catalogue + locations, stock import with preview/mapping/validation (including fastener columns), stock states (not configured / not found / zero / partial / full), sourcing-first policy, MOQ-aware shortage |
 | Supplier discovery | Internal directory, recorded supplier products, configured web-search APIs (Tavily/Serper/Brave), permitted public pages with robots.txt, SSRF-hardened fetching; coverage report per search |
 | Supplier quotes | RFQ drafted from the specification, explicit send approval, email/WhatsApp delivery, expiring response links, server-validated responses stored as **unverified** evidence |
 | Landed cost | Product + freight + other charges + tax + FX, MOQ overbuy disclosed, unknown components keep the total null, unknown currency never assumed to be AED |
 | Quotations | Per-line stock/procure split, no zero-priced lines, owner override with reason, atomic numbering, three separate approvals, customer-only PDF, real send or explicit manual confirmation |
 | Jobs | PostgreSQL `FOR UPDATE SKIP LOCKED` claims, leases + heartbeat (double execution prevented), crash recovery, dead-letter + manual retry |
-| Scheduling | Worker daemon is the primary continuous processor; QStash (Hobby-compatible) drives `/api/cron/*` as a watchdog every 5 minutes with signature verification |
+| Scheduling | Worker daemon is the primary processor and polls each active tenant's mailbox inside that tenant's context; one Hobby-compatible QStash watchdog calls `/api/cron/process-jobs` every 5 minutes with signature verification. There is **no** tenant-less email-sync schedule |
 | Storage | Local disk or S3-compatible private bucket, authenticated expiring downloads, size/type validation |
-| Security | Fail-closed production config, AES-256-GCM credentials, CSP, rate-limited login, per-action authorisation, password change/reset, no credential logging |
+| Security | Fail-closed production config, AES-256-GCM credentials, CSP, rate-limited login, TOTP MFA for owners/admins, per-action authorisation, password change/reset, no credential logging |
 
 ## Commands
 
@@ -128,3 +130,34 @@ Private object storage (Cloudflare R2 / AWS S3) is now required in production; l
 OGS industrial extraction is opt-in per organization through `Organization.procurementProfile` (`GENERAL` by default, `INDUSTRIAL` for OGS). MFBMT's fastener engine is unchanged. Supplier email replies from Gmail and Microsoft 365 are correlated to RFQs using provider IDs, reply headers or a stored `RFQ-` token; ambiguous replies go to `/suppliers/replies` for owner review. Owner onboarding now uses a single-use invitation instead of an initial password, and `/integrations` exposes non-destructive provider diagnostics.
 
 Implementation details and the deployment checklist are in `docs/INDUSTRIAL_SPECS.md`, `docs/SUPPLIER_EMAIL_INGESTION.md`, `docs/ONBOARDING.md`, `docs/INTEGRATION_DIAGNOSTICS.md` and `docs/PRODUCTION_RELEASE_CHECKLIST.md`.
+
+## Release-candidate audit — 22 November 2026
+
+The engineering-hardening release candidate has these verified results:
+
+- `npm run typecheck`: PASS, 0 errors
+- `npm test`: PASS, 42 files, 297/297 tests
+- `npm run build`: PASS
+- `npm run lint`: PASS, 0 errors, 27 warnings
+- `npm run test:e2e`: PASS, 14/14 (desktop + mobile Chrome)
+- `npm run check:config`: PASS (required-variable presence only; not provider proof)
+- `npm run stress`: PASS on isolated PostgreSQL (see `docs/LOAD_TESTING.md`)
+- Isolated backup/restore drill: PASS, 11 table counts matched
+- Synthetic attack environment: seeded and race-tested (`npm run attack:seed`, `attack:race`, `attack:inspect`, `attack:cleanup`)
+
+No production deployment, production migration, real business data, or real
+supplier/customer/WhatsApp message was created during this audit.
+
+### Additional commands
+
+```bash
+npm run restore:db     # restore a guarded pg_dump into an isolated database
+npm run attack:seed    # seed synthetic attack-mfbmt / attack-ogs tenants
+npm run attack:race    # concurrent reservation race check
+npm run attack:inspect # inspect synthetic attack data
+npm run attack:cleanup # delete synthetic attack tenants only
+```
+
+See `docs/ENGINEERING_HARDENING.md`, `docs/ATTACK_TESTING.md`,
+`docs/INTEGRATION_READINESS.md`, `docs/LOAD_TESTING.md` and
+`docs/LIMITATIONS.md`.

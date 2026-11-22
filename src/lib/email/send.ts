@@ -81,7 +81,12 @@ function buildMime(input: {
 /** Sends through the connected company mailbox. Returns a real error, never a fake success. */
 export type SendEmailResult =
   | { ok: true; simulated?: boolean; providerIds?: { messageId?: string; threadId?: string } }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      /** True when the provider may have accepted the message despite the error. */
+      uncertain?: boolean;
+    };
 
 export async function sendEmail(input: {
   to: string;
@@ -123,7 +128,13 @@ export async function sendEmail(input: {
       });
       if (!response.ok) {
         const detail = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
-        return { ok: false, error: detail.error?.message ?? `Gmail returned HTTP ${response.status}.` };
+        return {
+          ok: false,
+          error: detail.error?.message ?? `Gmail returned HTTP ${response.status}.`,
+          // A 5xx or gateway timeout can mean the message was accepted before
+          // the error response; that outcome must not be retried blindly.
+          uncertain: response.status >= 500 || response.status === 408,
+        };
       }
       const data = (await response.json().catch(() => ({}))) as { id?: string; threadId?: string };
       return { ok: true, providerIds: { messageId: data.id, threadId: data.threadId } };
@@ -151,11 +162,21 @@ export async function sendEmail(input: {
     });
     if (!response.ok) {
       const detail = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
-      return { ok: false, error: detail.error?.message ?? `Microsoft Graph returned HTTP ${response.status}.` };
+      return {
+        ok: false,
+        error: detail.error?.message ?? `Microsoft Graph returned HTTP ${response.status}.`,
+        uncertain: response.status >= 500 || response.status === 408,
+      };
     }
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "Email send failed." };
+    // The request was already dispatched; a network/timeout failure is an
+    // ambiguous provider outcome, not proof that nothing was sent.
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Email send failed.",
+      uncertain: true,
+    };
   }
 }
 

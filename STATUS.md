@@ -1,8 +1,49 @@
 # STATUS — OGS production readiness
 
-Last updated: 21 November 2026 (Phase 4 supplier workflow)
-HEAD: `625e6ab`; Phase 4 supplier workflow in the working tree
-Working tree: Phase 1/2 implementation; no production env, database, credentials or deployments touched.
+Last updated: 22 November 2026 (engineering hardening)
+Working tree: critical-defect fixes and regression suites. No production env, database, credentials or deployment was touched.
+
+## Engineering hardening — 22 November 2026
+
+This section supersedes older rows below for units, reservations, outbound sends, scheduling and operator onboarding.
+
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | **PASS** — 0 errors |
+| `npm test` | **PASS** — 42 files, **297/297 tests** |
+| `npm run build` | **PASS** — production build compiled |
+| `npm run lint` | **PASS** — 0 errors, 27 warnings (pre-existing) |
+| Focused hardening tests | **39/39** — units 14, reservations 9, outbound 10, onboarding 4, scheduler 2 |
+| PostgreSQL | Isolated Docker PostgreSQL 16 (`mfbmt_test`); migration `20261122120000_engineering_hardening` applied by full reset + deploy |
+| Live providers | **NOT VERIFIED** — no Meta/Gmail/Microsoft/AI/search/FX credentials used |
+| `npm run stress` (isolated PostgreSQL) | **PASS** — 30/30 concurrent reservations in 189 ms; 10-way contention 5 success/5 insufficient with exactly 10 units reserved; 300/300 jobs drained by 4 workers in 841 ms; 60 messages with 120 duplicate attempts → 60 provider calls, 0 duplicates; 5/5 simulated timeouts blocked from automatic retry |
+| `npm run test:e2e` (Chrome, desktop + mobile) | **PASS** — 14/14 against isolated `mfbmt_e2e`; full approval/quotation/PDF flow, role guards, direct server-action denial, mobile layout and PDF cost-leak checks |
+| `npm run check:config` | **PASS** — no missing required variables reported; **not** provider proof |
+| Backup/restore drill | **PASS** — isolated `mfbmt_test` dump restored into `mfbmt_restore`; 11 table counts matched (Organization 2, User 1, Product 1, InventoryStock 1, Supplier 0, CustomerQuotation 0, StockReservation 4, AuditLog 3, Attachment 0, BackgroundJob 20, OutboundMessage 32) |
+| `npm run attack:seed` / `attack:race` | **PASS** — synthetic attack-mfbmt/attack-ogs; race produced 1 created + 1 duplicate, exactly 4 reserved |
+
+### Final RC audit — additional defects found and fixed
+
+1. Reconciliation accepted a live `SENDING` claim, which could race an in-flight provider call. It now accepts only `UNKNOWN`; stale leases must first be swept.
+2. A human “provider confirmed not sent” decision left an exhausted message above `maxAttempts`, so it could never retry. `NOT_SENT` now resets attempts to 0 and records an audit entry.
+3. Stale `SENDING` outbound claims were not swept automatically. `runNextJob()` now calls `recoverStaleOutboundClaims()` for both the worker and the QStash watchdog.
+4. There was no operator UI for uncertain messages. Added owner-only `/observability` visibility and a mandatory-note reconciliation form backed by a server action.
+5. A concurrent repeat reservation for the same quotation could report “insufficient stock” when the line already owned an `ACTIVE` reservation and stock was exact. It is now idempotent after the stock lock.
+6. A `RELEASED`/`EXPIRED` reservation could not be reopened after re-approval, leaving a re-approved quotation without stock. The old row is now conditionally reopened and stock is reserved again.
+7. Unit conversion could overflow to `Infinity`; non-finite results now return null. Packaging configuration can no longer redefine a fixed unit such as `m`.
+8. DOCX/ZIP parsing now checks declared uncompressed size and per-entry limits before inflation, in addition to entry-count, nesting and traversal guards.
+9. Backup had no isolation guard and there was no restore script. Added `safety.ts`, guarded `backup-db.ts`, `restore-db.ts`, and a synthetic attack toolkit.
+10. The Playwright fixture cloned a stock line without a matched product; the reservation gate correctly blocked it. The fixture is now explicitly a sourced line (not a product bypass).
+
+Five critical defects fixed:
+
+1. **Units** — `box`, `pair`, `set`, `roll`, `coil`, `bundle`, `carton`, `drum`, `bag` no longer convert to one piece/metre/litre. Only fixed physical units and atomic counts convert; packaging needs an explicit per-product `ProductPackaging` factor. Unknown/ambiguous/incompatible conversions return null. No rounding.
+2. **Reservations** — durable `StockReservation` rows are created in the same transaction as quotation approval, aggregate eligible locations under `FOR UPDATE`, never over-reserve, are idempotent per quotation line, release once, expire after 7 days and record an audited owner override for insufficient stock. A failed reservation rolls the approval claim back. A hold is not a purchase order.
+3. **Duplicate external sends** — durable `OutboundMessage` ledger with unique operation keys, atomic pre-send claims, SENDING/SENT/FAILED_SAFE/UNKNOWN/CANCELLED states, provider ids, safe retry only, stale-claim recovery and explicit reconciliation. Supplier RFQs, reminders and customer quotations use it. Supplier reminders now require their own human approval; the scheduler only raises the approval.
+4. **QStash/email sync** — the tenant-less email-sync QStash schedule was removed. The worker polls each active tenant inside `runWithTenant`. `/api/cron/email-sync` remains manual/diagnostic and **requires** an explicit organization; it returns 400 otherwise. `/api/cron/process-jobs` remains the signed watchdog.
+5. **Operator onboarding** — `create-org` now provisions the organization and a one-time owner invitation in one transaction, reuses the invitation acceptance flow, refuses passwords on the command line, prevents duplicate slugs/emails and leaves no partial organization on failure.
+
+Known gaps are recorded in `docs/ENGINEERING_HARDENING.md`, `docs/LIMITATIONS.md` and `docs/INTEGRATION_READINESS.md`. They include legacy `.xls/.xlsb/.doc` parsing, live WhatsApp template management, live provider verification, and a sustained full-RFQ-pipeline load run. The targeted concurrency harness has been executed; its numbers are not a production capacity guarantee. The restored dump contains 0 attachments, so attachment availability after restore was not proven; a database dump never includes S3/R2 objects. Use `docs/ATTACK_TESTING.md` for the reproducible manual matrix.
 
 ## Baseline verification (Phase 0)
 

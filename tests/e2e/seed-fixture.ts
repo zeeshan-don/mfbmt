@@ -58,9 +58,13 @@ async function createClone(ref: string, customerName: string) {
             standard: line.standard,
             unit: line.unit,
             quantity: line.quantity,
-            quantityFromStock: line.quantityFromStock,
-            quantityToSource: line.quantityToSource,
-            inventoryStatus: line.inventoryStatus,
+            // The browser test exercises the sourcing/approval flow, so this
+            // synthetic clone is explicitly a sourced line. It deliberately has
+            // no matched inventory product; copying a stock quantity without a
+            // product would make the new reservation gate reject the approval.
+            quantityFromStock: 0,
+            quantityToSource: line.quantity,
+            inventoryStatus: "NONE",
             sourcingStatus: "AWAITING_APPROVAL",
             reviewStatus: "CONFIRMED",
             missingFields: "[]",

@@ -1,12 +1,16 @@
 import { Client } from "@upstash/qstash";
 import { env } from "../lib/env";
+import { QSTASH_SCHEDULES } from "../lib/scheduling";
 
 /**
  * Reproducible QStash schedule setup.
  *
- * Creates (or updates) two schedules that replace the former Vercel crons:
+ * Creates (or updates) the single job-processing watchdog schedule:
  *   - /api/cron/process-jobs  every 5 minutes
- *   - /api/cron/email-sync     every 5 minutes
+ *
+ * Mailbox synchronization is NOT scheduled here. It runs in the long-running
+ * worker, per active tenant, inside that tenant's context. A tenant-less
+ * scheduler must never call tenant-scoped mailbox sync.
  *
  * Stable schedule IDs are used so re-running this script is idempotent:
  * an existing schedule with the same id is updated rather than duplicated.
@@ -16,10 +20,7 @@ import { env } from "../lib/env";
  *
  * No production schedules are created unless QSTASH_TOKEN and APP_URL are set.
  */
-const SCHEDULES = [
-  { scheduleId: "mfbmt-process-jobs", path: "/api/cron/process-jobs", cron: "*/5 * * * *" },
-  { scheduleId: "mfbmt-email-sync", path: "/api/cron/email-sync", cron: "*/5 * * * *" },
-];
+const SCHEDULES = QSTASH_SCHEDULES;
 
 async function main() {
   if (!env.QSTASH_TOKEN) {

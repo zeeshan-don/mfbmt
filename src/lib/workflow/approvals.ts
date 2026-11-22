@@ -4,7 +4,12 @@ import { parseJson, stringifyJson } from "../json";
 import { enqueueJob } from "./jobs";
 import { JOB_TYPES } from "../constants";
 import { marginPct } from "../pricing/rules";
-import { reserveStock } from "../inventory/reservations";
+import {
+  InsufficientStockError,
+  releaseQuotationReservationsInTransaction,
+  reserveQuotationStockInTransaction,
+  type InsufficientStockLine,
+} from "../inventory/reservations";
 
 export type ApprovalDecision = "APPROVED" | "REJECTED" | "CHANGES_REQUESTED";
 
@@ -170,115 +175,107 @@ export async function decideApproval(input: {
       }
     }
 
-    // ---- Stock reservations for lines shipping from stock ------------------
-    // Lines that ship from stock reserve the units so two quotations cannot
-    // both promise the same on-hand quantity. An owner can override an
-    // insufficient-stock block by recording a reason (audit-logged).
-    if (input.decision === "APPROVED") {
-      const enquiryItems = await db.enquiryItem.findMany({
-        where: { id: { in: quotation.items.map((line) => line.enquiryItemId).filter(Boolean) as string[] } },
-        select: { id: true, matchedProductId: true, quantityFromStock: true, unit: true, description: true },
-      });
-      const stockLines = quotation.items
-        .map((line) => {
-          const ei = enquiryItems.find((e) => e.id === line.enquiryItemId);
-          if (!ei || !ei.matchedProductId || (ei.quantityFromStock ?? 0) <= 0) return null;
-          return { line, enquiryItem: ei };
-        })
-        .filter(Boolean) as Array<{ line: (typeof quotation.items)[number]; enquiryItem: (typeof enquiryItems)[number] }>;
+    // ---- Approval + reservation in one transaction -------------------------
+    // The approval claim, stock reservation and quotation status change commit
+    // together. Insufficient stock rolls the claim back, so a failed reservation
+    // can never leave an approved quotation. An owner may explicitly override
+    // with a recorded reason; the override is audited and no reservation is
+    // invented for the uncovered quantity.
+    let stockOverride: InsufficientStockLine[] | null = null;
+    let reservationsCreated = 0;
+    let reservationsDuplicate = 0;
+    let reservationsReleased = 0;
+    let alreadyDecided = false;
 
-      const insufficient: string[] = [];
-      for (const { enquiryItem } of stockLines) {
-        const availableStock = await db.inventoryStock.findFirst({
-          where: { organizationId: quotation.organizationId, productId: enquiryItem.matchedProductId as string },
-          orderBy: { quantityOnHand: "desc" },
+    try {
+      await db.$transaction(async (tx) => {
+        const claimed = await tx.approval.updateMany({
+          where: { id: approval.id, status: "PENDING" },
+          data: {
+            status: input.decision,
+            decidedById: input.userId,
+            decidedAt: new Date(),
+            reason: input.reason?.trim() || null,
+          },
         });
-        const available = availableStock
-          ? Math.max(0, availableStock.quantityOnHand - availableStock.quantityReserved)
-          : 0;
-        const need = enquiryItem.quantityFromStock ?? 0;
-        if (!availableStock || available + 1e-9 < need) {
-          insufficient.push(`${enquiryItem.description}: need ${need}, available ${available}`);
+        if (claimed.count === 0) {
+          alreadyDecided = true;
+          return;
         }
-      }
 
-      if (insufficient.length > 0) {
-        if (!input.reason?.trim()) {
-          return {
-            ok: false,
-            error: `Insufficient stock for ${insufficient.length} line(s): ${insufficient.join("; ")}. Record a reason to override, or adjust stock.`,
-          };
-        }
-        await writeAudit({
-          actorId: input.userId,
-          actorLabel: input.actorLabel,
-          action: "quotation.stock_override",
-          entityType: "CustomerQuotation",
-          entityId: quotation.id,
-          meta: { lines: insufficient, reason: input.reason ?? null },
-        });
-      } else {
-        // Reserve the units (best-effort; failures are recorded but do not block).
-        const reserved: string[] = [];
-        for (const { line, enquiryItem } of stockLines) {
+        if (input.decision === "APPROVED") {
           try {
-            const stockRow = await db.inventoryStock.findFirst({
-              where: { organizationId: quotation.organizationId, productId: enquiryItem.matchedProductId as string },
-              orderBy: { quantityOnHand: "desc" },
-            });
-            if (!stockRow) continue;
-            await reserveStock({
-              productId: enquiryItem.matchedProductId as string,
-              locationId: stockRow.locationId,
-              quantity: enquiryItem.quantityFromStock ?? 0,
+            const reserved = await reserveQuotationStockInTransaction(tx, {
               organizationId: quotation.organizationId,
+              quotationId: quotation.id,
+              userId: input.userId,
             });
-            reserved.push(line.description);
+            reservationsCreated = reserved.created.length;
+            reservationsDuplicate = reserved.duplicates.length;
           } catch (error) {
-            await writeAudit({
-              actorId: input.userId,
-              actorLabel: input.actorLabel,
-              action: "quotation.stock_reservation_failed",
-              entityType: "CustomerQuotation",
-              entityId: quotation.id,
-              meta: { line: line.description, error: error instanceof Error ? error.message : String(error) },
-            });
+            if (!(error instanceof InsufficientStockError)) throw error;
+            if (!input.reason?.trim()) throw error;
+            stockOverride = error.lines;
           }
-        }
-        if (reserved.length > 0) {
-          await writeAudit({
-            actorId: input.userId,
-            actorLabel: input.actorLabel,
-            action: "quotation.stock_reserved",
-            entityType: "CustomerQuotation",
-            entityId: quotation.id,
-            meta: { lines: reserved },
+        } else {
+          reservationsReleased = await releaseQuotationReservationsInTransaction(tx, {
+            organizationId: quotation.organizationId,
+            quotationId: quotation.id,
+            reason: `Quotation ${input.decision.toLowerCase()}`,
           });
         }
-      }
-    }
 
-    const result = await db.$transaction(async (tx) => {
-      const claimed = await tx.approval.updateMany({
-        where: { id: approval.id, status: "PENDING" },
-        data: {
-          status: input.decision,
-          decidedById: input.userId,
-          decidedAt: new Date(),
-          reason: input.reason?.trim() || null,
-        },
+        await tx.customerQuotation.updateMany({
+          where: { id: quotation.id, status: { in: ["DRAFT", "AWAITING_APPROVAL"] } },
+          data:
+            input.decision === "APPROVED"
+              ? { status: "APPROVED", approvedById: input.userId, approvedAt: new Date() }
+              : { status: "DRAFT" },
+        });
       });
-      if (claimed.count === 0) return false;
-      await tx.customerQuotation.updateMany({
-        where: { id: quotation.id, status: { in: ["DRAFT", "AWAITING_APPROVAL"] } },
-        data:
-          input.decision === "APPROVED"
-            ? { status: "APPROVED", approvedById: input.userId, approvedAt: new Date() }
-            : { status: "DRAFT" },
+    } catch (error) {
+      if (error instanceof InsufficientStockError) {
+        return {
+          ok: false,
+          error: `Insufficient stock for ${error.lines.length} line(s): ${error.lines
+            .map((line) => `${line.description} need ${line.required}, available ${line.available}`)
+            .join("; ")}. Record an explicit override reason, or adjust stock.`,
+        };
+      }
+      throw error;
+    }
+    if (alreadyDecided) return { ok: false, error: "This item has already been decided." };
+
+    if (stockOverride) {
+      await writeAudit({
+        actorId: input.userId,
+        actorLabel: input.actorLabel,
+        action: "quotation.stock_override",
+        entityType: "CustomerQuotation",
+        entityId: quotation.id,
+        meta: { lines: stockOverride, reason: input.reason ?? null, reservationsCreated },
       });
-      return true;
-    });
-    if (!result) return { ok: false, error: "This item has already been decided." };
+    }
+    if (reservationsCreated > 0 || reservationsDuplicate > 0) {
+      await writeAudit({
+        actorId: input.userId,
+        actorLabel: input.actorLabel,
+        action: "quotation.stock_reserved",
+        entityType: "CustomerQuotation",
+        entityId: quotation.id,
+        meta: { reservationsCreated, reservationsDuplicate, reservationsReleased },
+      });
+    }
+    if (reservationsReleased > 0) {
+      await writeAudit({
+        actorId: input.userId,
+        actorLabel: input.actorLabel,
+        action: "quotation.stock_released",
+        entityType: "CustomerQuotation",
+        entityId: quotation.id,
+        meta: { reservationsReleased, reason: input.reason ?? null },
+      });
+    }
 
     await writeAudit({
       actorId: input.userId,
@@ -332,6 +329,52 @@ export async function decideApproval(input: {
       meta: { approvalId: approval.id, reason: input.reason ?? null },
     });
     return { ok: true, redirectTo: quote.enquiryItemId ? `/sourcing/${quote.enquiryItemId}` : "/approvals" };
+  }
+
+  // ---- SUPPLIER_REMINDER --------------------------------------------------
+  // A reminder is an external supplier message. It is queued for sending only
+  // after a human approves this exact reminder round; the scheduler itself only
+  // creates the pending approval.
+  if (approval.type === "SUPPLIER_REMINDER") {
+    const quote = await db.supplierQuote.findUnique({
+      where: { id: approval.entityId },
+      include: { supplier: true },
+    });
+    if (!quote) return { ok: false, error: "The supplier request no longer exists." };
+    const round = Number(parseJson<{ round?: number }>(approval.payloadJson, {}).round ?? 0);
+
+    const claimed = await db.approval.updateMany({
+      where: { id: approval.id, status: "PENDING" },
+      data: {
+        status: input.decision,
+        decidedById: input.userId,
+        decidedAt: new Date(),
+        reason: input.reason?.trim() || null,
+      },
+    });
+    if (claimed.count === 0) return { ok: false, error: "This item has already been decided." };
+
+    if (input.decision === "APPROVED") {
+      await enqueueJob({
+        type: JOB_TYPES.SUPPLIER_REMINDER,
+        payload: { supplierQuoteId: quote.id, round },
+        idempotencyKey: `supplier-reminder:${quote.id}:${round}`,
+        maxAttempts: 3,
+      });
+    }
+
+    await writeAudit({
+      actorId: input.userId,
+      actorLabel: input.actorLabel,
+      action: `supplier_reminder.${input.decision.toLowerCase()}`,
+      entityType: "SupplierQuote",
+      entityId: quote.id,
+      meta: { approvalId: approval.id, round, reason: input.reason ?? null },
+    });
+    return {
+      ok: true,
+      redirectTo: quote.enquiryItemId ? `/sourcing/${quote.enquiryItemId}` : "/approvals",
+    };
   }
 
   // ---- SOURCING -----------------------------------------------------------

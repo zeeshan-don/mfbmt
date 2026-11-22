@@ -7,6 +7,7 @@ import { runSourcingForItem } from "../sourcing/engine";
 import { sendSupplierQuoteRequest, sendSupplierReminder } from "./supplierQuotes";
 import { JOB_TYPES } from "../constants";
 import { runWithTenant } from "../tenant";
+import { recoverStaleOutboundClaims } from "../outbound/messages";
 
 /**
  * Executes one job. Handlers are idempotent: a retried job must not duplicate
@@ -110,6 +111,11 @@ async function withHeartbeat<T>(jobId: string, workerId: string, run: () => Prom
 
 export async function runNextJob(workerId: string): Promise<boolean> {
   await releaseExpiredJobs();
+  // A worker can die after claiming an outbound message but before recording a
+  // provider outcome. Sweep those expired SENDING leases into UNKNOWN here so
+  // both the long-running worker and the QStash watchdog make them visible for
+  // human reconciliation instead of leaving them stuck forever.
+  await recoverStaleOutboundClaims();
   const job = await claimJob(workerId);
   if (!job) return false;
   try {

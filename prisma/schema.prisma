@@ -100,6 +100,9 @@ model Organization {
   appSettings            AppSetting[]
   aiUsage                AiUsage[]
   searchCache            SearchCache[]
+  productPackaging       ProductPackaging[]
+  stockReservations      StockReservation[]
+  outboundMessages       OutboundMessage[]
 
   @@index([status])
 }
@@ -472,6 +475,7 @@ model Product {
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
   specifications   ProductSpecification[]
+  packaging        ProductPackaging[]
   stocks           InventoryStock[]
   movements        InventoryMovement[]
   supplierProducts SupplierProduct[]
@@ -914,6 +918,7 @@ model CustomerQuotation {
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   items                  CustomerQuotationItem[]
+  stockReservations      StockReservation[]
 
   @@unique([organizationId, quoteNumber])
   @@unique([enquiryId, version])
@@ -1182,4 +1187,88 @@ model AppSetting {
   updatedAt      DateTime     @updatedAt
 
   @@id([organizationId, key])
+}
+
+/// Explicit product packaging factors. A row is written only when someone
+/// configures it, e.g. 1 box = 20 pcs. Without a row, the conversion is unknown.
+model ProductPackaging {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  unit           String
+  baseUnit       String
+  factor         Float
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([productId, unit])
+  @@index([organizationId, productId])
+}
+
+/// A durable temporary hold on inventory for a quotation line. It is a hold,
+/// not a purchase commitment: approval does not create an order. Allocations
+/// are stored per location so aggregated stock can be released exactly once.
+model StockReservation {
+  id               String             @id @default(cuid())
+  organizationId   String             @default("__unset__")
+  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  quotationId      String?
+  quotation        CustomerQuotation? @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  quotationItemId  String?
+  enquiryItemId    String?
+  productId        String
+  quantity         Float
+  allocationsJson  String             @default("[]")
+  status           String             @default("ACTIVE") // ACTIVE | RELEASED | EXPIRED | COMMITTED
+  idempotencyKey   String
+  expiresAt        DateTime
+  releasedAt       DateTime?
+  releaseReason    String?
+  overrideReason   String?
+  createdById      String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status, expiresAt])
+  @@index([quotationId])
+  @@index([productId])
+}
+
+/// Durable outbound message ledger. The row is claimed atomically before a
+/// provider call, so two workers can never both transmit the same message.
+/// SENDING with an expired lease becomes UNKNOWN and is never retried blindly.
+model OutboundMessage {
+  id                String   @id @default(cuid())
+  organizationId    String   @default("__unset__")
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  operationKey      String
+  kind              String // SUPPLIER_RFQ | SUPPLIER_REMINDER | CUSTOMER_QUOTATION | NOTIFICATION
+  channel           String // EMAIL | WHATSAPP | MANUAL
+  recipient         String
+  subject           String?
+  body              String
+  status            String   @default("PENDING") // PENDING | SENDING | SENT | FAILED_SAFE | UNKNOWN | CANCELLED
+  attempts          Int      @default(0)
+  maxAttempts       Int      @default(4)
+  claimToken        String?
+  claimedAt         DateTime?
+  leaseExpiresAt    DateTime?
+  nextAttemptAt     DateTime?
+  providerMessageId String?
+  providerThreadId  String?
+  sentAt            DateTime?
+  lastError         String?
+  reconciledAt      DateTime?
+  relatedType       String?
+  relatedId         String?
+  metadataJson      String   @default("{}")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([organizationId, operationKey])
+  @@index([organizationId, status])
+  @@index([status, leaseExpiresAt])
 }

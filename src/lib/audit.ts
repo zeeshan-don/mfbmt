@@ -3,6 +3,7 @@ import { rawDb } from "./db-base";
 import { getTenantId, TenantContextError } from "./tenant";
 import { getCurrentOrganization } from "./organization";
 import { stringifyJson } from "./json";
+import { outboundOperationKey, sendOutboundOnce } from "./outbound/messages";
 
 export async function writeAudit(input: {
   actorId?: string | null;
@@ -52,41 +53,65 @@ export async function notifyOwner(input: {
 }) {
   try {
     const owners = await db.user.findMany({ where: { role: "OWNER", isActive: true }, select: { id: true, email: true, name: true } });
-    let notificationIds: string[] = [];
+    const notificationIds: string[] = [];
+    const perOwner: Array<{ notificationId: string; owner: (typeof owners)[number] }> = [];
     if (owners.length === 0) {
       const created = await db.notification.create({ data: { ...input, userId: null } });
-      notificationIds = [created.id];
+      notificationIds.push(created.id);
     } else {
-      await db.notification.createMany({
-        data: owners.map((owner) => ({ ...input, userId: owner.id })),
-      });
-      // Re-fetch the just-created ids so delivery state can be recorded.
-      const recent = await db.notification.findMany({
-        where: { type: input.type, title: input.title, createdAt: { gte: new Date(Date.now() - 5000) } },
-        select: { id: true },
-        orderBy: { createdAt: "desc" },
-        take: owners.length,
-      });
-      notificationIds = recent.map((n) => n.id);
+      for (const owner of owners) {
+        const created = await db.notification.create({ data: { ...input, userId: owner.id } });
+        notificationIds.push(created.id);
+        perOwner.push({ notificationId: created.id, owner });
+      }
     }
     // In-app notification is durable; email is a best-effort deep-link. A
     // mailbox failure must never fail the business action that triggered it.
     try {
       const [{ sendEmail }, { env }] = await Promise.all([import("./email/send"), import("./env")]);
       const absoluteLink = input.link ? `${env.APP_URL.replace(/\/$/, "")}${input.link}` : null;
-      for (const owner of owners) {
-        await sendEmail({
-          to: owner.email,
-          subject: `[Procurement] ${input.title}`,
-          text: [
-            `Hello ${owner.name},`,
-            "",
-            input.body ?? input.title,
-            absoluteLink ? `Open: ${absoluteLink}` : "",
-            "",
-            "This is an automated notification. No customer or supplier message was sent by this alert.",
-          ].filter(Boolean).join("\n"),
-        }).catch(() => undefined);
+      for (const { notificationId, owner } of perOwner) {
+        const body = [
+          `Hello ${owner.name},`,
+          "",
+          input.body ?? input.title,
+          absoluteLink ? `Open: ${absoluteLink}` : "",
+          "",
+          "This is an automated notification. No customer or supplier message was sent by this alert.",
+        ].filter(Boolean).join("\n");
+        // Alerts use the same ledger, so a retried business action cannot send
+        // the same approval alert twice.
+        await sendOutboundOnce(
+          {
+            operationKey: outboundOperationKey(["notification", notificationId, "email"]),
+            kind: "NOTIFICATION",
+            channel: "EMAIL",
+            recipient: owner.email,
+            subject: `[Procurement] ${input.title}`,
+            body,
+            relatedType: "Notification",
+            relatedId: notificationId,
+            maxAttempts: 2,
+          },
+          async () => {
+            const sent = await sendEmail({
+              to: owner.email,
+              subject: `[Procurement] ${input.title}`,
+              text: body,
+            });
+            if (sent.ok) {
+              return {
+                outcome: "SENT",
+                simulated: sent.simulated,
+                providerMessageId: sent.providerIds?.messageId ?? null,
+                providerThreadId: sent.providerIds?.threadId ?? null,
+              };
+            }
+            return sent.uncertain
+              ? { outcome: "UNKNOWN", error: sent.error }
+              : { outcome: "FAILED_SAFE", error: sent.error };
+          },
+        ).catch(() => undefined);
       }
     } catch {
       // The in-app notification remains available.
@@ -101,14 +126,42 @@ export async function notifyOwner(input: {
         const { sendWhatsAppText } = await import("./intake/whatsapp");
         const absoluteLink = input.link ? `${process.env.APP_URL?.replace(/\/$/, "") ?? ""}${input.link}` : null;
         const body = [input.body ?? input.title, absoluteLink ? `Open: ${absoluteLink}` : ""].filter(Boolean).join("\n");
-        const sent = await sendWhatsAppText(org.ownerWhatsappNumber, `[Procurement] ${input.title}\n${body}`);
-        const status = sent.ok
-          ? sent.simulated
-            ? "WHATSAPP_SIMULATED"
-            : "WHATSAPP_SENT"
-          : sent.outsideServiceWindow
-            ? "WHATSAPP_OUTSIDE_WINDOW"
-            : "WHATSAPP_FAILED";
+        const alertBody = `[Procurement] ${input.title}\n${body}`;
+        const alertNotificationId = notificationIds[0];
+        const sent = await sendOutboundOnce(
+          {
+            operationKey: outboundOperationKey(["notification", alertNotificationId, "whatsapp"]),
+            kind: "NOTIFICATION",
+            channel: "WHATSAPP",
+            recipient: org.ownerWhatsappNumber,
+            body: alertBody,
+            relatedType: "Notification",
+            relatedId: alertNotificationId,
+            maxAttempts: 2,
+          },
+          async () => {
+            const result = await sendWhatsAppText(org.ownerWhatsappNumber as string, alertBody);
+            if (result.ok) {
+              return {
+                outcome: "SENT",
+                simulated: result.simulated,
+                providerMessageId: result.messageId ?? null,
+              };
+            }
+            if (result.uncertain) return { outcome: "UNKNOWN", error: result.detail };
+            return { outcome: "FAILED_SAFE", error: result.detail };
+          },
+        );
+        const status =
+          sent.status === "SENT"
+            ? sent.simulated
+              ? "WHATSAPP_SIMULATED"
+              : "WHATSAPP_SENT"
+            : sent.status === "UNCERTAIN" || sent.status === "IN_PROGRESS"
+              ? "WHATSAPP_UNKNOWN"
+              : /24-hour|service window|template/i.test(sent.detail)
+                ? "WHATSAPP_OUTSIDE_WINDOW"
+                : "WHATSAPP_FAILED";
         const channels = stringifyJson({ inApp: true, whatsapp: status });
         if (notificationIds.length > 0) {
           await db.notification.updateMany({

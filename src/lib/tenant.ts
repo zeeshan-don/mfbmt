@@ -80,6 +80,9 @@ export const TENANT_MODELS = new Set([
   "AiUsage",
   "SearchCache",
   "AppSetting",
+  "ProductPackaging",
+  "StockReservation",
+  "OutboundMessage",
 ]);
 
 export class TenantContextError extends Error {

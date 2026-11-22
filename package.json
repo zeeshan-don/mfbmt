@@ -34,6 +34,13 @@
     "audit:attachments": "tsx src/scripts/audit-attachments.ts",
     "retention:cleanup": "tsx src/scripts/retention-cleanup.ts",
     "backup:db": "tsx src/scripts/backup-db.ts",
+    "restore:db": "tsx src/scripts/restore-db.ts",
+    "attack:seed": "tsx src/scripts/attack-fixtures.ts seed",
+    "attack:reset": "tsx src/scripts/attack-fixtures.ts reset",
+    "attack:inspect": "tsx src/scripts/attack-fixtures.ts inspect",
+    "attack:race": "tsx src/scripts/attack-fixtures.ts race",
+    "attack:cleanup": "tsx src/scripts/attack-fixtures.ts cleanup",
+    "stress": "tsx src/scripts/stress.ts",
     "operator": "tsx src/scripts/operator.ts"
   },
   "prisma": {
@@ -50,6 +57,7 @@
     "date-fns": "4.1.0",
     "exceljs": "4.4.0",
     "file-type": "19.6.0",
+    "jszip": "^3.10.2",
     "lucide-react": "0.468.0",
     "mupdf": "^1.3.0",
     "next": "^15.5.29",
@@ -58,6 +66,7 @@
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "server-only": "^0.0.1",
+    "sharp": "^0.34.5",
     "tailwind-merge": "2.5.5",
     "tesseract.js": "5.1.1",
     "zod": "3.25.76"

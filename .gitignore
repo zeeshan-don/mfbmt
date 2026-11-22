@@ -30,3 +30,6 @@ backups/
 .vercel
 .env*
 .neon
+
+# Playwright output
+test-results/

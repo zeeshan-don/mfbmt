@@ -55,4 +55,29 @@ describe("document parsers: docx and zip", () => {
     expect(result.unreadable).toBe(true);
     expect(result.note).toMatch(/above the safe limit/i);
   });
+
+  it("rejects a zip bomb by its declared uncompressed size before inflating it", async () => {
+    const zip = new JSZip();
+    zip.file("huge.txt", "x".repeat(21 * 1024 * 1024));
+    const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    expect(buffer.length).toBeLessThan(1024 * 1024);
+    const result = await extractDocument(buffer, "bomb.zip");
+    expect(result.unreadable).toBe(true);
+    expect(result.note).toMatch(/safe per-entry limit|decompressed size/i);
+    expect(result.text).toBe("");
+  });
+
+  it("treats a MIME/extension mismatch as untrusted content, not as the claimed type", async () => {
+    const result = await extractDocument(Buffer.from("description,qty\nflange,10"), "quote.pdf");
+    expect(result.text).toContain("flange");
+    expect(result.text).toContain("10 pcs");
+    expect(result.status).not.toBe("FAILED");
+  });
+
+  it("fails a legacy .xls visibly with re-save instructions", async () => {
+    const ole = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0]);
+    const result = await extractDocument(ole, "legacy.xls");
+    expect(result.unreadable).toBe(true);
+    expect(result.note).toMatch(/\.xls|save it as/i);
+  });
 });

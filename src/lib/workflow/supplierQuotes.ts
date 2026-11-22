@@ -2,7 +2,8 @@ import { db } from "../db";
 import { matchProduct } from "../inventory/matching";
 import { env, isDemoMode } from "../env";
 import { writeAudit } from "../audit";
-import { stringifyJson } from "../json";
+import { parseJson, stringifyJson } from "../json";
+import { outboundOperationKey, sendOutboundOnce } from "../outbound/messages";
 import { sendWhatsAppText } from "../intake/whatsapp";
 import { activeEmailProvider, sendEmail } from "../email/send";
 import { getWhatsAppCredentials } from "../integrations/whatsapp";
@@ -200,7 +201,13 @@ export async function createDraftSupplierQuoteRequest(input: {
   return createSupplierQuoteRequest({ ...input, draft: true });
 }
 
-/** Sends an approved supplier quotation request. Never runs without approval. */
+/**
+ * Sends an approved supplier quotation request. Never runs without approval.
+ *
+ * The provider call is protected by the durable outbound ledger: the message is
+ * claimed atomically before the call, and a provider timeout/5xx leaves an
+ * UNKNOWN record that is never retried automatically.
+ */
 export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise<{ ok: boolean; detail: string }> {
   const quote = await db.supplierQuote.findUnique({
     where: { id: supplierQuoteId },
@@ -211,9 +218,7 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
     where: { type: "SUPPLIER_QUOTE_SEND", entityId: quote.id, status: "APPROVED" },
   });
   if (!approval) return { ok: false, detail: "This request has not been approved for sending." };
-  if (quote.status === "SENT" || quote.status === "RESPONDED") {
-    return { ok: true, detail: "Already sent earlier." };
-  }
+  if (quote.status === "RESPONDED") return { ok: true, detail: "The supplier already responded." };
 
   const guard = await supplierSendGuard(quote.supplierId);
   if (!guard.ok) return { ok: false, detail: guard.error ?? "Sending is blocked for this supplier." };
@@ -221,65 +226,138 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
   const organization = await getCurrentOrganization();
   const subject = quote.subject ?? `Quotation request — ${organization?.name ?? "Procurement"}`;
   const body = quote.messageBody ?? "";
-
-  // Demo mode never reaches a provider. The activity log records the simulation.
-  if (isDemoMode) {
-    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date(), channel: quote.supplier.email ? "email" : "whatsapp" } });
-    await db.supplier.update({ where: { id: quote.supplierId }, data: { lastQuotedAt: new Date() } });
-    await writeAudit({
-      actorLabel: "demo-simulation",
-      action: "supplier_quote.simulated_sent",
-      entityType: "SupplierQuote",
-      entityId: quote.id,
-      meta: { channel: quote.supplier.email ? "email" : "whatsapp", to: quote.supplier.email ?? quote.supplier.whatsapp },
-    });
-    return { ok: true, detail: "Demo simulation: recorded as sent. No supplier message was transmitted." };
-  }
-
-  // Channel availability comes from the stored connection, not from a stale env
-  // flag: with Embedded Signup there is no static WHATSAPP_ACCESS_TOKEN.
   const emailProvider = await activeEmailProvider();
-  if (quote.supplier.email && emailProvider !== "none") {
-    const sent = await sendEmail({ to: quote.supplier.email, subject, text: body });
-    if (!sent.ok) return { ok: false, detail: sent.error };
-    // The Gmail send response carries the provider ids needed to correlate the
-    // reply. When the provider does not return them, the RFQ token is still used.
-    const providerIds = sent.providerIds ?? null;
+  const whatsapp = quote.supplier.whatsapp ? await getWhatsAppCredentials() : null;
+  const channel: "email" | "whatsapp" | null =
+    quote.supplier.email && emailProvider !== "none"
+      ? "email"
+      : quote.supplier.whatsapp && whatsapp
+        ? "whatsapp"
+        : null;
+  if (!channel) {
+    return {
+      ok: false,
+      detail:
+        "No sending channel is configured. Connect a company email account or WhatsApp Business in Settings, or copy the message and send it yourself.",
+    };
+  }
+  const recipient = (channel === "email" ? quote.supplier.email : quote.supplier.whatsapp) as string;
+  const limitedApproval = approval;
+
+  const result = await sendOutboundOnce(
+    {
+      operationKey: outboundOperationKey(["supplier-rfq", quote.id]),
+      kind: "SUPPLIER_RFQ",
+      channel: channel.toUpperCase(),
+      recipient,
+      subject,
+      body,
+      relatedType: "SupplierQuote",
+      relatedId: quote.id,
+      metadata: { approvalId: limitedApproval.id, supplierId: quote.supplierId },
+    },
+    async () => {
+      // Demo mode never reaches a provider, but it still records a durable SENT
+      // row so repeated clicks and retries cannot create duplicate simulations.
+      if (isDemoMode) {
+        return {
+          outcome: "SENT",
+          simulated: true,
+          providerMessageId: "demo-simulated",
+          detail: "Demo simulation: recorded as sent. No supplier message was transmitted.",
+        };
+      }
+      if (channel === "email") {
+        const sent = await sendEmail({ to: recipient, subject, text: body });
+        if (sent.ok) {
+          if (sent.simulated) {
+            return {
+              outcome: "SENT",
+              simulated: true,
+              providerMessageId: "demo-simulated",
+              detail: "Demo simulation: recorded as sent. No supplier message was transmitted.",
+            };
+          }
+          return {
+            outcome: "SENT",
+            providerMessageId: sent.providerIds?.messageId ?? null,
+            providerThreadId: sent.providerIds?.threadId ?? null,
+            detail: `Sent to ${recipient}.`,
+          };
+        }
+        return sent.uncertain
+          ? { outcome: "UNKNOWN", error: sent.error }
+          : { outcome: "FAILED_SAFE", error: sent.error };
+      }
+      const sent = await sendWhatsAppText(recipient, body);
+      if (sent.ok) {
+        return {
+          outcome: "SENT",
+          simulated: sent.simulated,
+          providerMessageId: sent.messageId ?? null,
+          detail: sent.detail,
+        };
+      }
+      return sent.uncertain
+        ? { outcome: "UNKNOWN", error: sent.detail }
+        : { outcome: "FAILED_SAFE", error: sent.detail };
+    },
+  );
+
+  if (result.status === "SENT" || result.status === "ALREADY_SENT") {
     await db.supplierQuote.update({
       where: { id: quote.id },
       data: {
         status: "SENT",
-        sentAt: new Date(),
-        sentTo: quote.supplier.email,
-        providerThreadId: providerIds?.threadId ?? null,
-        providerMessageId: providerIds?.messageId ?? null,
-        channel: "email",
+        sentAt: quote.sentAt ?? new Date(),
+        sentTo: recipient,
+        providerMessageId: result.providerMessageId ?? quote.providerMessageId,
+        providerThreadId: result.providerThreadId ?? quote.providerThreadId,
+        channel,
+        lastError: null,
       },
     });
     await db.supplier.update({ where: { id: quote.supplierId }, data: { lastQuotedAt: new Date() } });
-    return { ok: true, detail: `Sent to ${quote.supplier.email}.` };
+    if (result.status === "ALREADY_SENT") {
+      return { ok: true, detail: "Already sent earlier; no duplicate message was transmitted." };
+    }
+    await writeAudit({
+      actorLabel: result.simulated ? "demo-simulation" : "system",
+      action: result.simulated ? "supplier_quote.simulated_sent" : "supplier_quote.sent",
+      entityType: "SupplierQuote",
+      entityId: quote.id,
+      meta: { channel, to: recipient, outboundId: result.messageId ?? null },
+    });
+    return {
+      ok: true,
+      detail: result.simulated
+        ? "Demo simulation: recorded as sent. No supplier message was transmitted."
+        : (result.detail || `Sent to ${recipient}.`),
+    };
   }
 
-  const whatsapp = await getWhatsAppCredentials();
-  if (quote.supplier.whatsapp && whatsapp) {
-    const sent = await sendWhatsAppText(quote.supplier.whatsapp, body);
-    if (!sent.ok) return { ok: false, detail: sent.detail };
-    await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "SENT", sentAt: new Date(), channel: "whatsapp" } });
-    await db.supplier.update({ where: { id: quote.supplierId }, data: { lastQuotedAt: new Date() } });
-    return { ok: true, detail: sent.detail };
-  }
-
-  return {
-    ok: false,
-    detail:
-      "No sending channel is configured. Connect a company email account or WhatsApp Business in Settings, or copy the message and send it yourself.",
-  };
+  await db.supplierQuote.update({
+    where: { id: quote.id },
+    data: { lastError: result.detail.slice(0, 600) },
+  });
+  await writeAudit({
+    action:
+      result.status === "UNCERTAIN" || result.status === "IN_PROGRESS"
+        ? "supplier_quote.send_uncertain"
+        : "supplier_quote.send_failed",
+    entityType: "SupplierQuote",
+    entityId: quote.id,
+    actorLabel: "system",
+    meta: { channel, to: recipient, status: result.status, detail: result.detail },
+  });
+  return { ok: false, detail: result.detail };
 }
-
 /**
- * Sends one polite reminder for an unanswered RFQ. It never changes the RFQ's
- * commercial terms and it obeys the same suppression and daily-cap checks as a
- * first send. No approval row is needed because this is not a new commitment.
+ * Sends one approved reminder for an unanswered RFQ.
+ *
+ * A reminder is an external business message, so it requires its own APPROVED
+ * approval row for the exact next reminder round. The scheduled reminder job
+ * only creates that pending approval; it never sends on its own.
  */
 export async function sendSupplierReminder(supplierQuoteId: string): Promise<{ ok: boolean; detail: string }> {
   const quote = await db.supplierQuote.findUnique({
@@ -289,6 +367,26 @@ export async function sendSupplierReminder(supplierQuoteId: string): Promise<{ o
   if (!quote) return { ok: false, detail: "Supplier request not found." };
   if (quote.status !== "SENT" || !quote.sentAt) return { ok: false, detail: "Only a sent, unanswered request can be reminded." };
   if (quote.reminderCount >= env.SUPPLIER_REMINDER_MAX) return { ok: false, detail: "The reminder limit for this request has been reached." };
+
+  const approval = await db.approval.findFirst({
+    where: { type: "SUPPLIER_REMINDER", entityId: quote.id, status: "APPROVED" },
+    orderBy: { decidedAt: "desc" },
+  });
+  if (!approval) {
+    return {
+      ok: false,
+      detail: "A supplier reminder requires owner approval. No reminder was sent; request approval first.",
+    };
+  }
+  const approvedRound = Number(parseJson<{ round?: number }>(approval.payloadJson, {}).round ?? 0);
+  const nextRound = quote.reminderCount + 1;
+  if (approvedRound !== nextRound) {
+    return {
+      ok: false,
+      detail: `The approved reminder is for round ${approvedRound || "unknown"}, not round ${nextRound}. No reminder was sent.`,
+    };
+  }
+
   const guard = await supplierSendGuard(quote.supplierId);
   if (!guard.ok) return { ok: false, detail: guard.error ?? "Sending is blocked for this supplier." };
 
@@ -304,47 +402,109 @@ export async function sendSupplierReminder(supplierQuoteId: string): Promise<{ o
     "Thank you,",
     `Procurement — ${organization?.name ?? "Procurement"}`,
   ].join("\n");
+  const emailProvider = await activeEmailProvider();
+  const whatsapp = quote.supplier.whatsapp ? await getWhatsAppCredentials() : null;
+  const channel: "email" | "whatsapp" | null =
+    quote.supplier.email && emailProvider !== "none"
+      ? "email"
+      : quote.supplier.whatsapp && whatsapp
+        ? "whatsapp"
+        : null;
+  if (!channel) return { ok: false, detail: "No sending channel is configured for this reminder." };
+  const recipient = (channel === "email" ? quote.supplier.email : quote.supplier.whatsapp) as string;
 
-  if (isDemoMode) {
-    await db.supplierQuote.update({
-      where: { id: quote.id },
-      data: { reminderSentAt: new Date(), reminderCount: { increment: 1 } },
-    });
+  const result = await sendOutboundOnce(
+    {
+      operationKey: outboundOperationKey(["supplier-reminder", quote.id, nextRound]),
+      kind: "SUPPLIER_REMINDER",
+      channel: channel.toUpperCase(),
+      recipient,
+      subject,
+      body,
+      relatedType: "SupplierQuote",
+      relatedId: quote.id,
+      metadata: { approvalId: approval.id, round: nextRound, supplierId: quote.supplierId },
+    },
+    async () => {
+      if (isDemoMode) {
+        return {
+          outcome: "SENT",
+          simulated: true,
+          providerMessageId: "demo-simulated",
+          detail: "Demo simulation: reminder recorded, not transmitted.",
+        };
+      }
+      if (channel === "email") {
+        const sent = await sendEmail({ to: recipient, subject, text: body });
+        if (sent.ok) {
+          return {
+            outcome: "SENT",
+            simulated: sent.simulated,
+            providerMessageId: sent.providerIds?.messageId ?? null,
+            providerThreadId: sent.providerIds?.threadId ?? null,
+            detail: sent.simulated ? "Demo simulation: reminder recorded, not transmitted." : "Reminder sent.",
+          };
+        }
+        return sent.uncertain
+          ? { outcome: "UNKNOWN", error: sent.error }
+          : { outcome: "FAILED_SAFE", error: sent.error };
+      }
+      const sent = await sendWhatsAppText(recipient, body);
+      if (sent.ok) {
+        return {
+          outcome: "SENT",
+          simulated: sent.simulated,
+          providerMessageId: sent.messageId ?? null,
+          detail: sent.detail,
+        };
+      }
+      return sent.uncertain
+        ? { outcome: "UNKNOWN", error: sent.detail }
+        : { outcome: "FAILED_SAFE", error: sent.detail };
+    },
+  );
+
+  if (result.status === "SENT" || result.status === "ALREADY_SENT") {
+    if (result.status === "SENT") {
+      await db.supplierQuote.update({
+        where: { id: quote.id },
+        data: {
+          reminderSentAt: new Date(),
+          reminderCount: { increment: 1 },
+          lastError: null,
+        },
+      });
+    }
     await writeAudit({
-      actorLabel: "demo-simulation",
-      action: "supplier_quote.reminder_simulated",
+      actorLabel: result.simulated ? "demo-simulation" : result.status === "ALREADY_SENT" ? "system" : "system",
+      action: result.simulated ? "supplier_quote.reminder_simulated" : "supplier_quote.reminder_sent",
       entityType: "SupplierQuote",
       entityId: quote.id,
-      meta: { supplier: quote.supplier.name },
+      meta: { supplier: quote.supplier.name, channel, to: recipient, round: nextRound, outboundId: result.messageId ?? null },
     });
-    return { ok: true, detail: "Demo simulation: reminder recorded, not transmitted." };
-  }
-
-  const emailProvider = await activeEmailProvider();
-  if (quote.supplier.email && emailProvider !== "none") {
-    const sent = await sendEmail({ to: quote.supplier.email, subject, text: body });
-    if (!sent.ok) return { ok: false, detail: sent.error };
-  } else {
-    const whatsapp = await getWhatsAppCredentials();
-    if (!quote.supplier.whatsapp || !whatsapp) {
-      return { ok: false, detail: "No sending channel is configured for this reminder." };
-    }
-    const sent = await sendWhatsAppText(quote.supplier.whatsapp, body);
-    if (!sent.ok) return { ok: false, detail: sent.detail };
+    return {
+      ok: true,
+      detail:
+        result.status === "ALREADY_SENT"
+          ? "This reminder was already sent; no duplicate message was transmitted."
+          : result.simulated
+            ? "Demo simulation: reminder recorded, not transmitted."
+            : "Reminder sent.",
+    };
   }
 
   await db.supplierQuote.update({
     where: { id: quote.id },
-    data: { reminderSentAt: new Date(), reminderCount: { increment: 1 }, lastError: null },
+    data: { lastError: result.detail.slice(0, 600) },
   });
   await writeAudit({
-    actorLabel: "system",
-    action: "supplier_quote.reminder_sent",
+    action: "supplier_quote.reminder_failed",
     entityType: "SupplierQuote",
     entityId: quote.id,
-    meta: { supplier: quote.supplier.name, channel: quote.supplier.email ? "email" : "whatsapp" },
+    actorLabel: "system",
+    meta: { channel, to: recipient, round: nextRound, status: result.status, detail: result.detail },
   });
-  return { ok: true, detail: "Reminder sent." };
+  return { ok: false, detail: result.detail };
 }
 
 export type SupplierResponseInput = {

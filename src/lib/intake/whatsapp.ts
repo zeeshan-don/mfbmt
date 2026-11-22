@@ -226,6 +226,8 @@ export type SendResult = {
   simulated?: boolean;
   /** True when Meta rejected a free-form message outside the 24-hour service window. */
   outsideServiceWindow?: boolean;
+  /** True when the request may have been accepted even though it reported an error. */
+  uncertain?: boolean;
 };
 
 /**
@@ -279,6 +281,7 @@ export async function sendWhatsAppText(to: string, body: string): Promise<SendRe
         detail: outsideWindow
           ? "Meta rejected the free-form message because the 24-hour customer service window is closed. An approved template is required to start the conversation."
           : (payload.error?.message ?? `Meta returned HTTP ${response.status}.`),
+        uncertain: !outsideWindow && (response.status >= 500 || response.status === 408),
       };
     }
     return {
@@ -287,7 +290,11 @@ export async function sendWhatsAppText(to: string, body: string): Promise<SendRe
       messageId: payload.messages?.[0]?.id,
     };
   } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message : "WhatsApp send failed." };
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : "WhatsApp send failed.",
+      uncertain: true,
+    };
   }
 }
 

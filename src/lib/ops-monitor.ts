@@ -193,11 +193,29 @@ export async function runOpsCheck(): Promise<{ alerted: string[] }> {
     take: 100,
   });
   for (const quote of dueReminders) {
-    await enqueueJob({
-      type: JOB_TYPES.SUPPLIER_REMINDER,
-      payload: { supplierQuoteId: quote.id },
-      idempotencyKey: `supplier-reminder:${quote.id}:${quote.reminderCount + 1}`,
-      maxAttempts: 3,
+    // A reminder is an external supplier message. The scheduler only raises an
+    // approval request; nothing is transmitted until an owner approves it.
+    const existing = await db.approval.findFirst({
+      where: { type: "SUPPLIER_REMINDER", entityId: quote.id, status: "PENDING" },
+      select: { id: true },
+    });
+    if (existing) continue;
+    const round = quote.reminderCount + 1;
+    const approval = await db.approval.create({
+      data: {
+        type: "SUPPLIER_REMINDER",
+        entityType: "SupplierQuote",
+        entityId: quote.id,
+        status: "PENDING",
+        requestedBy: "SYSTEM",
+        payloadJson: JSON.stringify({ supplierQuoteId: quote.id, round }),
+      },
+    });
+    await alertOwner({
+      type: "SUPPLIER_REMINDER_APPROVAL",
+      title: "A supplier reminder needs your approval",
+      body: `Supplier request ${quote.id} has been unanswered. Approve reminder ${round} or reject it; nothing is sent automatically.`,
+      link: `/approvals/${approval.id}`,
     });
   }
 

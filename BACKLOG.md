@@ -2,6 +2,21 @@
 
 Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-only task (account, approval, credentials, client data, contract). A fresh session reads `STATUS.md` first, then this file, and resumes at the first unchecked non-human task.
 
+## Final RC audit — 22 November 2026
+
+- [x] Reconcile outbound only from `UNKNOWN`; preserve provider IDs; reset attempts on human `NOT_SENT`; sweep stale `SENDING` in `runNextJob()`.
+- [x] Add owner-only `/observability` outbound reconciliation UI with mandatory audit note.
+- [x] Make repeat reservations idempotent after the stock lock and reopen `RELEASED`/`EXPIRED` reservations on re-approval.
+- [x] Reject non-finite unit conversions and packaging redefinition of fixed units.
+- [x] Add DOCX/ZIP declared-size guards before inflation.
+- [x] Add guarded backup/restore scripts and synthetic attack toolkit; backup/restore drill passed.
+- [x] Full suite 42 files / 297 tests; Playwright 14/14; build PASS; lint 0 errors, 27 warnings.
+- [x] Stress rerun passed; attack race passed (1 created + 1 duplicate, exactly 4 reserved).
+- [ ] GitHub Actions CI with PostgreSQL service: typecheck, lint, unit tests, build.
+- [ ] Sustained 60-enquiry/hour full-pipeline load test with attachments.
+- [ ] Live provider verification for Meta, Gmail, Microsoft, AI, search, FX, S3/R2.
+- [ ] Production backup/restore drill and object-storage attachment verification.
+
 ## Phase 0 — Read, baseline, memory
 
 - [ ] Read README.md and every file in docs/; record doc/code disagreements in STATUS.md.
@@ -11,7 +26,7 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 ## Phase 1 — Production safety
 
-- [x] Replace Vercel crons with Upstash QStash schedules (every 5 minutes) for `/api/cron/process-jobs` and `/api/cron/email-sync`; secure with signature verification; daemon worker remains primary processor (watchdog only).
+- [x] Replace Vercel crons with an Upstash QStash watchdog for `/api/cron/process-jobs` only; the worker polls each active tenant's mailbox inside that tenant's context. The tenant-less `/api/cron/email-sync` schedule is removed; the route now requires an explicit organization and is manual/diagnostic only.
 - [x] Prove two runners cannot execute the same job; add a two-runner concurrency test.
 - [x] Add an HTTP health server to the worker and a `livenessProbe` in `vercel.json`.
 - [x] Graceful SIGTERM/SIGINT: finish or release the current job, then close the health server and database.
@@ -52,7 +67,7 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 - [x] Add domain vocabulary: UNS, ASTM/API/ASME, schedules, classes 150–2500, RF/FF/RTJ, BW/SW/THD/FLGD, NPS/DN, per-meter/length, random/double random, NACE/sour service.
 - [x] Make unknown/conflicting attributes produce INSUFFICIENT or NO_MATCH; never guess.
 - [x] Require an explicitly approved substitution for material equivalence.
-- [ ] Add stated/configured unit conversions for meters, lengths, pieces and sets; never assume. **Not built**; basic unit normalization only.
+- [x] Add dimension-aware unit conversion and explicit product packaging factors (`ProductPackaging`). Box/pair/set/roll/drum are never assumed equal to pcs, m or l; unsupported conversions return unknown. `tests/units.test.ts` (11 tests).
 - [ ] Use SDS/COA fields for chemicals; flag missing SDS in quotation checklist; no compliance claim. Fields exist, checklist flag not built.
 - [x] Phase 3: `npm run check` green, commit, update STATUS.md.
 
@@ -129,7 +144,7 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 
 - [ ] Add .xls parsing.
 - [ ] Add .docx parsing.
-- [ ] Add safe .zip handling with count/size/nesting limits and no path traversal/execution.
+- [x] Add safe .zip handling with count/size/nesting limits and no path traversal/execution. DOCX/ZIP guards added in `src/lib/intake/documents.ts`; regression tests in `tests/documents-parsers.test.ts`.
 - [ ] Safely handle legacy .doc/.xlsb with a maintained library or retain + clearly flag manual entry.
 - [ ] Document each new parser/library choice and license.
 - [ ] Add per-organization WhatsApp approved-template configuration (name, language, variable mapping).
@@ -137,19 +152,20 @@ Legend: `[ ]` not done · `[x]` code + tests + docs + committed · `[H]` human-o
 - [ ] Fail visibly with reason and offer email fallback when no template is configured.
 - [ ] Detect expired/revoked Gmail/Microsoft refresh tokens.
 - [ ] Add persistent reconnect banner and owner alert email.
-- [ ] Enforce soft stock reservations when a quotation is approved, with owner override.
-- [ ] Implement multi-unit conversions for inventory/quotation.
+- [x] Enforce durable stock reservations inside the quotation approval transaction, aggregated across eligible locations, with idempotency, release, expiry and an audited owner override. PostgreSQL concurrency/lifecycle tests in `tests/reservations.test.ts` (7 tests).
+- [x] Add a durable outbound-message ledger with atomic pre-send claims, SENDING/SENT/FAILED_SAFE/UNKNOWN states, provider ids, stale-claim recovery and human reconciliation. Supplier RFQs, reminders and customer quotations use it; reminders now require their own approval. `tests/outbound.test.ts` (5 tests).
+- [x] Implement dimension-aware unit conversion and product packaging factors (`ProductPackaging`); packaging units are not assumed to equal pcs/m/l.
 - [ ] Add saved inventory column-mapping profiles with diff preview on re-import.
 - [ ] Add Arabic and mixed Arabic/English golden cases; ensure classification/extraction/review layout holds.
 - [ ] Add configurable message/attachment retention per organization.
 - [ ] Add per-organization data export and safe cascading delete, fully audited.
 - [ ] Add GitHub Actions CI with PostgreSQL service: typecheck, lint, unit tests, build.
-- [ ] Add Playwright main-pipeline test including phone viewport.
+- [x] Playwright main-pipeline test including phone viewport passes (14/14).
 - [ ] Add structured logs with request/job ids.
 - [ ] Add optional error tracking configured only by env var.
 - [ ] Add Settings observability page: queue depth, last heartbeat, last sync, failed jobs with retry.
-- [ ] Add scripted pg_dump backup/restore and run a restore drill against a scratch database; record in STATUS.
-- [ ] Extend operator CLI: create organization + first owner, suspend/reactivate, rotate credential key safely, export monthly usage.
+- [x] Add guarded `backup-db.ts`/`restore-db.ts` and run an isolated restore drill; record in STATUS and `docs/ATTACK_TESTING.md`.
+- [x] Extend operator CLI: transactional organization + one-time owner invitation (no password arguments), suspend/reactivate and monthly usage export. Credential-key rotation remains a documented runbook operation, not an inline CLI secret.
 - [ ] Document operator CLI.
 - [ ] Phase 9: `npm run check` green, commit, update STATUS.md.
 

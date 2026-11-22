@@ -502,7 +502,17 @@ export async function extractPlainText(buffer: Buffer): Promise<DocumentText> {
 
 const MAX_ZIP_ENTRIES = 200;
 const MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
+const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 20 * 1024 * 1024;
 const MAX_ZIP_NESTING_DEPTH = 3;
+const MAX_DOCX_ENTRIES = 1_000;
+const MAX_DOCX_XML_BYTES = 20 * 1024 * 1024;
+
+/** Reads JSZip's central-directory size without inflating the entry first. */
+function declaredUncompressedSize(entry: unknown): number | null {
+  const data = (entry as { _data?: { uncompressedSize?: unknown } } | null)?._data;
+  const size = Number(data?.uncompressedSize);
+  return Number.isFinite(size) && size >= 0 ? size : null;
+}
 
 /** Decode the handful of XML entities that appear in OOXML text. */
 function decodeXmlEntities(value: string): string {
@@ -536,6 +546,31 @@ export async function extractDocx(buffer: Buffer): Promise<DocumentText> {
   try {
     const JSZip = (await import("jszip")).default;
     const zip = await JSZip.loadAsync(buffer);
+    const entries = Object.keys(zip.files);
+    if (entries.length > MAX_DOCX_ENTRIES) {
+      return {
+        text: "",
+        pageCount: null,
+        status: "NEEDS_REVIEW",
+        note: `The .docx contains ${entries.length} archive entries, above the safe limit of ${MAX_DOCX_ENTRIES}.`,
+        unreadable: true,
+      };
+    }
+    let declaredTotal = 0;
+    for (const name of entries) {
+      const declared = declaredUncompressedSize(zip.file(name));
+      if (declared == null) continue;
+      declaredTotal += declared;
+      if (declared > MAX_DOCX_XML_BYTES || declaredTotal > MAX_ZIP_UNCOMPRESSED_BYTES) {
+        return {
+          text: "",
+          pageCount: null,
+          status: "NEEDS_REVIEW",
+          note: "The .docx declared an unsafe decompressed size and was not extracted.",
+          unreadable: true,
+        };
+      }
+    }
     const documentEntry = zip.file("word/document.xml");
     if (!documentEntry) {
       return {
@@ -547,6 +582,15 @@ export async function extractDocx(buffer: Buffer): Promise<DocumentText> {
       };
     }
     const xml = await documentEntry.async("string");
+    if (Buffer.byteLength(xml, "utf8") > MAX_DOCX_XML_BYTES) {
+      return {
+        text: "",
+        pageCount: null,
+        status: "NEEDS_REVIEW",
+        note: "The .docx document.xml exceeded the safe extraction size.",
+        unreadable: true,
+      };
+    }
     const text = docxXmlToText(xml);
     // Also pull any headers/footers for completeness.
     const extras: string[] = [];
@@ -611,6 +655,32 @@ export async function extractZip(buffer: Buffer, depth = 0): Promise<DocumentTex
           pageCount: null,
           status: "NEEDS_REVIEW",
           note: "Archive contained an unsafe entry path and was not extracted.",
+          unreadable: true,
+        };
+      }
+    }
+    let declaredUncompressed = 0;
+    for (const name of entries) {
+      const entry = zip.file(name);
+      if (!entry || entry.dir) continue;
+      const declared = declaredUncompressedSize(entry);
+      if (declared == null) continue;
+      if (declared > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+        return {
+          text: "",
+          pageCount: null,
+          status: "NEEDS_REVIEW",
+          note: `Archive entry "${name}" declares ${declared} uncompressed bytes, above the safe per-entry limit.`,
+          unreadable: true,
+        };
+      }
+      declaredUncompressed += declared;
+      if (declaredUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) {
+        return {
+          text: "",
+          pageCount: null,
+          status: "NEEDS_REVIEW",
+          note: "Archive declared decompressed size exceeded the safe limit.",
           unreadable: true,
         };
       }

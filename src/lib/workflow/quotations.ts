@@ -13,7 +13,8 @@ import { saveBuffer, readBuffer } from "../storage";
 import { requireTenantId } from "../tenant";
 import { sendEmail } from "../email/send";
 import { sendWhatsAppDocument, sendWhatsAppText } from "../intake/whatsapp";
-import { env } from "../env";
+import { env, isDemoMode } from "../env";
+import { outboundOperationKey, sendOutboundOnce } from "../outbound/messages";
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
@@ -656,111 +657,153 @@ export async function sendApprovedQuotation(input: {
 
   if (!pdfPath) return fail("The quotation PDF is missing.");
 
-  if (input.channel === "EMAIL") {
-    const to = (input.to ?? quotation.customerEmail ?? "").trim();
-    if (!to) return { ok: false, error: "This quotation has no customer email address." };
-    const pdf = await readBuffer(pdfPath);
-    const sent = await sendEmail({
-      to,
-      subject: `Quotation ${quotation.quoteNumber}`,
-      text: [
-        `Dear ${quotation.customerName},`,
-        "",
-        `Please find our quotation ${quotation.quoteNumber} attached.`,
-        `Total: ${money(quotation.total, quotation.currency)}`,
-        "",
-        "Thank you,",
-      ].join("\n"),
-      attachments: [{ filename: `${quotation.quoteNumber}.pdf`, content: pdf, contentType: "application/pdf" }],
-    });
-    if (!sent.ok) return fail(sent.error);
-    const simulated = Boolean("simulated" in sent && sent.simulated);
-    await db.customerQuotation.update({
-      where: { id: quotation.id },
-      data: {
-        status: "SENT",
-        sentAt: new Date(),
-        sentChannel: simulated ? "DEMO" : "EMAIL",
-        sentTo: to,
-        sendError: simulated ? "Demo simulation — no email was transmitted." : null,
-      },
-    });
-    await db.enquiry.update({ where: { id: quotation.enquiryId }, data: { status: "QUOTED" } });
-    await writeAudit({
-      actorId: input.userId,
-      actorLabel: input.actorLabel,
-      action: simulated ? "quotation.simulated_sent" : "quotation.sent",
-      entityType: "CustomerQuotation",
-      entityId: quotation.id,
-      meta: { channel: simulated ? "DEMO" : "EMAIL", to },
-    });
+  const to = (
+    input.channel === "EMAIL"
+      ? input.to ?? quotation.customerEmail ?? ""
+      : input.to ?? quotation.customerPhone ?? ""
+  ).trim();
+  if (!to) {
     return {
-      ok: true,
-      detail: simulated
-        ? `Demo simulation: recorded as sent to ${to}. No email was transmitted.`
-        : `Emailed to ${to}.`,
+      ok: false,
+      error:
+        input.channel === "EMAIL"
+          ? "This quotation has no customer email address."
+          : "This quotation has no customer WhatsApp number.",
     };
   }
 
-  const to = (input.to ?? quotation.customerPhone ?? "").trim();
-  if (!to) return { ok: false, error: "This quotation has no customer WhatsApp number." };
   const pdf = await readBuffer(pdfPath);
-  const sent = await sendWhatsAppDocument({
-    to,
-    filename: `${quotation.quoteNumber}.pdf`,
-    buffer: pdf,
-    caption: `Quotation ${quotation.quoteNumber} — ${money(quotation.total, quotation.currency)}`,
-  });
-  if (!sent.ok) {
-    // Fall back to a single text message only when the document upload failed
-    // for a reason that a text message would not hit; the result is still
-    // reported honestly.
-    const text = await sendWhatsAppText(
-      to,
-      `Quotation ${quotation.quoteNumber} — total ${money(quotation.total, quotation.currency)}. We could not attach the PDF automatically; please ask us to re-send it.`,
-    );
-    if (!text.ok) return fail(sent.detail);
-    await db.customerQuotation.update({
-      where: { id: quotation.id },
-      data: {
-        status: "SENT",
-        sentAt: new Date(),
-        sentChannel: "WHATSAPP",
-        sentTo: to,
-        sendError: sent.detail,
-      },
-    });
-    await db.enquiry.update({ where: { id: quotation.enquiryId }, data: { status: "QUOTED" } });
-    return {
-      ok: true,
-      detail: `A text message was delivered to ${to}, but the PDF could not be attached: ${sent.detail}`,
-    };
+  const body = [
+    `Dear ${quotation.customerName},`,
+    "",
+    `Please find our quotation ${quotation.quoteNumber} attached.`,
+    `Total: ${money(quotation.total, quotation.currency)}`,
+    "",
+    "Thank you,",
+  ].join("\n");
+  let sentDetail = "";
+
+  const result = await sendOutboundOnce(
+    {
+      operationKey: outboundOperationKey([
+        "customer-quotation",
+        quotation.id,
+        `v${quotation.version}`,
+        input.channel,
+      ]),
+      kind: "CUSTOMER_QUOTATION",
+      channel: input.channel,
+      recipient: to,
+      subject: `Quotation ${quotation.quoteNumber}`,
+      body,
+      relatedType: "CustomerQuotation",
+      relatedId: quotation.id,
+      metadata: { version: quotation.version, userId: input.userId },
+    },
+    async () => {
+      if (isDemoMode) {
+        sentDetail = `Demo simulation: recorded as sent to ${to}. No message was transmitted.`;
+        return {
+          outcome: "SENT",
+          simulated: true,
+          providerMessageId: "demo-simulated",
+          detail: sentDetail,
+        };
+      }
+      if (input.channel === "EMAIL") {
+        const sent = await sendEmail({
+          to,
+          subject: `Quotation ${quotation.quoteNumber}`,
+          text: body,
+          attachments: [{ filename: `${quotation.quoteNumber}.pdf`, content: pdf, contentType: "application/pdf" }],
+        });
+        if (sent.ok) {
+          sentDetail = sent.simulated
+            ? `Demo simulation: recorded as sent to ${to}. No email was transmitted.`
+            : `Emailed to ${to}.`;
+          return {
+            outcome: "SENT",
+            simulated: sent.simulated,
+            providerMessageId: sent.providerIds?.messageId ?? null,
+            providerThreadId: sent.providerIds?.threadId ?? null,
+            detail: sentDetail,
+          };
+        }
+        return sent.uncertain
+          ? { outcome: "UNKNOWN", error: sent.error }
+          : { outcome: "FAILED_SAFE", error: sent.error };
+      }
+
+      const sent = await sendWhatsAppDocument({
+        to,
+        filename: `${quotation.quoteNumber}.pdf`,
+        buffer: pdf,
+        caption: `Quotation ${quotation.quoteNumber} — ${money(quotation.total, quotation.currency)}`,
+      });
+      if (sent.ok) {
+        sentDetail = sent.simulated
+          ? `Demo simulation: recorded as sent to ${to}. No WhatsApp message was transmitted.`
+          : `Sent on WhatsApp to ${to} (message ${sent.messageId ?? "accepted"}).`;
+        return {
+          outcome: "SENT",
+          simulated: sent.simulated,
+          providerMessageId: sent.messageId ?? null,
+          detail: sentDetail,
+        };
+      }
+      if (sent.uncertain) return { outcome: "UNKNOWN", error: sent.detail };
+
+      // The document was definitely not accepted, so a text fallback is safe.
+      // If it is also uncertain, the whole send becomes UNKNOWN and is not retried.
+      const text = await sendWhatsAppText(
+        to,
+        `Quotation ${quotation.quoteNumber} — total ${money(quotation.total, quotation.currency)}. We could not attach the PDF automatically; please ask us to re-send it.`,
+      );
+      if (text.ok) {
+        sentDetail = `A text message was delivered to ${to}, but the PDF could not be attached: ${sent.detail}`;
+        return {
+          outcome: "SENT",
+          simulated: text.simulated,
+          providerMessageId: text.messageId ?? null,
+          detail: sentDetail,
+        };
+      }
+      if (text.uncertain) return { outcome: "UNKNOWN", error: text.detail };
+      return { outcome: "FAILED_SAFE", error: `${sent.detail} ${text.detail}`.trim() };
+    },
+  );
+
+  if (result.status === "UNCERTAIN" || result.status === "IN_PROGRESS") return fail(result.detail);
+  if (result.status === "FAILED_SAFE" || result.status === "EXHAUSTED" || result.status === "CANCELLED") {
+    return fail(result.detail);
   }
 
+  const wasSimulated = Boolean(result.simulated);
   await db.customerQuotation.update({
     where: { id: quotation.id },
     data: {
       status: "SENT",
-      sentAt: new Date(),
-      sentChannel: sent.simulated ? "DEMO" : "WHATSAPP",
+      sentAt: quotation.sentAt ?? new Date(),
+      sentChannel: wasSimulated ? "DEMO" : input.channel,
       sentTo: to,
-      sendError: sent.simulated ? "Demo simulation — no WhatsApp message was transmitted." : null,
+      sendError: wasSimulated ? "Demo simulation — no message was transmitted." : null,
     },
   });
   await db.enquiry.update({ where: { id: quotation.enquiryId }, data: { status: "QUOTED" } });
   await writeAudit({
     actorId: input.userId,
     actorLabel: input.actorLabel,
-    action: sent.simulated ? "quotation.simulated_sent" : "quotation.sent",
+    action: wasSimulated ? "quotation.simulated_sent" : "quotation.sent",
     entityType: "CustomerQuotation",
     entityId: quotation.id,
-    meta: { channel: sent.simulated ? "DEMO" : "WHATSAPP", to },
+    meta: { channel: wasSimulated ? "DEMO" : input.channel, to, outboundId: result.messageId ?? null },
   });
   return {
     ok: true,
-    detail: sent.simulated
-      ? `Demo simulation: recorded as sent to ${to}. No WhatsApp message was transmitted.`
-      : `Sent on WhatsApp to ${to} (message ${sent.messageId ?? "accepted"}).`,
+    detail:
+      result.status === "ALREADY_SENT"
+        ? "This quotation was already released; no duplicate message was transmitted."
+        : result.detail || sentDetail || `Sent to ${to}.`,
   };
 }
 

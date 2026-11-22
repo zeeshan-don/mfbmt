@@ -87,3 +87,52 @@ Result after fixing the conversation race found by the first run:
 - AI, email, WhatsApp, web-search and exchange-rate providers were disabled/mocked; no external request was made.
 
 This is a local functional/concurrency measurement, not a production capacity guarantee. The initial run exposed a real read-then-create race (7/30 failures), which is now covered by `tests/concurrent-intake.test.ts`.
+
+## Executed concurrency-critical harness — 22 November 2026
+
+`src/scripts/stress.ts` (`npm run stress`) measures the paths that were hardened:
+reservation locking, the durable job queue and outbound duplicate protection. It
+refuses to run unless `DATABASE_URL` clearly points at an isolated `*_test` or
+`*_stress` database and `NODE_ENV` is not production. It creates a synthetic
+tenant and deletes it afterwards.
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mfbmt_test \
+NODE_ENV=test npm run stress
+```
+
+Measured result (Node 24.18, Windows, Docker PostgreSQL 16):
+
+| Scenario | Result |
+| --- | --- |
+| 30 concurrent independent reservations | 30/30 succeeded, 0 failed, 189 ms |
+| 10 quotations × 2 units against 10 units | 5 succeeded, 5 insufficient, final reserved exactly 10, 72 ms |
+| 300 queued jobs, 4 workers | 300/300 completed; enqueue 1,583 ms, claim+complete 841 ms |
+| 60 outbound messages, 120 duplicate attempts | 60 provider calls, 0 duplicate calls, 60 SENT rows, 142 ms |
+| 5 simulated provider timeouts | 5 provider calls, 5/5 automatic retries blocked |
+
+These are local measurements of concurrency correctness and throughput on one
+machine. They are not a production benchmark, do not cover browser/E2E flows and
+do not constitute a 60/hour sustained full-pipeline guarantee.
+
+## Executed final audit rerun — 22 November 2026
+
+Same isolated database and script, rerun after the reservation/outbound fixes:
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/mfbmt_test \
+NODE_ENV=test npm run stress
+```
+
+Measured result:
+
+| Scenario | Result |
+| --- | --- |
+| 30 concurrent independent reservations | 30/30 succeeded, 0 failed, 319 ms |
+| 10 quotations × 2 units against 10 units | 5 succeeded, 5 insufficient, final reserved exactly 10, 142 ms |
+| 300 queued jobs, 4 workers | 300/300 completed; enqueue 2,581 ms, claim+complete 881 ms |
+| 60 outbound messages, 120 duplicate attempts | 60 provider calls, 0 duplicate calls, 60 SENT rows, 131 ms |
+| 5 simulated provider timeouts | 5 provider calls, 5/5 automatic retries blocked |
+
+The earlier run remains in this document for comparison. Both are local
+measurements only; neither is a production capacity guarantee.
