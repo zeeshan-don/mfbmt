@@ -1,4 +1,12 @@
 import "./load-env";
+
+// Vercel's container build tooling (buildah) interprets STORAGE_DRIVER as its
+// own graph-driver setting. Keep the application's historical variable name,
+// but allow a non-colliding alias so production builds are not broken.
+if (process.env.FILE_STORAGE_DRIVER && !process.env.STORAGE_DRIVER) {
+  process.env.STORAGE_DRIVER = process.env.FILE_STORAGE_DRIVER;
+}
+
 import { z } from "zod";
 import { stagingDatabaseProblem } from "./db-target";
 import { storageConfigProblems } from "./storage-config";
