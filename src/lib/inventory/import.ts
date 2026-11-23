@@ -50,36 +50,10 @@ function cellToString(value: unknown): string {
   return String(value);
 }
 
-export async function readTabular(buffer: Buffer): Promise<TabularData> {
-  const { family } = sniffType(buffer);
-  if (family === "csv" || family === "text") {
-    const { parse } = await import("csv-parse/sync");
-    const raw = buffer.toString("utf8").replace(/^\uFEFF/, "");
-    const rows = parse(raw, { relaxColumnCount: true, skipEmptyLines: true, bom: true }) as string[][];
-    const normalized = rows.map((row) => row.map((cell) => String(cell ?? "").trim()));
-    return { headers: normalized[0] ?? [], rows: normalized.slice(1), sheetName: "CSV" };
-  }
-  if (family === "excel") {
-    const ExcelJS = (await import("exceljs")).default;
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
-    const sheet = workbook.worksheets[0];
-    if (!sheet) throw new Error("The spreadsheet has no worksheets.");
-    const rows: string[][] = [];
-    sheet.eachRow({ includeEmpty: false }, (row) => {
-      const values: string[] = [];
-      row.eachCell({ includeEmpty: true }, (cell) => values.push(cellToString(cell.value).trim()));
-      rows.push(values);
-    });
-    return { headers: rows[0] ?? [], rows: rows.slice(1), sheetName: sheet.name };
-  }
-  throw new Error("Upload an Excel (.xlsx) or CSV file for inventory import.");
-}
-
 const GUESS: Record<MappingField, RegExp> = {
   sku: /(sku|code|item ?code|part ?no|product ?code)/i,
   name: /(name|description|product|item|particular)/i,
-  category: /(category|group|type)/i,
+  category: /(category|group|family|type)/i,
   brand: /(brand|make|manufacturer)/i,
   size: /(size|dimension|dia)/i,
   material: /(material)/i,
@@ -101,11 +75,63 @@ const GUESS: Record<MappingField, RegExp> = {
   location: /(location|warehouse|store|bin)/i,
 };
 
+/**
+ * Spreadsheets often carry a title, a disclaimer or a blank row above the real
+ * table. Treat the first row of the first ten that looks like column names as
+ * the header, and fall back to the first row when nothing matches.
+ */
+function findHeaderRow(rows: string[][]): number {
+  const limit = Math.min(rows.length, 10);
+  for (let index = 0; index < limit; index += 1) {
+    const cells = rows[index].filter((cell) => cell.trim() !== "");
+    if (cells.length < 2) continue;
+    const matches = cells.filter((cell) => Object.values(GUESS).some((pattern) => pattern.test(cell))).length;
+    if (matches >= 2) return index;
+  }
+  return 0;
+}
+
+function splitHeaderRow(rows: string[][]): { headers: string[]; dataRows: string[][] } {
+  const headerIndex = findHeaderRow(rows);
+  return { headers: rows[headerIndex] ?? [], dataRows: rows.slice(headerIndex + 1) };
+}
+
+export async function readTabular(buffer: Buffer): Promise<TabularData> {
+  const { family } = sniffType(buffer);
+  if (family === "csv" || family === "text") {
+    const { parse } = await import("csv-parse/sync");
+    const raw = buffer.toString("utf8").replace(/^\uFEFF/, "");
+    const rows = parse(raw, { relaxColumnCount: true, skipEmptyLines: true, bom: true }) as string[][];
+    const normalized = rows.map((row) => row.map((cell) => String(cell ?? "").trim()));
+    const { headers, dataRows } = splitHeaderRow(normalized);
+    return { headers, rows: dataRows, sheetName: "CSV" };
+  }
+  if (family === "excel") {
+    const ExcelJS = (await import("exceljs")).default;
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet) throw new Error("The spreadsheet has no worksheets.");
+    const rows: string[][] = [];
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      const values: string[] = [];
+      row.eachCell({ includeEmpty: true }, (cell) => values.push(cellToString(cell.value).trim()));
+      rows.push(values);
+    });
+    const { headers, dataRows } = splitHeaderRow(rows);
+    return { headers, rows: dataRows, sheetName: sheet.name };
+  }
+  throw new Error("Upload an Excel (.xlsx) or CSV file for inventory import.");
+}
+
 export function guessMapping(headers: string[]): ColumnMapping {
   const mapping: ColumnMapping = {};
   headers.forEach((header, index) => {
     for (const field of MAPPABLE_FIELDS) {
       if (mapping[field.key] != null) continue;
+      // "Product family" and "Item group" describe the category, not the
+      // product name, so leave the name column for the item/description header.
+      if (field.key === "name" && /(family|group|categor|type)/i.test(header)) continue;
       if (GUESS[field.key].test(header)) mapping[field.key] = index;
     }
   });

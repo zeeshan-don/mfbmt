@@ -22,6 +22,9 @@ export async function previewInventoryImportAction(formData: FormData) {
   const check = assertAllowedUpload(buffer, file.name);
   if (!check.ok) redirect(`/inventory/import?error=${encodeURIComponent(check.error)}`);
 
+  // redirect() works by throwing NEXT_REDIRECT, so it must never run inside a
+  // try block whose catch would report the thrown control-flow error as a failure.
+  let destination: string;
   try {
     const tabular = await readTabular(buffer);
     const token = `import:${Date.now().toString(36)}`;
@@ -31,10 +34,11 @@ export async function previewInventoryImportAction(formData: FormData) {
       sheetName: tabular.sheetName,
       filename: file.name,
     });
-    redirect(`/inventory/import?token=${token}`);
+    destination = `/inventory/import?token=${token}`;
   } catch (error) {
-    redirect(`/inventory/import?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not read the file")}`);
+    destination = `/inventory/import?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not read the file")}`;
   }
+  redirect(destination);
 }
 
 export async function runInventoryImportAction(formData: FormData) {
@@ -55,6 +59,7 @@ export async function runInventoryImportAction(formData: FormData) {
   const locationCode = String(formData.get("locationCode") ?? "MAIN").trim() || "MAIN";
   const locationName = String(formData.get("locationName") ?? "Main warehouse").trim() || locationCode;
 
+  let destination: string;
   try {
     const report = await importInventory({
       rows: parsed.rows,
@@ -82,10 +87,11 @@ export async function runInventoryImportAction(formData: FormData) {
       params.set("firstError", `Row ${report.errors[0].row}: ${report.errors[0].message}`);
     }
     revalidateOrgPath(user.organizationId, "/inventory");
-    redirect(`/inventory?${params.toString()}`);
+    destination = `/inventory?${params.toString()}`;
   } catch (error) {
-    redirect(`/inventory/import?token=${token}&error=${encodeURIComponent(error instanceof Error ? error.message : "Import failed")}`);
+    destination = `/inventory/import?token=${token}&error=${encodeURIComponent(error instanceof Error ? error.message : "Import failed")}`;
   }
+  redirect(destination);
 }
 
 export async function createProductAction(formData: FormData) {

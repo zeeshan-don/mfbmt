@@ -34,6 +34,8 @@ Old `.xls` files must be re-saved as `.xlsx`. Maximum upload size is `MAX_UPLOAD
 
 Headers are guessed from common names (`Qty`, `On Hand`, `Stock`, `Description`, `Item Code`, `Warehouse`, …). You can override every column on the mapping screen before anything is written.
 
+A title, disclaimer or blank row above the table is skipped: the first row of the first ten that looks like column names is used as the header. A grouping column such as `Product family` is treated as the category, not as the product name, so the `Item`/`Description` column is guessed for the name.
+
 ## Steps
 
 1. **Inventory → Import**
@@ -67,6 +69,7 @@ Size (`1"`, `1 inch`, `DN25`, `25mm`), material (`SS316`, `Stainless Steel 316`,
 | Symptom | Cause / fix |
 |---|---|
 | "Upload an Excel (.xlsx) or CSV file" | File is `.xls`, `.xlsb` or a renamed document. Re-save as `.xlsx`. |
+| Header row not detected / every column unmapped | The header is further than ten rows down, or the column names share no common words. Fix the mapping by hand on the mapping screen. |
 | Row skipped with "quantity is not a whole number" | Fractional stock is not supported; split the row by unit or correct the value. |
 | Row skipped with "reserved exceeds on hand" | Fix the source data; the app will not create negative availability. |
 | New product created instead of updating | Size/material/grade differ from the existing product once normalised, or the name matched more than one product. Add a SKU to make matching exact. |
