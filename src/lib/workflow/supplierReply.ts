@@ -6,9 +6,12 @@ import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
 import { industrialSpecFromFields, parseIndustrialSpecJson } from "../catalog/industrialSpec";
 import {
   assertAllowedUpload,
+  readAttachment,
   saveAttachmentForOrganization,
+  sniffType,
   storageReadiness,
 } from "../storage";
+import { extractDocument, type DocumentText } from "../intake/documents";
 import { requireTenantId } from "../tenant";
 import { recomputeOffersForItem } from "../costing/evaluate";
 import { ensureSourcingApproval } from "./approvals";
@@ -223,6 +226,31 @@ function cleanText(raw: string | null | undefined, max = 120): string | null {
 }
 
 /**
+ * Names the commercial inputs a quotation is still missing. A value that was
+ * never stated is listed here; it is never silently treated as zero.
+ */
+function missingCommercialFor(terms: {
+  unitPrice: number | null;
+  currency: string | null;
+  leadTimeDays: number | null;
+  shippingCost: number | null;
+  taxes: number | null;
+  validityDays: number | null;
+  validityText: string | null;
+  paymentTerms: string | null;
+}): string[] {
+  const missing: string[] = [];
+  if (terms.unitPrice == null) missing.push("Unit price");
+  if (!terms.currency) missing.push("Currency");
+  if (terms.leadTimeDays == null) missing.push("Lead time");
+  if (terms.shippingCost == null) missing.push("Shipping cost");
+  if (terms.taxes == null) missing.push("Taxes");
+  if (terms.validityDays == null && !terms.validityText) missing.push("Quote validity");
+  if (!terms.paymentTerms) missing.push("Payment terms");
+  return missing;
+}
+
+/**
  * Extracts only values the supplier actually stated. Unknown shipping, tax or
  * other charges remain null; they are never treated as zero.
  */
@@ -336,14 +364,16 @@ export function extractSupplierQuoteTerms(body: string, subject?: string | null)
       160,
     );
 
-  const missingCommercial: string[] = [];
-  if (unitPrice == null) missingCommercial.push("Unit price");
-  if (!currencyFromText) missingCommercial.push("Currency");
-  if (leadTimeDays == null) missingCommercial.push("Lead time");
-  if (shippingCost == null) missingCommercial.push("Shipping cost");
-  if (taxes == null) missingCommercial.push("Taxes");
-  if (validityDays == null && !validityText) missingCommercial.push("Quote validity");
-  if (!paymentTerms) missingCommercial.push("Payment terms");
+  const missingCommercial = missingCommercialFor({
+    unitPrice,
+    currency: currencyFromText,
+    leadTimeDays,
+    shippingCost,
+    taxes,
+    validityDays,
+    validityText,
+    paymentTerms,
+  });
   if (/\b(?:vat|tax)\s*(?:@\s*)?\d{1,2}\s*%/i.test(lower)) {
     missingCommercial.push("Tax amount (only a percentage was stated)");
   }
@@ -376,6 +406,186 @@ export function extractSupplierQuoteTerms(body: string, subject?: string | null)
     confidence,
     missingCommercial: [...new Set(missingCommercial)],
   };
+}
+
+// ── Supplier attachment reading ─────────────────────────────────────────────
+
+export type SupplierAttachmentDocument = {
+  attachmentId: string;
+  filename: string;
+  text: string;
+  status: DocumentText["status"];
+  note: string | null;
+  pageCount: number | null;
+};
+
+export type SupplierAttachmentEvidence = {
+  attachmentId: string;
+  filename: string;
+  pageCount: number | null;
+  status: DocumentText["status"];
+  note: string | null;
+  /** Page, sheet or row markers found in the extracted text. */
+  sourceRefs: string[];
+  /** Fields this file supplied that the email body did not. */
+  fieldsFound: string[];
+};
+
+/** Commercial/technical fields an attachment may fill when the body omits them. */
+const MERGEABLE_TERM_FIELDS = [
+  "quoteRef",
+  "description",
+  "unitPrice",
+  "currency",
+  "quantityAvailable",
+  "moq",
+  "leadTimeDays",
+  "shippingCost",
+  "otherCharges",
+  "taxes",
+  "deliveryTerms",
+  "paymentTerms",
+  "validityDays",
+  "validityText",
+  "countryOfOrigin",
+  "brand",
+  "manufacturer",
+  "material",
+  "grade",
+  "size",
+  "pressureRating",
+  "standard",
+] as const;
+
+/** Page/sheet/row markers the document parsers already embed in their text. */
+function sourceRefsFromText(text: string): string[] {
+  const refs = new Set<string>();
+  for (const match of text.matchAll(/\[page (\d+)\]/gi)) refs.add(`page ${match[1]}`);
+  for (const match of text.matchAll(/\[([A-Za-z0-9 _.-]{1,60}?) row (\d+)\]/g)) {
+    refs.add(`${match[1].trim()} row ${match[2]}`);
+  }
+  return [...refs].slice(0, 12);
+}
+
+/**
+ * Reads the supplier's attached PDF/XLSX/CSV/image through the same safe
+ * document pipeline used for customer enquiries, persists the extraction record
+ * on the Attachment row, and never lets one unreadable file hide the rest.
+ */
+async function readSupplierAttachments(
+  saved: Array<{ id: string; filename: string; storagePath: string }>,
+): Promise<{ documents: SupplierAttachmentDocument[]; failures: string[] }> {
+  const documents: SupplierAttachmentDocument[] = [];
+  const failures: string[] = [];
+
+  for (const file of saved) {
+    try {
+      const buffer = await readAttachment(file.storagePath);
+      const doc = await extractDocument(buffer, file.filename);
+      await db.attachment.update({
+        where: { id: file.id },
+        data: {
+          textExtract: doc.text.slice(0, 80_000),
+          pageCount: doc.pageCount,
+          extractionStatus: doc.status,
+          extractionNote: doc.note,
+          detectedMime: sniffType(buffer).mime,
+        },
+      });
+      if (doc.unreadable) failures.push(`${file.filename}: ${doc.note ?? "could not be read"}`);
+      documents.push({
+        attachmentId: file.id,
+        filename: file.filename,
+        text: doc.text,
+        status: doc.status,
+        note: doc.note,
+        pageCount: doc.pageCount,
+      });
+    } catch (error) {
+      const note = error instanceof Error ? error.message.slice(0, 300) : "Could not read the file.";
+      failures.push(`${file.filename}: ${note}`);
+      try {
+        await db.attachment.update({
+          where: { id: file.id },
+          data: { extractionStatus: "FAILED", extractionNote: note },
+        });
+      } catch {
+        // The failure is already recorded on the reply; never lose the email for it.
+      }
+      documents.push({
+        attachmentId: file.id,
+        filename: file.filename,
+        text: "",
+        status: "FAILED",
+        note,
+        pageCount: null,
+      });
+    }
+  }
+
+  return { documents, failures };
+}
+
+/**
+ * Fills terms the email body did not state from the supplier's own attachments.
+ * Body wording always wins; every attachment-sourced value keeps the file and
+ * page/sheet reference that produced it, and unknown values stay null.
+ */
+export function mergeSupplierAttachmentTerms(
+  bodyTerms: SupplierQuoteTerms,
+  documents: SupplierAttachmentDocument[],
+): {
+  terms: SupplierQuoteTerms;
+  provenance: Record<string, string>;
+  fromAttachments: string[];
+  evidence: SupplierAttachmentEvidence[];
+} {
+  const terms: SupplierQuoteTerms = {
+    ...bodyTerms,
+    confidence: { ...bodyTerms.confidence },
+    certifications: [...bodyTerms.certifications],
+  };
+  const provenance: Record<string, string> = {};
+  const fromAttachments: string[] = [];
+  const evidence: SupplierAttachmentEvidence[] = [];
+
+  for (const document of documents) {
+    const extracted = extractSupplierQuoteTerms(document.text, document.filename);
+    const sourceRefs = sourceRefsFromText(document.text);
+    const where = sourceRefs.length > 0 ? `${document.filename} (${sourceRefs[0]})` : document.filename;
+    const fieldsFound: string[] = [];
+
+    for (const field of MERGEABLE_TERM_FIELDS) {
+      if (terms[field] != null) continue;
+      const value = extracted[field];
+      if (value == null) continue;
+      (terms as unknown as Record<string, unknown>)[field] = value;
+      terms.confidence[field] = extracted.confidence[field] ?? 0.6;
+      provenance[field] = where;
+      fromAttachments.push(field);
+      fieldsFound.push(field);
+    }
+
+    if (terms.certifications.length === 0 && extracted.certifications.length > 0) {
+      terms.certifications = extracted.certifications;
+      provenance.certifications = where;
+      fromAttachments.push("certifications");
+      fieldsFound.push("certifications");
+    }
+
+    evidence.push({
+      attachmentId: document.attachmentId,
+      filename: document.filename,
+      pageCount: document.pageCount,
+      status: document.status,
+      note: document.note,
+      sourceRefs,
+      fieldsFound,
+    });
+  }
+
+  terms.missingCommercial = missingCommercialFor(terms);
+  return { terms, provenance, fromAttachments, evidence };
 }
 
 // ── Ingestion ───────────────────────────────────────────────────────────────
@@ -445,6 +655,9 @@ async function materializeOffer(input: {
   terms: SupplierQuoteTerms;
   bodySummary: string;
   attachmentNames: string[];
+  attachmentEvidence: SupplierAttachmentEvidence[];
+  attachmentProvenance: Record<string, string>;
+  fieldsFromAttachments: string[];
   receivedAt: Date;
 }): Promise<string | null> {
   const { quote, terms } = input;
@@ -544,6 +757,9 @@ async function materializeOffer(input: {
         supplierReplyId: input.replyId,
         originalWording: input.bodySummary.slice(0, 2000),
         attachmentNames: input.attachmentNames,
+        attachmentEvidence: input.attachmentEvidence,
+        attachmentProvenance: input.attachmentProvenance,
+        fieldsFromAttachments: input.fieldsFromAttachments,
         statedTerms: terms,
         extractionConfidence: terms.confidence,
         missingCommercial: terms.missingCommercial,
@@ -650,7 +866,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
   const validationFailures: string[] = [];
   const organizationId = await requireTenantId();
   const readiness = storageReadiness();
-  const savedAttachments: Array<{ id: string; filename: string; sha256: string; sizeBytes: number }> = [];
+  const savedAttachments: Array<{ id: string; filename: string; sha256: string; sizeBytes: number; storagePath: string }> = [];
   const reply = await db.supplierEmailReply.create({
     data: {
       supplierId: supplier.id,
@@ -701,6 +917,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
             filename: attachment.filename,
             sha256: attachment.sha256,
             sizeBytes: attachment.sizeBytes,
+            storagePath: stored.storagePath,
           });
         } catch (error) {
           validationFailures.push(
@@ -710,6 +927,10 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
       }
     }
   }
+
+  // Read the supplier's attachments now. Storing a price-list PDF without
+  // reading it is the gap this pass closes.
+  const attachmentReading = await readSupplierAttachments(savedAttachments);
 
   const quotes = await db.supplierQuote.findMany({
     where: {
@@ -770,7 +991,9 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
     candidates,
   );
 
-  const terms = extractSupplierQuoteTerms(input.body, input.subject);
+  const bodyTerms = extractSupplierQuoteTerms(input.body, input.subject);
+  const merged = mergeSupplierAttachmentTerms(bodyTerms, attachmentReading.documents);
+  const terms = merged.terms;
   const matchedQuote = correlation.quoteId ? quotes.find((quote) => quote.id === correlation.quoteId) : null;
 
   let offerId: string | null = null;
@@ -781,6 +1004,9 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
       terms,
       bodySummary: input.body,
       attachmentNames: savedAttachments.map((attachment) => attachment.filename),
+      attachmentEvidence: merged.evidence,
+      attachmentProvenance: merged.provenance,
+      fieldsFromAttachments: merged.fromAttachments,
       receivedAt: input.receivedAt ?? new Date(),
     });
   }
@@ -794,13 +1020,24 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
     });
   }
 
-  const extractionStatus = terms.unitPrice != null || terms.description ? "EXTRACTED" : "NO_TERMS";
+  const attachmentFailures = [...validationFailures, ...attachmentReading.failures];
+  const hasTerms = terms.unitPrice != null || terms.description != null;
+  const extractionStatus = hasTerms
+    ? "EXTRACTED"
+    : savedAttachments.length > 0 && attachmentFailures.length > 0
+      ? "FAILED"
+      : "NO_TERMS";
   await db.supplierEmailReply.update({
     where: { id: reply.id },
     data: {
       supplierQuoteId: correlation.quoteId,
       matchingStatus: correlation.status,
-      correlationJson: stringifyJson({ ...correlation, attachmentFailures: validationFailures }),
+      correlationJson: stringifyJson({
+        ...correlation,
+        attachmentFailures,
+        documentExtraction: merged.evidence,
+        fieldsFromAttachments: merged.fromAttachments,
+      }),
       extractedJson: stringifyJson(terms),
       extractionStatus,
       attachmentsJson: stringifyJson(savedAttachments),
@@ -823,7 +1060,9 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
       supplierId: supplier.id,
       matchingStatus: correlation.status,
       method: correlation.method,
-      attachmentFailures: validationFailures.length,
+      attachmentFailures: attachmentFailures.length,
+      attachmentsRead: attachmentReading.documents.filter((document) => document.status !== "FAILED").length,
+      fieldsFromAttachments: merged.fromAttachments,
       offerId,
     },
   });
@@ -846,7 +1085,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
     status: correlation.status,
     quoteId: correlation.quoteId,
     offerId,
-    reason: validationFailures.length > 0 ? validationFailures.join(" ") : undefined,
+    reason: attachmentFailures.length > 0 ? attachmentFailures.join(" ") : undefined,
   };
 }
 
@@ -902,6 +1141,9 @@ export async function assignSupplierReplyToQuote(input: {
     attachmentNames: parseJson<Array<{ filename: string }>>(reply.attachmentsJson, []).map(
       (attachment) => attachment.filename,
     ),
+    attachmentEvidence: [],
+    attachmentProvenance: {},
+    fieldsFromAttachments: [],
     receivedAt: reply.receivedAt,
   });
 

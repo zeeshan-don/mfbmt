@@ -39,10 +39,22 @@ also guarded by the unique `SupplierQuoteItem.offer` link.
 ## Attachments
 
 Supplier attachments are validated by content type and size, then stored under
-the tenant-scoped key described in `docs/STORAGE.md`. PDF, XLSX, CSV, text and
-image files are accepted; unsupported or oversized files are recorded as
+the tenant-scoped key described in `docs/STORAGE.md`. PDF, XLSX, CSV, DOCX, text
+and image files are accepted; unsupported or oversized files are recorded as
 failures. If persistent storage is not ready, the reply is still retained but no
 file is written and the failure is visible in the review screen.
+
+Every stored attachment is then **read**, not just retained, through the same
+`extractDocument()` pipeline used for customer enquiries. Digital PDF text,
+scanned-page OCR (when `OCR_PROVIDER` is enabled), XLSX/CSV rows, DOCX tables and
+image OCR are all available. Each file gets its own `Attachment` record with
+`textExtract`, `pageCount`, `extractionStatus` and `extractionNote`, so a price
+list that could not be parsed is visible instead of looking like an empty quote.
+
+A file that cannot be read records a structured failure and does not stop the
+reply: the email body and any other readable attachment are still processed, and
+the failure is listed in `SupplierEmailReply.correlationJson.attachmentFailures`
+and returned as the ingestion reason.
 
 ## Extracted terms
 
@@ -55,6 +67,14 @@ The deterministic extractor records only stated values:
   brand/manufacturer and any stated technical attributes.
 
 A VAT percentage without an amount is flagged as an unknown tax amount.
+
+When the email body omits a value, the supplier's attachments may supply it.
+Body wording always wins; an attachment only fills fields that are still null.
+Every attachment-sourced field keeps its provenance on the offer's
+`evidenceJson.attachmentProvenance` as `filename (page/sheet/row)`, and
+`evidenceJson.attachmentEvidence` lists each file's extraction status, page
+count, page/sheet references and the fields it supplied. Unknown values remain
+null after merging; they are never filled with zero or a guess.
 
 When matched, the reply creates a `SupplierOffer` with:
 

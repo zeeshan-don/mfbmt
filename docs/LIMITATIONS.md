@@ -18,6 +18,7 @@ Everything below is a known, deliberate limit of this build. None of it is disgu
 - The deterministic parser handles common RFQ phrasing (quantities, sizes, materials, grades, units). Unusual layouts fall back to review rather than invention.
 - An AI provider improves messy text, but is optional. Without a key, all AI-dependent paths are marked "read without AI assistance". The app never fabricates AI output.
 - Arabic and mixed-language messages are passed to the AI provider when configured; the rule-based parser only recognises Latin text and numbers. Arabic-only messages will need review.
+- **Supplier reply attachments** are read with the same deterministic parsers as customer attachments (PDF text, OCR when enabled, XLSX/CSV/DOCX, images) and their terms are merged with the email body, with page/sheet provenance kept on the offer evidence. They are **not yet** passed through the vision model or a second AI pass, so an unusual supplier price-list layout can still need review. The file and the extraction failure are shown; nothing is silently treated as empty.
 
 ## Sourcing and comparison
 
