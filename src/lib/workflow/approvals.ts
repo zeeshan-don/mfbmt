@@ -2,6 +2,7 @@ import { db } from "../db";
 import { writeAudit, notifyOwner } from "../audit";
 import { parseJson, stringifyJson } from "../json";
 import { enqueueJob } from "./jobs";
+import { sendSupplierQuoteRequest } from "./supplierQuotes";
 import { JOB_TYPES } from "../constants";
 import { marginPct } from "../pricing/rules";
 import {
@@ -311,11 +312,21 @@ export async function decideApproval(input: {
     if (claimed.count === 0) return { ok: false, error: "This item has already been decided." };
 
     if (input.decision === "APPROVED") {
-      await enqueueJob({
-        type: JOB_TYPES.SEND_SUPPLIER_RFQ,
-        payload: { supplierQuoteId: approval.entityId },
-        idempotencyKey: `supplier-rfq:${approval.entityId}`,
-      });
+      // Send immediately once approved, rather than waiting for a worker tick,
+      // so an approved RFQ is transmitted right away. The outbound ledger keeps
+      // this idempotent if the same approval is ever applied twice.
+      const sendResult = await sendSupplierQuoteRequest(quote.id);
+      if (!sendResult.ok) {
+        await db.approval.update({
+          where: { id: approval.id },
+          data: { status: "CANCELLED", reason: sendResult.detail.slice(0, 500) },
+        });
+        await db.supplierQuote.update({
+          where: { id: quote.id },
+          data: { lastError: sendResult.detail.slice(0, 500) },
+        });
+        return { ok: false, error: sendResult.detail };
+      }
     } else {
       await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "REQUESTED" } });
     }
