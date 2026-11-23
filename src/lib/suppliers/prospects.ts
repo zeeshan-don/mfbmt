@@ -150,6 +150,12 @@ export async function upsertProspectsAndDraftRfqs(
       const result = await upsertProspectFromCandidate(candidate, item.category);
       if (!result) continue;
       if (result.created) prospects += 1;
+      // When an AI comparison is available, only draft RFQs for candidates it
+      // recommended. This keeps unverified scraped contacts out of the draft
+      // queue unless the evidence actually supports the requested spec. When
+      // no comparison ran, behaviour is unchanged.
+      const aiAssessment = candidate.evidence?.aiComparison as { recommended?: boolean } | undefined;
+      if (aiAssessment && aiAssessment.recommended === false) continue;
       if (candidate.unitPrice != null || drafts >= 3) continue;
       const supplier = await db.supplier.findUnique({
         where: { id: result.supplierId },

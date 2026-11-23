@@ -22,6 +22,8 @@ import { getOrgLimits } from "../limits";
 import { readSearchCache, searchCacheKey, writeSearchCache } from "./cache";
 import { extractPublicContacts } from "./contacts";
 import { upsertProspectsAndDraftRfqs } from "../suppliers/prospects";
+import { compareSourcedSuppliers } from "./aiCompare";
+import { writeAudit } from "../audit";
 
 const PAGE_FETCH_LIMIT = 5;
 
@@ -255,6 +257,35 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
   }
 
   candidates = await enrichWithPageEvidence(candidates);
+
+  // AI comparison of the fetched websites. It only judges evidence already
+  // present and never invents prices, stock or lead times. When AI is not
+  // configured or the budget is exhausted, sourcing keeps its deterministic
+  // behaviour and no comparison is recorded.
+  const aiComparison = await compareSourcedSuppliers({
+    request: context.request,
+    candidates,
+    enquiryId: item.enquiryId,
+  }).catch(() => null);
+  if (aiComparison) {
+    for (const candidate of candidates) {
+      const entry = aiComparison.assessment.get(candidate.supplierName.trim().toLowerCase());
+      if (entry) {
+        candidate.evidence = { ...(candidate.evidence ?? {}), aiComparison: entry, aiSummary: aiComparison.summary };
+      }
+    }
+    await writeAudit({
+      actorLabel: "sourcing-ai",
+      action: "sourcing.ai_comparison",
+      entityType: "SearchSession",
+      entityId: session.id,
+      meta: {
+        candidates: candidates.length,
+        recommended: [...aiComparison.assessment.values()].filter((value) => value.recommended).length,
+        summary: aiComparison.summary,
+      },
+    }).catch(() => undefined);
+  }
 
   const seen = new Set<string>();
   const uniqueCandidates = candidates.filter((candidate) => {
