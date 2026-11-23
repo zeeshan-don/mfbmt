@@ -3,6 +3,7 @@ import {
   type ExtractedItem,
   type ExtractionResult,
 } from "../validation/extraction";
+import { env } from "../env";
 import { completeJson, aiStatus, DATA_ONLY_RULE } from "./provider";
 import { inferCategoryFromDescription, ATTRIBUTE_LABELS, type AttributeKey } from "../catalog/categories";
 import { isFastenerCategory, missingFastenerFields, parseFastenerSpec } from "../fasteners/spec";
@@ -28,6 +29,8 @@ export type SourceDocument = {
   text: string;
   pageCount?: number | null;
   unreadable?: boolean;
+  /** Page renders or the photo itself, for the vision model. */
+  images?: string[];
 };
 
 export type ExtractionInput = {
@@ -348,7 +351,7 @@ function documentBlock(documents: SourceDocument[]): string {
   return documents
     .map(
       (doc, index) =>
-        `<document index="${index + 1}" filename="${doc.filename}" kind="${doc.kind}">\n${doc.text.slice(0, 12000)}\n</document>`,
+        `<document index="${index + 1}" filename="${doc.filename}" kind="${doc.kind}">\n${doc.text.slice(0, 30000)}\n</document>`,
     )
     .join("\n\n");
 }
@@ -417,11 +420,15 @@ export async function extractEnquiry(
     };
   }
 
+  // Page renders and photos go to the vision model. OCR text remains in the
+  // prompt so the model can compare both readings.
+  const visionImages = documents.flatMap((doc) => doc.images ?? []).slice(0, 6);
+  const visionModel = env.AI_VISION_MODEL.trim() || env.AI_MODEL;
+
   const secondPassNote = options.secondPass
     ? " This is a verification pass: re-check every previously uncertain field against the source text and only fill values that are explicitly stated. "
     : "";
-  const ai = await completeJson(
-    {
+  const aiRequest = (images: string[] | undefined) => ({
       system:
         "You extract product line items from customer quotation requests for an industrial building materials trader in the UAE. " + secondPassNote +
         "Return JSON only matching this shape: {\"isRfq\":boolean,\"classification\":\"RFQ\"|\"AVAILABILITY\"|\"FOLLOW_UP\"|\"SUPPLIER\"|\"BUSINESS_OTHER\"|\"PERSONAL\"|\"UNCLEAR\",\"classificationConfidence\":0..1,\"classificationReason\":string," +
@@ -438,9 +445,14 @@ export async function extractEnquiry(
         DATA_ONLY_RULE,
       user: `<customer_message>\n${input.text.slice(0, 8000)}\n</customer_message>\n\n${documentBlock(documents)}`,
       maxTokens: 3500,
-    },
-    AIExtractionResponseSchema,
-  );
+      model: images?.length ? visionModel : undefined,
+      images,
+  });
+  let ai = await completeJson(aiRequest(visionImages), AIExtractionResponseSchema);
+  if (!ai.ok && visionImages.length > 0) {
+    // Vision is best-effort: a model without image support still reads the text.
+    ai = await completeJson(aiRequest(undefined), AIExtractionResponseSchema);
+  }
 
   if (!ai.ok) {
     return {

@@ -34,6 +34,10 @@ type ChatOptions = {
   user: string;
   maxTokens?: number;
   temperature?: number;
+  /** Overrides AI_MODEL for this call (used by vision reads). */
+  model?: string;
+  /** Image data URLs sent as multimodal content alongside `user`. */
+  images?: string[];
   /** Stable label used in the usage report, e.g. extraction/classification. */
   jobType?: string;
   enquiryId?: string | null;
@@ -69,13 +73,21 @@ export async function completeJson<S extends z.ZodTypeAny>(options: ChatOptions,
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
     const buildBody = (includeResponseFormat: boolean) => ({
-    model: env.AI_MODEL,
+    model: options.model || env.AI_MODEL,
     temperature: options.temperature ?? 0,
     max_tokens: options.maxTokens ?? 2000,
     ...(includeResponseFormat ? { response_format: { type: "json_object" } } : {}),
     messages: [
       { role: "system", content: options.system },
-      { role: "user", content: options.user },
+      {
+        role: "user",
+        content: options.images?.length
+          ? [
+              { type: "text", text: options.user },
+              ...options.images.map((url) => ({ type: "image_url", image_url: { url } })),
+            ]
+          : options.user,
+      },
     ],
   });
 
@@ -115,7 +127,7 @@ export async function completeJson<S extends z.ZodTypeAny>(options: ChatOptions,
     };
     const inputTokens = Math.max(0, Number(payload.usage?.prompt_tokens ?? 0));
     const outputTokens = Math.max(0, Number(payload.usage?.completion_tokens ?? 0));
-    const responseModel = payload.model ?? env.AI_MODEL;
+    const responseModel = payload.model ?? options.model ?? env.AI_MODEL;
     const content = payload.choices?.[0]?.message?.content;
     if (!content) return { ok: false, error: "AI provider returned an empty response." };
 

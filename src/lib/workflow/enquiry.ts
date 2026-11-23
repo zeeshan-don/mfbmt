@@ -564,6 +564,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
             text: doc.text,
             pageCount: doc.pageCount,
             unreadable: doc.unreadable,
+            images: doc.images,
           } as SourceDocument;
           documents.push(sourceDoc);
           newlyExtractedDocs.push(sourceDoc);
@@ -594,8 +595,10 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
     }
   }
 
+  // Only a failed read holds the request back. A file that was read with a
+  // caveat (OCR used, layout guessed) is not a failed extraction.
   const unreadableFiles = await db.attachment.count({
-    where: { enquiryId: enquiry.id, extractionStatus: { in: ["NEEDS_REVIEW", "FAILED"] } },
+    where: { enquiryId: enquiry.id, extractionStatus: "FAILED" },
   });
 
   if (enquiry.items.length > 0 && newlyExtractedDocs.length === 0) {
@@ -603,8 +606,9 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
       if (item.inventoryStatus === "UNCHECKED") await applyInventoryCheck(item.id);
     }
     const refreshed = await db.enquiryItem.findMany({ where: { enquiryId: enquiry.id } });
-    const stillMissing = refreshed.some((item) => parseJson<string[]>(item.missingFields, []).length > 0);
-    const needsReview = stillMissing || unreadableFiles > 0 || refreshed.length === 0;
+    // Missing attributes are shown on the individual line, so they no longer
+    // flag the whole request; only an unreadable file or an empty result does.
+    const needsReview = unreadableFiles > 0 || refreshed.length === 0;
     await db.enquiry.update({
       where: { id: enquiry.id },
       data: {
@@ -614,7 +618,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
           ? (enquiry.reviewReason ??
             (unreadableFiles > 0
               ? "Some pages or files could not be read. Please check the products against the original document."
-              : "Some product details are missing. Please complete them before suppliers are searched."))
+              : "No product lines could be found in this request. Please add them or check the original document."))
           : null,
       },
     });
@@ -660,7 +664,6 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
       }
     }
   }
-  const unreadable = extraction.extraction.unreadableParts ?? [];
   let lineNo = 1;
   for (const item of extraction.items) {
     const created = await db.enquiryItem.create({
@@ -701,9 +704,10 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
   }
 
   const items = await db.enquiryItem.findMany({ where: { enquiryId: enquiry.id } });
-  const needsClarification = items.some((item) => parseJson<string[]>(item.missingFields, []).length > 0);
-  const requiresReview =
-    needsClarification || unreadable.length > 0 || extraction.source === "rule" || items.length === 0 || unreadableFiles > 0;
+  // Incomplete attributes stay on their line (they already carry a clarification
+  // question and are never sourced). Flagging the whole request for them made
+  // every ordinary quotation look broken.
+  const requiresReview = items.length === 0 || unreadableFiles > 0 || extraction.source === "rule";
 
   await db.enquiry.update({
     where: { id: enquiry.id },
@@ -713,10 +717,10 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
       extractionConfidence: extraction.extraction.classificationConfidence,
       extractedJson: stringifyJson(extraction.extraction),
       reviewReason: requiresReview
-        ? unreadable.length > 0 || unreadableFiles > 0
-          ? "Some pages or files could not be read. Please check the products against the original document."
-          : needsClarification
-            ? "Some product details are missing. Please complete them before suppliers are searched."
+        ? unreadableFiles > 0
+          ? "Some attachments could not be read. Please check the products against the original document."
+          : items.length === 0
+            ? "No product lines could be found. Please add them or check the original document."
             : extraction.aiError
               ? "Products were read without AI assistance. Please check them before sourcing."
               : "Please check the extracted products."

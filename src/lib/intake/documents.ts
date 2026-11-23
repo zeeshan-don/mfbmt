@@ -11,6 +11,11 @@ export type DocumentText = {
   pages?: Array<{ page: number; text: string; ocr: boolean }>;
   languages?: string;
   ocrUsed?: boolean;
+  /**
+   * Rendered pages or the photo itself, as data URLs, for the vision model.
+   * Built on demand and never written to the database or logs.
+   */
+  images?: string[];
 };
 
 const MIN_MEANINGFUL_CHARS = 25;
@@ -31,6 +36,47 @@ function ocrEnabled(): boolean {
 
 function ocrOptions(): { langPath?: string } {
   return env.OCR_LANG_PATH ? { langPath: env.OCR_LANG_PATH } : {};
+}
+
+/** Pages/photos handed to the vision model per document. */
+const MAX_VISION_IMAGES = 4;
+const MAX_VISION_IMAGE_BYTES = 1_500_000;
+
+/**
+ * Re-encodes a page render or a photo as a JPEG data URL for the vision model.
+ * Downscaling keeps the request small. When sharp is unavailable the original
+ * bytes are used only if they are already a web-safe image under the cap.
+ */
+async function toVisionImage(buffer: Buffer, mime = "image/jpeg"): Promise<string | null> {
+  try {
+    const sharpModule = (await import("sharp")) as unknown as {
+      default?: (input: Buffer) => {
+        rotate: () => {
+          resize: (options: Record<string, unknown>) => {
+            jpeg: (options: Record<string, unknown>) => { toBuffer: () => Promise<Buffer> };
+          };
+        };
+      };
+    };
+    const sharp = sharpModule.default;
+    if (sharp) {
+      const jpeg = await sharp(buffer)
+        .rotate()
+        .resize({ width: 1600, withoutEnlargement: true, fit: "inside" })
+        .jpeg({ quality: 82 })
+        .toBuffer();
+      if (jpeg.length > 0 && jpeg.length <= MAX_VISION_IMAGE_BYTES) {
+        return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+      }
+      return null;
+    }
+  } catch {
+    // Fall through to the original bytes.
+  }
+  if (buffer.length <= MAX_VISION_IMAGE_BYTES && /^image\/(jpeg|png|webp)$/.test(mime)) {
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  }
+  return null;
 }
 
 async function loadPdfParse() {
@@ -109,10 +155,15 @@ export async function extractPdf(buffer: Buffer): Promise<DocumentText> {
       const Tesseract = (await import("tesseract.js")).default;
       const ocrPages: Array<{ page: number; text: string; ocr: boolean }> = [];
       const limit = Math.min(pageCount, Math.max(1, env.OCR_PDF_MAX_PAGES));
+      const visionImages: string[] = [];
 
       for (const page of textPages.slice(0, limit)) {
         try {
           const png = tasks.drawPageAsPNG(document, page.page - 1, 200);
+          if (visionImages.length < MAX_VISION_IMAGES) {
+            const image = await toVisionImage(Buffer.from(png));
+            if (image) visionImages.push(image);
+          }
           const result = await Tesseract.recognize(Buffer.from(png), languages, ocrOptions());
           ocrPages.push({ page: page.page, text: (result.data.text ?? "").trim(), ocr: true });
         } catch (error) {
@@ -142,6 +193,7 @@ export async function extractPdf(buffer: Buffer): Promise<DocumentText> {
         pages: ocrPages,
         languages,
         ocrUsed: true,
+        images: visionImages.length > 0 ? visionImages : undefined,
       };
     } catch (error) {
       // Fall through to pdf-parse before giving up.
@@ -366,11 +418,13 @@ export async function extractExcel(buffer: Buffer): Promise<DocumentText> {
     return {
       text: chunks.join("\n\n"),
       pageCount: workbook.worksheets.length,
-      status: uncertain ? "NEEDS_REVIEW" : "TEXT_OK",
+      // Every row was read either way. An unrecognised layout is a caveat, not
+      // an unreadable file, so it must not hold the extraction back.
+      status: "TEXT_OK",
       note: uncertain
-        ? "The spreadsheet layout was not clear (no product/quantity headers were recognised), so columns were read as-is. Please check the extracted items."
+        ? "No product/quantity headers were recognised, so every row was read as-is."
         : null,
-      unreadable: uncertain,
+      unreadable: false,
     };
   } catch (error) {
     return {
@@ -393,9 +447,9 @@ export async function extractCsv(buffer: Buffer): Promise<DocumentText> {
     return {
       text,
       pageCount: 1,
-      status: uncertain || !text ? "NEEDS_REVIEW" : "TEXT_OK",
-      note: uncertain ? "No header row was recognised in the CSV; rows were read as-is. Please review." : null,
-      unreadable: uncertain || !text,
+      status: text ? "TEXT_OK" : "NEEDS_REVIEW",
+      note: uncertain ? "No header row was recognised in the CSV, so every row was read as-is." : null,
+      unreadable: !text,
     };
   } catch (error) {
     return {
@@ -423,12 +477,14 @@ async function convertHeic(buffer: Buffer): Promise<Buffer | null> {
 
 export async function extractImage(buffer: Buffer): Promise<DocumentText> {
   if (!ocrEnabled()) {
+    const photo = await toVisionImage(buffer);
     return {
       text: "",
       pageCount: 1,
       status: "NEEDS_REVIEW",
-      note: "Photo and scan reading (OCR) is turned off. The image is attached to the enquiry for you to read and enter manually.",
+      note: "Text recognition (OCR) is turned off. The image is still attached so the AI can read it when a vision model is configured.",
       unreadable: true,
+      images: photo ? [photo] : undefined,
     };
   }
 
@@ -448,6 +504,8 @@ export async function extractImage(buffer: Buffer): Promise<DocumentText> {
     working = converted;
   }
 
+  const photo = await toVisionImage(working);
+
   try {
     const languages = ocrLanguages();
     const Tesseract = (await import("tesseract.js")).default;
@@ -458,8 +516,9 @@ export async function extractImage(buffer: Buffer): Promise<DocumentText> {
         text,
         pageCount: 1,
         status: "NEEDS_REVIEW",
-        note: "No readable text was found in the image. Nothing was assumed; the image stays attached for review.",
+        note: "Text recognition found little in the image, so it was passed to the AI to read directly.",
         unreadable: true,
+        images: photo ? [photo] : undefined,
       };
     }
     const arabic = languages.includes("ara");
@@ -473,6 +532,7 @@ export async function extractImage(buffer: Buffer): Promise<DocumentText> {
       unreadable: false,
       languages,
       ocrUsed: true,
+      images: photo ? [photo] : undefined,
     };
   } catch (error) {
     return {
