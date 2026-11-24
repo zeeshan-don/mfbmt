@@ -15,6 +15,18 @@ import { extractDocument, type DocumentText } from "../intake/documents";
 import { requireTenantId } from "../tenant";
 import { recomputeOffersForItem } from "../costing/evaluate";
 import { ensureSourcingApproval } from "./approvals";
+import { env } from "../env";
+import { enqueueJob } from "./jobs";
+import { JOB_TYPES } from "../constants";
+import {
+  detectSupplierIntent,
+  detectSupplierIntentByRules,
+  extractSupplierQuotation,
+  type SupplierExtractionOutcome,
+  type SupplierIntentDetection,
+  type SupplierQuotationExtraction,
+  type SupplierQuotedItem,
+} from "../ai/supplierExtraction";
 
 /**
  * Automatic supplier RFQ reply ingestion.
@@ -360,7 +372,19 @@ export function extractSupplierQuoteTerms(body: string, subject?: string | null)
       body
         .split(/\n/)
         .map((line) => line.trim())
-        .find((line) => line.length > 8 && !/^(dear|hello|hi|regards|thanks|please|kindly|quotation|quote|subject)/i.test(line)),
+        .find(
+          (line) =>
+            line.length > 8 &&
+            !/^(dear|hello|hi|regards|thanks|please|kindly|quotation|quote|subject)/i.test(line) &&
+            // A price, quantity or term line is evidence, not a product name.
+            !/^(?:unit\s*price|price|rate|total|subtotal|moq|minimum|quantity|qty|lead\s*time|delivery|validity|payment|vat|tax|shipping|freight)\b/i.test(
+              line,
+            ) &&
+            !/(?:aed|usd|eur|gbp|sar|qar|omr|kwd|bhd|inr|cny|jpy|krw|درهم|دولار|ريال)\s*\d|\d[\d,.]*\s*(?:aed|usd|eur|gbp|sar|qar|omr|kwd|bhd|inr|cny|jpy|krw|درهم|دولار|ريال)/i.test(
+              line,
+            ) &&
+            !/\b(?:سعر|السعر|الكمية|صلاحية|التوريد|شروط\s*الدفع)\b/.test(line),
+        ),
       160,
     );
 
@@ -405,6 +429,181 @@ export function extractSupplierQuoteTerms(body: string, subject?: string | null)
     standard,
     confidence,
     missingCommercial: [...new Set(missingCommercial)],
+  };
+}
+
+// ── AI + deterministic commercial merging ───────────────────────────────────
+
+export type SupplierAiConflict = {
+  field: string;
+  deterministic: string | number | null;
+  ai: string | number | null;
+  source: string;
+  /** The deterministic (document/body) value is kept; the AI value is retained for review. */
+  resolution: "deterministic_kept";
+};
+
+export type SupplierAiMerge = {
+  terms: SupplierQuoteTerms;
+  primaryItem: SupplierQuotedItem | null;
+  provenance: Record<string, string>;
+  fieldsFromAi: string[];
+  conflicts: SupplierAiConflict[];
+  clarifications: string[];
+};
+
+function displayValue(value: unknown): string | number | null {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return value.length > 0 ? value : null;
+  return null;
+}
+
+function sameCommercialValue(a: unknown, b: unknown): boolean {
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 0.0001;
+  return String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+}
+
+/** Reads "14 days", "2 weeks", "30 days from order" or Arabic day/week wording. */
+export function daysFromSupplierText(text: string | null | undefined): number | null {
+  if (!text) return null;
+  const value = text.trim();
+  const weeks = value.match(/(\d{1,3})\s*(?:weeks?|wks?|أسابيع|اسبوع)/i);
+  if (weeks) return Number(weeks[1]) * 7;
+  const days = value.match(/(\d{1,4})\s*(?:working\s*)?(?:days?|dys?|يوم|أيام|ايام)/i);
+  if (days) return Number(days[1]);
+  return null;
+}
+
+function wordsForMatching(value: string): string[] {
+  return [...new Set((value.toLowerCase().match(/[a-z0-9\u0600-\u06ff]{3,}/g) ?? []).filter(Boolean))].slice(0, 30);
+}
+
+/**
+ * Chooses the quoted line that answers the deterministically matched RFQ line.
+ * This is line association inside an already-matched reply, never RFQ choice:
+ * an AI-supplied ref is accepted only when it was one of the refs we supplied.
+ */
+export function selectPrimaryQuotedItem(
+  items: SupplierQuotedItem[],
+  options: { rfqRef?: string | null; rfqDescription?: string | null } = {},
+): SupplierQuotedItem | null {
+  if (items.length === 0) return null;
+  const nonAlternatives = items.filter((item) => !item.alternative_to);
+  const candidates = nonAlternatives.length > 0 ? nonAlternatives : items;
+  if (options.rfqRef) {
+    const exact = candidates.find((item) => item.matched_rfq_item_ref === options.rfqRef);
+    if (exact) return exact;
+  }
+  if (options.rfqDescription) {
+    const wanted = wordsForMatching(options.rfqDescription);
+    let best: { item: SupplierQuotedItem; score: number } | null = null;
+    for (const item of candidates) {
+      const offered = new Set(wordsForMatching(item.description));
+      const score = wanted.reduce((total, word) => (offered.has(word) ? total + 1 : total), 0);
+      if (!best || score > best.score) best = { item, score };
+    }
+    if (best && best.score > 0) return best.item;
+  }
+  return candidates[0];
+}
+
+/**
+ * Fills only fields the deterministic body/attachment pass left null. A
+ * conflicting AI value never overwrites document evidence; both values are
+ * retained in `conflicts` for owner review. Missing values stay null.
+ */
+export function mergeAiSupplierExtraction(
+  deterministic: SupplierQuoteTerms,
+  ai: SupplierQuotationExtraction,
+  options: { rfqRef?: string | null; rfqDescription?: string | null } = {},
+): SupplierAiMerge {
+  const terms: SupplierQuoteTerms = {
+    ...deterministic,
+    confidence: { ...deterministic.confidence },
+    certifications: [...deterministic.certifications],
+  };
+  const provenance: Record<string, string> = {};
+  const fieldsFromAi: string[] = [];
+  const conflicts: SupplierAiConflict[] = [];
+  const clarifications = [...ai.clarifications_required];
+
+  const primaryItem = selectPrimaryQuotedItem(ai.quoted_items, options);
+  const source = primaryItem?.evidence[0]
+    ? `${primaryItem.evidence[0].source}${primaryItem.evidence[0].locator ? ` (${primaryItem.evidence[0].locator})` : ""}`
+    : "AI extraction";
+
+  const specs = primaryItem?.stated_specifications ?? null;
+  const general = ai.general_terms;
+  const availability = primaryItem?.availability ?? "";
+  const quantityAvailable =
+    primaryItem?.quantity != null && /\b(?:in\s*stock|available|stock|ex-stock|متوفر|المخزون)\b/i.test(availability)
+      ? primaryItem.quantity
+      : null;
+
+  const values: Array<[keyof SupplierQuoteTerms, unknown]> = [
+    ["quoteRef", ai.supplier_reference],
+    ["description", primaryItem?.description ?? null],
+    ["unitPrice", primaryItem ? primaryItem.price_basis === "TOTAL" ? null : (primaryItem.unit_price ?? null) : null],
+    ["currency", ai.currency ?? general.currency],
+    ["quantityAvailable", quantityAvailable],
+    ["moq", primaryItem?.minimum_order_quantity ?? null],
+    ["leadTimeDays", primaryItem?.lead_time_days ?? daysFromSupplierText(primaryItem?.lead_time)],
+    ["shippingCost", primaryItem?.shipping_cost ?? null],
+    ["taxes", primaryItem?.taxes ?? null],
+    ["deliveryTerms", general.delivery_terms],
+    ["paymentTerms", primaryItem?.payment_terms ?? general.payment_terms],
+    ["validityText", primaryItem?.validity ?? general.validity],
+    [
+      "validityDays",
+      daysFromSupplierText(primaryItem?.validity) ?? daysFromSupplierText(general.validity),
+    ],
+    ["material", specs?.material ?? null],
+    ["grade", specs?.grade ?? null],
+    ["size", specs?.diameter ?? specs?.length ?? null],
+    ["pressureRating", specs?.pressure_class ?? null],
+    ["standard", specs?.standard ?? null],
+  ];
+
+  for (const [field, rawValue] of values) {
+    if (rawValue == null) continue;
+    const current = terms[field];
+    if (current == null) {
+      (terms as unknown as Record<string, unknown>)[field] = rawValue;
+      terms.confidence[field] = 0.75;
+      provenance[field] = source;
+      fieldsFromAi.push(field);
+    } else if (!sameCommercialValue(current, rawValue)) {
+      conflicts.push({
+        field,
+        deterministic: displayValue(current),
+        ai: displayValue(rawValue),
+        source,
+        resolution: "deterministic_kept",
+      });
+    }
+  }
+
+  if (primaryItem?.total_price != null && primaryItem.price_basis !== "UNIT" && primaryItem.unit_price == null) {
+    clarifications.push(
+      `Only a total price was stated (${primaryItem.total_price}${
+        ai.currency ?? general.currency ? ` ${ai.currency ?? general.currency}` : ""
+      }); the unit price remains unknown.`,
+    );
+  }
+  if (primaryItem?.minimum_order_quantity != null && primaryItem.quantity != null) {
+    if (primaryItem.minimum_order_quantity > primaryItem.quantity) {
+      clarifications.push("The stated MOQ is higher than the quoted quantity.");
+    }
+  }
+
+  terms.missingCommercial = missingCommercialFor(terms);
+  return {
+    terms,
+    primaryItem,
+    provenance,
+    fieldsFromAi,
+    conflicts,
+    clarifications: [...new Set(clarifications)].slice(0, 20),
   };
 }
 
@@ -659,6 +858,11 @@ async function materializeOffer(input: {
   attachmentProvenance: Record<string, string>;
   fieldsFromAttachments: string[];
   receivedAt: Date;
+  /** AI pass result, retained as review evidence. Never an approval. */
+  ai?: SupplierQuotationExtraction | null;
+  aiMerge?: SupplierAiMerge | null;
+  aiStatus?: string | null;
+  senderIntent?: SupplierIntentDetection | null;
 }): Promise<string | null> {
   const { quote, terms } = input;
   if (!quote.enquiryItem) return null;
@@ -748,7 +952,9 @@ async function materializeOffer(input: {
       status: "QUOTE_RECEIVED",
       sourceType: "SUPPLIER_QUOTE",
       quotedAt: input.receivedAt,
-      quoteRef: terms.quoteRef ?? `email:${input.replyId}`,
+      quoteRef: terms.quoteRef ?? input.ai?.supplier_reference ?? `email:${input.replyId}`,
+      // Every email/AI draft stays unverified until the owner approves the offer
+      // on the sourcing screen. This function has no approval path.
       verificationStatus: "UNVERIFIED",
       offeredSpecJson: stringifyJson(offeredFastener),
       quoteItemId,
@@ -767,6 +973,23 @@ async function materializeOffer(input: {
         certifications: terms.certifications,
         countryOfOrigin: terms.countryOfOrigin,
         match: { status: match.status, reasons: match.reasons, mismatches: match.mismatches, missing: match.missing },
+        aiExtraction: {
+          status: input.aiStatus ?? (input.ai ? "OK" : "NOT_RUN"),
+          intent: input.senderIntent?.intent ?? input.ai?.supplier_intent ?? null,
+          intentSource: input.senderIntent?.source ?? null,
+          intentConfidence: input.senderIntent?.confidence ?? null,
+          intentReason: input.senderIntent?.reason ?? null,
+          supplierName: input.ai?.supplier_name ?? null,
+          supplierReference: input.ai?.supplier_reference ?? null,
+          confidence: input.ai?.extraction_confidence ?? null,
+          clarificationsRequired: input.aiMerge?.clarifications ?? input.ai?.clarifications_required ?? [],
+          quotedItems: input.ai?.quoted_items ?? [],
+          generalTerms: input.ai?.general_terms ?? null,
+          primaryItem: input.aiMerge?.primaryItem ?? null,
+          provenance: input.aiMerge?.provenance ?? {},
+          fieldsFromAi: input.aiMerge?.fieldsFromAi ?? [],
+          conflicts: input.aiMerge?.conflicts ?? [],
+        },
       }),
     },
   });
@@ -848,8 +1071,9 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
     await recordSupplierBounce(input.body, input.subject ?? null);
     return { handled: true, reason: "Delivery failure recorded." };
   }
-  if (!supplier) return { handled: false, reason: "Sender is not a known supplier." };
 
+  // Duplicate protection covers review candidates from unknown senders too,
+  // not only messages from the supplier directory.
   const duplicate = await db.supplierEmailReply.findFirst({
     where: { provider: input.provider, externalMessageId: input.externalMessageId },
   });
@@ -863,13 +1087,53 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
     };
   }
 
+  // An unknown sender is evaluated for supplier intent before customer intake.
+  // Reading a priced attachment is necessary: a supplier often writes only
+  // "please find attached" and puts every price in the PDF/XLSX.
+  let senderIntent: SupplierIntentDetection | null = null;
+  if (!supplier) {
+    const probeDocuments: Array<{ filename: string; text: string }> = [];
+    const quick = detectSupplierIntentByRules({
+      subject: input.subject,
+      body: input.body,
+      documents: (input.attachments ?? []).map((file) => ({ filename: file.filename, text: "" })),
+    });
+    if (quick.supplierPlausible === false && (input.attachments?.length ?? 0) > 0) {
+      for (const file of (input.attachments ?? []).slice(0, 2)) {
+        try {
+          const probe = await extractDocument(file.buffer, file.filename);
+          if (probe.text.trim().length > 0) {
+            probeDocuments.push({ filename: file.filename, text: probe.text.slice(0, 12_000) });
+          }
+        } catch {
+          // An unreadable probe must not block intent detection or customer intake.
+        }
+      }
+    }
+    senderIntent = await detectSupplierIntent({
+      subject: input.subject,
+      body: input.body,
+      fromName: input.fromName ?? null,
+      documents: probeDocuments,
+      // Unknown-sender privacy stays opt-in. A clearly priced business document
+      // may be assessed because it is not personal correspondence.
+      allowAi:
+        env.AI_FOR_UNKNOWN_SENDERS === "true" ||
+        quick.supplierPlausible ||
+        probeDocuments.some((document) => /(?:aed|usd|eur|price|quotation|unit\s*price|سعر|عرض)/i.test(document.text.slice(0, 12_000))),
+    });
+    if (!senderIntent.supplierPlausible) {
+      return { handled: false, reason: senderIntent.reason };
+    }
+  }
+
   const validationFailures: string[] = [];
   const organizationId = await requireTenantId();
   const readiness = storageReadiness();
   const savedAttachments: Array<{ id: string; filename: string; sha256: string; sizeBytes: number; storagePath: string }> = [];
   const reply = await db.supplierEmailReply.create({
     data: {
-      supplierId: supplier.id,
+      supplierId: supplier?.id ?? null,
       externalMessageId: input.externalMessageId,
       provider: input.provider,
       providerThreadId: input.providerThreadId ?? null,
@@ -932,42 +1196,60 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
   // reading it is the gap this pass closes.
   const attachmentReading = await readSupplierAttachments(savedAttachments);
 
-  const quotes = await db.supplierQuote.findMany({
-    where: {
-      supplierId: supplier.id,
-      status: { in: ["SENT", "RESPONDED", "REQUESTED", "AWAITING_APPROVAL"] },
-    },
-    include: {
-      supplier: { select: { name: true } },
-      items: { select: { id: true } },
-      enquiryItem: {
-        select: {
-          id: true,
-          description: true,
-          rawText: true,
-          category: true,
-          brand: true,
-          size: true,
-          material: true,
-          grade: true,
-          pressureRating: true,
-          schedule: true,
-          standard: true,
-          fastenerSpecJson: true,
-          industrialSpecJson: true,
-          enquiryId: true,
-          enquiry: { select: { publicRef: true } },
-        },
+  const unknownToken = extractCorrelationToken(`${input.subject ?? ""}\n${input.body}`);
+  const unknownStrongSignals = [
+    ...(input.providerThreadId ? [{ providerThreadId: input.providerThreadId }] : []),
+    ...(unknownToken ? [{ correlationToken: unknownToken }] : []),
+  ];
+  const quoteInclude = {
+    supplier: { select: { name: true } },
+    items: { select: { id: true } },
+    enquiryItem: {
+      select: {
+        id: true,
+        description: true,
+        rawText: true,
+        category: true,
+        brand: true,
+        size: true,
+        material: true,
+        grade: true,
+        pressureRating: true,
+        schedule: true,
+        standard: true,
+        fastenerSpecJson: true,
+        industrialSpecJson: true,
+        enquiryId: true,
+        enquiry: { select: { publicRef: true } },
       },
     },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
+  } as const;
+  const quotes = supplier
+    ? await db.supplierQuote.findMany({
+        where: {
+          supplierId: supplier.id,
+          status: { in: ["SENT", "RESPONDED", "REQUESTED", "AWAITING_APPROVAL"] },
+        },
+        include: quoteInclude,
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      })
+    : unknownStrongSignals.length > 0
+      ? await db.supplierQuote.findMany({
+          where: {
+            status: { in: ["SENT", "RESPONDED", "REQUESTED", "AWAITING_APPROVAL"] },
+            OR: unknownStrongSignals,
+          },
+          include: quoteInclude,
+          orderBy: { createdAt: "desc" },
+          take: 20,
+        })
+      : [];
 
   const candidates: ReplyCorrelationCandidate[] = quotes.map((quote) => ({
     quoteId: quote.id,
     supplierId: quote.supplierId,
-    supplierEmail: supplier.email,
+    supplierEmail: supplier?.email ?? null,
     sentTo: quote.sentTo,
     status: quote.status,
     correlationToken: quote.correlationToken,
@@ -996,18 +1278,63 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
   const terms = merged.terms;
   const matchedQuote = correlation.quoteId ? quotes.find((quote) => quote.id === correlation.quoteId) : null;
 
+  // AI reads the whole response (body + every readable attachment). It is an
+  // enhancement, never a prerequisite: a provider failure leaves the
+  // deterministic terms intact and the reply reviewable.
+  const aiDocuments = attachmentReading.documents
+    .filter((document) => document.text.trim().length > 0)
+    .map((document) => ({
+      filename: document.filename,
+      text: document.text,
+      pageCount: document.pageCount,
+      status: document.status,
+    }));
+  let aiOutcome: SupplierExtractionOutcome = {
+    status: "FAILED",
+    error: "The AI reading pass did not run.",
+  };
+  try {
+    aiOutcome = await extractSupplierQuotation({
+      subject: input.subject,
+      body: input.body,
+      fromName: input.fromName ?? null,
+      fromAddress: from,
+      documents: aiDocuments,
+      rfqItems: matchedQuote?.enquiryItem
+        ? [{ ref: "RFQ-ITEM-1", description: matchedQuote.enquiryItem.description }]
+        : [],
+    });
+  } catch (error) {
+    aiOutcome = {
+      status: "FAILED",
+      error: error instanceof Error ? error.message.slice(0, 300) : "AI extraction failed.",
+    };
+  }
+  const aiData = aiOutcome.status === "OK" ? aiOutcome.data : null;
+  const aiMerge = aiData
+    ? mergeAiSupplierExtraction(terms, aiData, {
+        rfqRef: matchedQuote?.enquiryItem ? "RFQ-ITEM-1" : null,
+        rfqDescription: matchedQuote?.enquiryItem?.description ?? null,
+      })
+    : null;
+  const finalTerms = aiMerge?.terms ?? terms;
+
   let offerId: string | null = null;
   if (correlation.status === "MATCHED" && matchedQuote) {
     offerId = await materializeOffer({
       replyId: reply.id,
       quote: matchedQuote,
-      terms,
+      terms: finalTerms,
       bodySummary: input.body,
       attachmentNames: savedAttachments.map((attachment) => attachment.filename),
       attachmentEvidence: merged.evidence,
       attachmentProvenance: merged.provenance,
       fieldsFromAttachments: merged.fromAttachments,
       receivedAt: input.receivedAt ?? new Date(),
+      ai: aiData,
+      aiMerge,
+      aiStatus: aiOutcome.status,
+      senderIntent,
     });
   }
 
@@ -1021,12 +1348,25 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
   }
 
   const attachmentFailures = [...validationFailures, ...attachmentReading.failures];
-  const hasTerms = terms.unitPrice != null || terms.description != null;
+  const hasTerms =
+    finalTerms.unitPrice != null ||
+    finalTerms.description != null ||
+    (aiData?.quoted_items.length ?? 0) > 0;
   const extractionStatus = hasTerms
     ? "EXTRACTED"
     : savedAttachments.length > 0 && attachmentFailures.length > 0
       ? "FAILED"
       : "NO_TERMS";
+  const offerIds = offerId ? [offerId] : [];
+  const aiError = aiOutcome.status === "OK" ? null : aiOutcome.error;
+  const aiIntent = aiData?.supplier_intent ?? senderIntent?.intent ?? null;
+  const aiConfidence = aiData?.extraction_confidence ?? senderIntent?.confidence ?? null;
+  const quotedItems = aiData?.quoted_items ?? [];
+  const primaryQuotedItemIndex = aiMerge?.primaryItem ? quotedItems.indexOf(aiMerge.primaryItem) : null;
+  const aiProvenance = { ...merged.provenance, ...(aiMerge?.provenance ?? {}) };
+  const conflicts = aiMerge?.conflicts ?? [];
+  const clarificationsRequired = aiMerge?.clarifications ?? aiData?.clarifications_required ?? [];
+
   await db.supplierEmailReply.update({
     where: { id: reply.id },
     data: {
@@ -1034,16 +1374,66 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
       matchingStatus: correlation.status,
       correlationJson: stringifyJson({
         ...correlation,
+        senderIntent,
+        aiExtraction: {
+          status: aiOutcome.status,
+          error: aiError,
+          intent: aiIntent,
+          supplierName: aiData?.supplier_name ?? null,
+          supplierReference: aiData?.supplier_reference ?? null,
+          currency: aiData?.currency ?? null,
+          confidence: aiConfidence,
+          generalTerms: aiData?.general_terms ?? null,
+          clarificationsRequired,
+          quotedItems,
+          primaryQuotedItemIndex,
+          conflicts,
+          fieldsFromAi: aiMerge?.fieldsFromAi ?? [],
+          provenance: aiMerge?.provenance ?? {},
+          usage: aiOutcome.status === "OK" ? (aiOutcome.usage ?? null) : null,
+        },
+        offerIds,
         attachmentFailures,
         documentExtraction: merged.evidence,
         fieldsFromAttachments: merged.fromAttachments,
       }),
-      extractedJson: stringifyJson(terms),
+      extractedJson: stringifyJson({
+        ...finalTerms,
+        ai: aiData,
+        aiStatus: aiOutcome.status,
+        aiError,
+        aiIntent,
+        aiConfidence,
+        quotedItems,
+        primaryQuotedItemIndex,
+        generalTerms: aiData?.general_terms ?? null,
+        clarificationsRequired,
+        conflicts,
+        aiFields: aiMerge?.fieldsFromAi ?? [],
+        provenance: aiProvenance,
+        offerIds,
+        review: null,
+      }),
       extractionStatus,
       attachmentsJson: stringifyJson(savedAttachments),
       processedAt: new Date(),
     },
   });
+
+  // A transient provider failure is retried by the durable worker, bounded by
+  // maxAttempts and one idempotency key. Invalid output, configuration and
+  // budget failures are not retried: repeating the same request cannot fix them.
+  const transientAiFailure =
+    aiOutcome.status === "FAILED" &&
+    /timed out|timeout|rate.?limit|returned (?:429|5\d\d)|fetch failed|network|ECONN|socket/i.test(aiOutcome.error);
+  if (transientAiFailure) {
+    await enqueueJob({
+      type: JOB_TYPES.EXTRACT_SUPPLIER_REPLY,
+      payload: { replyId: reply.id },
+      idempotencyKey: `supplier-reply-ai:${reply.id}`,
+      maxAttempts: 3,
+    }).catch(() => undefined);
+  }
 
   await writeAudit({
     action:
@@ -1057,7 +1447,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
     actorLabel: "system",
     meta: {
       provider: input.provider,
-      supplierId: supplier.id,
+      supplierId: supplier?.id ?? null,
       matchingStatus: correlation.status,
       method: correlation.method,
       attachmentFailures: attachmentFailures.length,
@@ -1067,7 +1457,18 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
     },
   });
 
-  if (correlation.status !== "MATCHED") {
+  if (!supplier) {
+    await notifyOwner({
+      type: "SUPPLIER_REPLY_UNKNOWN",
+      title: "A possible supplier quotation needs review",
+      body: `${input.fromName ?? from}: ${(input.subject ?? "no subject").slice(0, 120)} — ${String(
+        aiIntent ?? "supplier message",
+      )
+        .replaceAll("_", " ")
+        .toLowerCase()}`,
+      link: `/suppliers/replies`,
+    });
+  } else if (correlation.status !== "MATCHED") {
     await notifyOwner({
       type: "SUPPLIER_REPLY_REVIEW",
       title:
@@ -1125,13 +1526,16 @@ export async function assignSupplierReplyToQuote(input: {
     },
   });
   if (!quote) return { ok: false, error: "Supplier RFQ not found." };
-  if (quote.supplierId !== reply.supplierId) {
+  // An unknown sender has no supplierId until the owner links one. Once linked,
+  // the RFQ must belong to that supplier.
+  if (reply.supplierId && quote.supplierId !== reply.supplierId) {
     return { ok: false, error: "That RFQ was sent to a different supplier." };
   }
 
-  const terms =
-    parseJson<SupplierQuoteTerms | null>(reply.extractedJson, null) ??
-    extractSupplierQuoteTerms(reply.bodySummary ?? "", reply.subject);
+  const stored = parseJson<
+    (SupplierQuoteTerms & { ai?: SupplierQuotationExtraction | null; aiStatus?: string | null }) | null
+  >(reply.extractedJson, null);
+  const terms = stored ?? extractSupplierQuoteTerms(reply.bodySummary ?? "", reply.subject);
 
   const offerId = await materializeOffer({
     replyId: reply.id,
@@ -1145,6 +1549,8 @@ export async function assignSupplierReplyToQuote(input: {
     attachmentProvenance: {},
     fieldsFromAttachments: [],
     receivedAt: reply.receivedAt,
+    ai: stored?.ai ?? null,
+    aiStatus: stored?.aiStatus ?? "STORED",
   });
 
   await db.supplierEmailReply.update({
@@ -1184,6 +1590,466 @@ export async function setSupplierReplyReviewStatus(input: {
     action: `supplier_reply.${input.reviewStatus.toLowerCase()}`,
     entityType: "SupplierEmailReply",
     entityId: input.replyId,
+  });
+  return { ok: true };
+}
+
+// ── Owner review, correction and reprocessing ──────────────────────────────
+
+type StoredQuotedItem = SupplierQuotedItem & { irrelevant?: boolean; irrelevantNote?: string | null };
+
+export type SupplierReplyStored = SupplierQuoteTerms & {
+  ai?: SupplierQuotationExtraction | null;
+  aiStatus?: string | null;
+  quotedItems?: StoredQuotedItem[];
+  primaryQuotedItemIndex?: number | null;
+  offerIds?: string[];
+  provenance?: Record<string, string>;
+  review?: { confirmedAt?: string; confirmedBy?: string; userId?: string } | null;
+  ownerCorrections?: Record<string, { value: string | number | null; at: string; by: string }>;
+};
+
+function parseStoredTerms(json: string | null, body: string | null, subject: string | null): SupplierReplyStored {
+  return (
+    parseJson<SupplierReplyStored | null>(json, null) ?? {
+      ...extractSupplierQuoteTerms(body ?? "", subject),
+      quotedItems: [],
+      offerIds: [],
+    }
+  );
+}
+
+/**
+ * Re-runs the AI pass for a retained reply using the attachments already stored
+ * on disk. It only fills gaps and refreshes evidence; existing offer values are
+ * never overwritten and the offer remains UNVERIFIED. Throws on a transient
+ * provider failure so the durable job can apply its bounded retry/backoff.
+ */
+export async function enrichSupplierReplyAi(replyId: string): Promise<{
+  status: "OK" | "NOT_CONFIGURED" | "BUDGET_BLOCKED";
+  error?: string;
+}> {
+  const reply = await db.supplierEmailReply.findUnique({
+    where: { id: replyId },
+    include: {
+      attachments: true,
+      supplierQuote: { include: { enquiryItem: { select: { id: true, description: true } } } },
+    },
+  });
+  if (!reply) throw new Error("Supplier reply not found.");
+
+  const documents: Array<{ filename: string; text: string; pageCount: number | null; status: string }> = [];
+  for (const attachment of reply.attachments) {
+    let text = attachment.textExtract ?? "";
+    let pageCount = attachment.pageCount;
+    let status = attachment.extractionStatus;
+    if (!text.trim() && attachment.storagePath) {
+      try {
+        const buffer = await readAttachment(attachment.storagePath);
+        const doc = await extractDocument(buffer, attachment.filename);
+        text = doc.text;
+        pageCount = doc.pageCount;
+        status = doc.status;
+        await db.attachment.update({
+          where: { id: attachment.id },
+          data: {
+            textExtract: doc.text.slice(0, 80_000),
+            pageCount: doc.pageCount,
+            extractionStatus: doc.status,
+            extractionNote: doc.note,
+          },
+        });
+      } catch {
+        // Keep the original attachment record; a failed re-read is reviewable.
+      }
+    }
+    if (text.trim()) {
+      documents.push({ filename: attachment.filename, text, pageCount, status });
+    }
+  }
+
+  const stored = parseStoredTerms(reply.extractedJson, reply.bodySummary, reply.subject);
+  const description = reply.supplierQuote?.enquiryItem?.description ?? null;
+  const correlation = parseJson<Record<string, unknown>>(reply.correlationJson, {});
+  const outcome = await extractSupplierQuotation({
+    subject: reply.subject,
+    body: reply.bodySummary ?? "",
+    fromName: reply.fromName,
+    fromAddress: reply.fromAddress,
+    documents,
+    rfqItems: description ? [{ ref: "RFQ-ITEM-1", description }] : [],
+  });
+
+  if (outcome.status !== "OK") {
+    await db.supplierEmailReply.update({
+      where: { id: reply.id },
+      data: {
+        correlationJson: stringifyJson({
+          ...correlation,
+          aiExtraction: {
+            ...(typeof correlation.aiExtraction === "object" && correlation.aiExtraction !== null
+              ? (correlation.aiExtraction as Record<string, unknown>)
+              : {}),
+            status: outcome.status,
+            error: outcome.error,
+            lastAttemptAt: new Date().toISOString(),
+          },
+        }),
+      },
+    });
+    if (outcome.status === "FAILED") throw new Error(outcome.error);
+    return { status: outcome.status, error: outcome.error };
+  }
+
+  const aiMerge = mergeAiSupplierExtraction(stored, outcome.data, {
+    rfqRef: description ? "RFQ-ITEM-1" : null,
+    rfqDescription: description,
+  });
+  const quotedItems = outcome.data.quoted_items;
+  const offerIds = Array.isArray(stored.offerIds) ? stored.offerIds : [];
+  const primaryQuotedItemIndex = aiMerge.primaryItem ? quotedItems.indexOf(aiMerge.primaryItem) : null;
+
+  await db.supplierEmailReply.update({
+    where: { id: reply.id },
+    data: {
+      extractedJson: stringifyJson({
+        ...aiMerge.terms,
+        ai: outcome.data,
+        aiStatus: "OK",
+        aiError: null,
+        aiIntent: outcome.data.supplier_intent,
+        aiConfidence: outcome.data.extraction_confidence ?? null,
+        quotedItems,
+        primaryQuotedItemIndex,
+        generalTerms: outcome.data.general_terms,
+        clarificationsRequired: aiMerge.clarifications,
+        conflicts: aiMerge.conflicts,
+        aiFields: aiMerge.fieldsFromAi,
+        provenance: { ...(stored.provenance ?? {}), ...aiMerge.provenance },
+        offerIds,
+        review: stored.review ?? null,
+        ownerCorrections: stored.ownerCorrections ?? {},
+      }),
+      extractionStatus: "EXTRACTED",
+      correlationJson: stringifyJson({
+        ...correlation,
+        aiExtraction: {
+          status: "OK",
+          error: null,
+          intent: outcome.data.supplier_intent,
+          supplierName: outcome.data.supplier_name,
+          supplierReference: outcome.data.supplier_reference,
+          currency: outcome.data.currency,
+          confidence: outcome.data.extraction_confidence ?? null,
+          generalTerms: outcome.data.general_terms,
+          clarificationsRequired: aiMerge.clarifications,
+          quotedItems,
+          primaryQuotedItemIndex,
+          conflicts: aiMerge.conflicts,
+          fieldsFromAi: aiMerge.fieldsFromAi,
+          provenance: aiMerge.provenance,
+          usage: outcome.usage ?? null,
+          lastAttemptAt: new Date().toISOString(),
+        },
+      }),
+      processedAt: new Date(),
+    },
+  });
+
+  for (const offerId of offerIds) {
+    const offer = await db.supplierOffer.findUnique({ where: { id: offerId } });
+    if (!offer) continue;
+    const evidence = parseJson<Record<string, unknown>>(offer.evidenceJson, {});
+    await db.supplierOffer.update({
+      where: { id: offerId },
+      data: {
+        unitPrice: offer.unitPrice ?? aiMerge.terms.unitPrice,
+        currency: offer.currency ?? aiMerge.terms.currency,
+        quantityAvailable: offer.quantityAvailable ?? aiMerge.terms.quantityAvailable,
+        moq: offer.moq ?? aiMerge.terms.moq,
+        leadTimeDays: offer.leadTimeDays ?? aiMerge.terms.leadTimeDays,
+        shippingCost: offer.shippingCost ?? aiMerge.terms.shippingCost,
+        otherCharges: offer.otherCharges ?? aiMerge.terms.otherCharges,
+        taxes: offer.taxes ?? aiMerge.terms.taxes,
+        paymentTerms: offer.paymentTerms ?? aiMerge.terms.paymentTerms,
+        evidenceJson: stringifyJson({
+          ...evidence,
+          aiExtraction: {
+            ...(typeof evidence.aiExtraction === "object" && evidence.aiExtraction !== null
+              ? (evidence.aiExtraction as Record<string, unknown>)
+              : {}),
+            status: "OK",
+            intent: outcome.data.supplier_intent,
+            confidence: outcome.data.extraction_confidence ?? null,
+            quotedItems,
+            primaryItem: aiMerge.primaryItem,
+            provenance: aiMerge.provenance,
+            fieldsFromAi: aiMerge.fieldsFromAi,
+            conflicts: aiMerge.conflicts,
+            clarificationsRequired: aiMerge.clarifications,
+          },
+        }),
+      },
+    });
+    await recomputeOffersForItem(offer.enquiryItemId).catch(() => undefined);
+  }
+
+  await writeAudit({
+    action: "supplier_reply.ai_reprocessed",
+    entityType: "SupplierEmailReply",
+    entityId: reply.id,
+    actorLabel: "system",
+    meta: {
+      intent: outcome.data.supplier_intent,
+      quotedItems: quotedItems.length,
+      fieldsFilled: aiMerge.fieldsFromAi,
+      conflicts: aiMerge.conflicts.length,
+    },
+  });
+  return { status: "OK" };
+}
+
+export type SupplierReplyFieldCorrection = {
+  unitPrice?: number | null;
+  currency?: string | null;
+  moq?: number | null;
+  leadTimeDays?: number | null;
+  shippingCost?: number | null;
+  taxes?: number | null;
+  paymentTerms?: string | null;
+  validityDays?: number | null;
+  description?: string | null;
+};
+
+/**
+ * Owner correction of individual extracted fields. This updates the draft offer
+ * too, but deliberately leaves its verification status untouched: correcting a
+ * value is not approving the offer.
+ */
+export async function updateSupplierReplyExtractionFields(input: {
+  replyId: string;
+  fields: SupplierReplyFieldCorrection;
+  userId: string;
+  actorLabel: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const reply = await db.supplierEmailReply.findUnique({ where: { id: input.replyId } });
+  if (!reply) return { ok: false, error: "Supplier reply not found." };
+
+  const stored = parseStoredTerms(reply.extractedJson, reply.bodySummary, reply.subject);
+  const updates: Record<string, string | number | null> = {};
+  const corrections = { ...(stored.ownerCorrections ?? {}) };
+  const at = new Date().toISOString();
+
+  const numericFields = ["unitPrice", "moq", "leadTimeDays", "shippingCost", "taxes", "validityDays"] as const;
+  for (const field of numericFields) {
+    const value = input.fields[field];
+    if (value === undefined) continue;
+    if (value === null) {
+      updates[field] = null;
+      corrections[field] = { value: null, at, by: input.actorLabel };
+      continue;
+    }
+    if (!Number.isFinite(value) || value < 0) {
+      return { ok: false, error: `${field} must be a positive number or left blank.` };
+    }
+    updates[field] = value;
+    corrections[field] = { value, at, by: input.actorLabel };
+  }
+
+  if (input.fields.currency !== undefined) {
+    const currency = (input.fields.currency ?? "").trim().toUpperCase();
+    if (currency && !/^[A-Z]{3}$/.test(currency)) {
+      return { ok: false, error: "Currency must be a three-letter code such as AED or USD." };
+    }
+    updates.currency = currency || null;
+    corrections.currency = { value: updates.currency, at, by: input.actorLabel };
+  }
+  if (input.fields.paymentTerms !== undefined) {
+    const value = (input.fields.paymentTerms ?? "").trim().slice(0, 160);
+    updates.paymentTerms = value || null;
+    corrections.paymentTerms = { value: updates.paymentTerms, at, by: input.actorLabel };
+  }
+  if (input.fields.description !== undefined) {
+    const value = (input.fields.description ?? "").trim().slice(0, 500);
+    updates.description = value || null;
+    corrections.description = { value: updates.description, at, by: input.actorLabel };
+  }
+  if (Object.keys(updates).length === 0) {
+    return { ok: false, error: "Enter at least one corrected value." };
+  }
+
+  const merged = { ...stored, ...updates };
+  merged.missingCommercial = missingCommercialFor(merged);
+  await db.supplierEmailReply.update({
+    where: { id: reply.id },
+    data: {
+      extractedJson: stringifyJson({ ...merged, ownerCorrections: corrections }),
+      reviewStatus: "REVIEWED",
+      processedAt: new Date(),
+    },
+  });
+
+  const offerIds = Array.isArray(stored.offerIds) ? stored.offerIds : [];
+  for (const offerId of offerIds) {
+    const offer = await db.supplierOffer.findUnique({ where: { id: offerId } });
+    if (!offer) continue;
+    const evidence = parseJson<Record<string, unknown>>(offer.evidenceJson, {});
+    const validityDays =
+      updates.validityDays === undefined ? undefined : (updates.validityDays as number | null);
+    await db.supplierOffer.update({
+      where: { id: offerId },
+      data: {
+        ...(updates.unitPrice !== undefined ? { unitPrice: updates.unitPrice as number | null } : {}),
+        ...(updates.currency !== undefined ? { currency: updates.currency as string | null } : {}),
+        ...(updates.moq !== undefined ? { moq: updates.moq as number | null } : {}),
+        ...(updates.leadTimeDays !== undefined
+          ? { leadTimeDays: updates.leadTimeDays == null ? null : Math.round(updates.leadTimeDays as number) }
+          : {}),
+        ...(updates.shippingCost !== undefined ? { shippingCost: updates.shippingCost as number | null } : {}),
+        ...(updates.taxes !== undefined ? { taxes: updates.taxes as number | null } : {}),
+        ...(updates.paymentTerms !== undefined ? { paymentTerms: updates.paymentTerms as string | null } : {}),
+        ...(updates.description !== undefined && updates.description !== null
+          ? { productTitle: updates.description as string }
+          : {}),
+        ...(validityDays !== undefined
+          ? {
+              validityDate:
+                validityDays == null
+                  ? null
+                  : new Date(reply.receivedAt.getTime() + validityDays * 24 * 60 * 60 * 1000),
+            }
+          : {}),
+        evidenceJson: stringifyJson({
+          ...evidence,
+          ownerCorrections: corrections,
+        }),
+      },
+    });
+    await recomputeOffersForItem(offer.enquiryItemId).catch(() => undefined);
+  }
+
+  await writeAudit({
+    actorId: input.userId,
+    actorLabel: input.actorLabel,
+    action: "supplier_reply.fields_corrected",
+    entityType: "SupplierEmailReply",
+    entityId: reply.id,
+    meta: { fields: Object.keys(updates) },
+  });
+  return { ok: true };
+}
+
+/** Confirms that the owner checked the extraction. It does not verify an offer. */
+export async function confirmSupplierReplyExtraction(input: {
+  replyId: string;
+  userId: string;
+  actorLabel: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const reply = await db.supplierEmailReply.findUnique({ where: { id: input.replyId } });
+  if (!reply) return { ok: false, error: "Supplier reply not found." };
+  const stored = parseStoredTerms(reply.extractedJson, reply.bodySummary, reply.subject);
+  await db.supplierEmailReply.update({
+    where: { id: reply.id },
+    data: {
+      extractedJson: stringifyJson({
+        ...stored,
+        review: {
+          confirmedAt: new Date().toISOString(),
+          confirmedBy: input.actorLabel,
+          userId: input.userId,
+        },
+      }),
+      reviewStatus: "REVIEWED",
+    },
+  });
+  await writeAudit({
+    actorId: input.userId,
+    actorLabel: input.actorLabel,
+    action: "supplier_reply.extraction_confirmed",
+    entityType: "SupplierEmailReply",
+    entityId: reply.id,
+    meta: { offerIds: stored.offerIds ?? [], offerVerificationUnchanged: true },
+  });
+  return { ok: true };
+}
+
+/** Marks one quoted product irrelevant without deleting it or approving anything. */
+export async function markSupplierReplyQuotedItemIrrelevant(input: {
+  replyId: string;
+  itemIndex: number;
+  note?: string | null;
+  userId: string;
+  actorLabel: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const reply = await db.supplierEmailReply.findUnique({ where: { id: input.replyId } });
+  if (!reply) return { ok: false, error: "Supplier reply not found." };
+  const stored = parseStoredTerms(reply.extractedJson, reply.bodySummary, reply.subject);
+  const items = [...(stored.quotedItems ?? [])];
+  if (!Number.isInteger(input.itemIndex) || input.itemIndex < 0 || input.itemIndex >= items.length) {
+    return { ok: false, error: "Quoted product not found." };
+  }
+  items[input.itemIndex] = {
+    ...items[input.itemIndex],
+    irrelevant: true,
+    irrelevantNote: input.note?.slice(0, 300) ?? null,
+  };
+  await db.supplierEmailReply.update({
+    where: { id: reply.id },
+    data: { extractedJson: stringifyJson({ ...stored, quotedItems: items }) },
+  });
+
+  if (stored.primaryQuotedItemIndex === input.itemIndex && (stored.offerIds?.length ?? 0) > 0) {
+    await db.supplierOffer.updateMany({
+      where: { id: { in: stored.offerIds } },
+      data: {
+        isEligible: false,
+        ineligibilityReason: "Owner marked the quoted product as irrelevant.",
+      },
+    });
+  }
+
+  await writeAudit({
+    actorId: input.userId,
+    actorLabel: input.actorLabel,
+    action: "supplier_reply.quoted_item_irrelevant",
+    entityType: "SupplierEmailReply",
+    entityId: reply.id,
+    meta: { itemIndex: input.itemIndex, note: input.note ?? null },
+  });
+  return { ok: true };
+}
+
+/** Links an unknown sender to an existing supplier after owner review. */
+export async function linkSupplierReplyToSupplier(input: {
+  replyId: string;
+  supplierId: string;
+  userId: string;
+  actorLabel: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supplier = await db.supplier.findFirst({ where: { id: input.supplierId } });
+  if (!supplier) return { ok: false, error: "Supplier not found." };
+  const reply = await db.supplierEmailReply.findUnique({ where: { id: input.replyId } });
+  if (!reply) return { ok: false, error: "Supplier reply not found." };
+  if (reply.supplierId && reply.supplierId !== supplier.id) {
+    return { ok: false, error: "This reply is already linked to a different supplier." };
+  }
+  if (reply.supplierQuoteId) {
+    const quote = await db.supplierQuote.findUnique({ where: { id: reply.supplierQuoteId } });
+    if (quote && quote.supplierId !== supplier.id) {
+      return { ok: false, error: "The matched RFQ was sent to a different supplier." };
+    }
+  }
+  await db.supplierEmailReply.update({
+    where: { id: reply.id },
+    data: { supplierId: supplier.id },
+  });
+  await writeAudit({
+    actorId: input.userId,
+    actorLabel: input.actorLabel,
+    action: "supplier_reply.sender_linked",
+    entityType: "SupplierEmailReply",
+    entityId: reply.id,
+    meta: { supplierId: supplier.id, fromAddress: reply.fromAddress },
   });
   return { ok: true };
 }

@@ -83,6 +83,18 @@ export async function processJob(jobId: string, workerId: string): Promise<{ ok:
       const result = await sendDailyDigest();
       return { ok: true, message: result.sent ? "Daily digest sent" : "Daily digest already sent" };
     }
+    case JOB_TYPES.EXTRACT_SUPPLIER_REPLY: {
+      if (!payload.replyId) throw new Error("Missing replyId");
+      const { enrichSupplierReplyAi } = await import("./supplierReply");
+      const result = await enrichSupplierReplyAi(payload.replyId);
+      return {
+        ok: true,
+        message:
+          result.status === "OK"
+            ? "Supplier reply re-read by AI"
+            : `AI reading pass unavailable: ${result.status}`,
+      };
+    }
     case JOB_TYPES.PURGE_EXPIRED: {
       const now = new Date();
       const expired = await db.supplierQuote.updateMany({

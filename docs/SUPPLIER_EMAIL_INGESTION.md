@@ -76,6 +76,44 @@ Every attachment-sourced field keeps its provenance on the offer's
 count, page/sheet references and the fields it supplied. Unknown values remain
 null after merging; they are never filled with zero or a guess.
 
+## AI-assisted reading
+
+When `AI_PROVIDER` is configured, the reply body and every readable attachment
+are also passed to `extractSupplierQuotation()` in `src/lib/ai/supplierExtraction.ts`.
+The response is validated against a strict Zod schema covering supplier intent,
+supplier reference, currency, multiple quoted products, specifications, unit vs
+total price, quantity and UoM, MOQ, lead time, shipping, taxes, validity, payment
+terms, availability, alternatives, general terms, clarifications, confidence and
+per-item evidence (source, page/worksheet/row, short quote, reading method).
+
+AI output is merged *after* deterministic extraction. A field the body or an
+attachment already stated is kept; a disagreement is recorded in
+`extractedJson.conflicts` with both values and the source, and is shown on
+`/suppliers/replies`. AI-sourced values keep `ai:` provenance. Missing values
+remain `null`. A total price is never promoted to a unit price; only a total
+produces a clarification and leaves the unit price unknown.
+
+The AI never chooses the RFQ and never approves, verifies, sends or confirms
+anything. RFQ correlation remains the deterministic precedence described above.
+If the provider times out, returns invalid JSON, or the monthly budget is
+exhausted, deterministic terms are kept and the AI status is recorded as
+`FAILED`, `BUDGET_BLOCKED` or `NOT_CONFIGURED`. Only transient provider failures
+(timeout, 429/5xx, network) enqueue the bounded `EXTRACT_SUPPLIER_REPLY` job, which
+retries with the worker's existing exponential backoff and dead-lettering.
+
+## Unknown senders
+
+A sender who is not in the supplier directory is evaluated before customer
+intake. Deterministic supplier signals (a priced offer, price list, quotation
+wording) are checked first; a priced attachment is read for the check. When AI
+is configured it may refine the intent, subject to the existing
+`AI_FOR_UNKNOWN_SENDERS` privacy switch (a clearly priced business document is
+allowed through). A plausible supplier response is retained as an unmatched
+`SupplierEmailReply` with `supplierId = null` and a `SUPPLIER_REPLY_UNKNOWN`
+notification. No supplier account is created and no offer is made until the owner
+links the sender and/or matches an RFQ. An ordinary customer request continues
+to `ingestInboundMessage()` unchanged.
+
 When matched, the reply creates a `SupplierOffer` with:
 
 * `status = QUOTE_RECEIVED`;
@@ -109,10 +147,12 @@ orders each require explicit owner approval.
 
 ## Outlook intake path
 
-Outlook messages use the same pipeline as Gmail and WhatsApp: contact exclusions are applied before attachment download and before anything is persisted; known supplier replies are correlated by provider
+Outlook messages use the same pipeline as Gmail and WhatsApp: contact exclusions are applied before attachment download and before anything is persisted; supplier replies are correlated by provider
 thread, In-Reply-To/References or RFQ token; customer messages go through
 `ingestInboundMessage()` and the existing classification/extraction jobs.
-Supplier attachments are read by `extractDocument()` and their page/sheet
-evidence is stored with the offer, which remains `UNVERIFIED` until the existing
-review/approval process says otherwise. No second procurement pipeline exists for
-Outlook.
+Supplier attachments are read by `extractDocument()` and, when AI is configured,
+the body and documents are read again by the supplier extraction pass. Their
+page/sheet evidence is stored with the offer, which remains `UNVERIFIED` until the
+existing review/approval process says otherwise. Unknown senders with plausible
+supplier intent become review candidates instead of customer enquiries. No second
+procurement pipeline exists for Outlook.
