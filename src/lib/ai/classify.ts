@@ -213,6 +213,7 @@ export async function classifyMessage(input: ClassifyInput): Promise<Classificat
         "You classify inbound messages for an industrial building-materials trading company in the UAE. " +
         "Decide whether a message is a genuine customer request for quotation (RFQ). " +
         "A product mention alone is not an RFQ. Availability questions, invoices, order follow-ups, supplier offers, family/personal messages and unclear messages are NOT RFQs. " +
+        "If the message includes an attachment, a short greeting or a line like 'I urgently need these items' is a quotation request; read the attachment instead of treating the greeting as personal. " +
         "Reply with JSON only: {\"classification\": one of RFQ|AVAILABILITY|FOLLOW_UP|SUPPLIER|BUSINESS_OTHER|PERSONAL|UNCLEAR, \"reason\": short business explanation, \"confidence\": 0..1, \"mentionsProducts\": boolean, \"isQuotationRequest\": boolean, \"customerName\": string|null, \"customerPhone\": string|null, \"customerEmail\": string|null}. " +
         DATA_ONLY_RULE,
       user: `<customer_message channel="${input.channel}" attachments="${input.hasAttachments}">\n${input.text.slice(0, 6000)}\n</customer_message>`,
@@ -238,11 +239,30 @@ export async function classifyMessage(input: ClassifyInput): Promise<Classificat
     isQuotationRequest: ai.data.isQuotationRequest,
   };
 
+  // An attached document is the request. A greeting must never let the model
+  // discard a spreadsheet or PDF before its contents are read.
+  if (
+    input.hasAttachments &&
+    rule.classification === "RFQ" &&
+    ["PERSONAL", "AVAILABILITY", "FOLLOW_UP", "UNCLEAR"].includes(result.classification)
+  ) {
+    result.classification = "RFQ";
+    result.confidence = Math.max(0.7, Math.min(result.confidence, 0.8));
+    result.reason = "An attachment was received, so this is treated as a quotation request.";
+    result.mentionsProducts = true;
+    result.isQuotationRequest = true;
+  }
+
   // Safety: an RFQ must be consistent with the message actually asking for pricing.
   if (result.classification === "RFQ" && !result.isQuotationRequest) {
-    result.classification = "UNCLEAR";
-    result.confidence = Math.min(result.confidence, 0.4);
-    result.reason = "The request is not clearly asking for a quotation.";
+    if (input.hasAttachments && rule.classification === "RFQ") {
+      result.isQuotationRequest = true;
+      result.confidence = Math.max(0.7, result.confidence);
+    } else {
+      result.classification = "UNCLEAR";
+      result.confidence = Math.min(result.confidence, 0.4);
+      result.reason = "The request is not clearly asking for a quotation.";
+    }
   }
 
   return {

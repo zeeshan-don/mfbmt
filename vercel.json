@@ -1,12 +1,13 @@
 {
   "$schema": "openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
+  "regions": ["fra1"],
   "daemons": {
     "worker": {
       "root": ".",
       "entrypoint": "Dockerfile.worker",
       "instances": {
-        "iad1": 1
+        "fra1": 1
       },
       "livenessProbe": {
         "httpGet": { "port": 3001, "path": "/health" },

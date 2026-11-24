@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import {
@@ -17,6 +17,7 @@ import {
   PlugZap,
   BarChart3,
   Send,
+  Loader2,
 } from "lucide-react";
 
 type NavItem = {
@@ -51,23 +52,45 @@ export function visibleNavItems(role: string, isDemo = false) {
   );
 }
 
+function activeHref(pathname: string, navItems: NavItem[]) {
+  return navItems
+    .filter((item) =>
+      item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`),
+    )
+    .sort((a, b) => b.href.length - a.href.length)[0]?.href;
+}
+
+function NavIcon({ icon: Icon, active }: { icon: NavItem["icon"]; active: boolean }) {
+  const { pending } = useLinkStatus();
+  if (pending) return <Loader2 size={16} className="animate-spin text-accent" aria-hidden />;
+  return <Icon size={16} aria-hidden className={active ? "text-accent" : "text-muted"} />;
+}
+
+function PendingIndicator() {
+  const { pending } = useLinkStatus();
+  return pending ? <Loader2 size={12} className="animate-spin" aria-hidden /> : null;
+}
+
 export function MobileNav({ role, isDemo = false }: { role: string; isDemo?: boolean }) {
   const pathname = usePathname();
+  const navItems = visibleNavItems(role, isDemo);
+  const current = activeHref(pathname, navItems);
   return (
     <nav aria-label="Main" className="flex gap-1 overflow-x-auto text-xs">
-      {visibleNavItems(role, isDemo).map((item) => {
-        const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+      {navItems.map((item) => {
+        const active = item.href === current;
         return (
           <Link
             key={item.href}
             href={item.href}
             aria-current={active ? "page" : undefined}
             className={clsx(
-              "shrink-0 rounded px-2 py-1.5",
+              "inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-1.5",
               active ? "bg-elevated font-medium text-ink" : "text-soft hover:bg-elevated hover:text-ink",
             )}
           >
             {item.label}
+            <PendingIndicator />
           </Link>
         );
       })}
@@ -77,11 +100,12 @@ export function MobileNav({ role, isDemo = false }: { role: string; isDemo?: boo
 
 export function SideNav({ role, isDemo = false }: { role: string; isDemo?: boolean }) {
   const pathname = usePathname();
+  const navItems = visibleNavItems(role, isDemo);
+  const current = activeHref(pathname, navItems);
   return (
     <nav aria-label="Main" className="flex flex-col gap-0.5">
-      {visibleNavItems(role, isDemo).map((item) => {
-        const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-        const Icon = item.icon;
+      {navItems.map((item) => {
+        const active = item.href === current;
         return (
           <Link
             key={item.href}
@@ -94,7 +118,7 @@ export function SideNav({ role, isDemo = false }: { role: string; isDemo?: boole
                 : "text-soft hover:bg-elevated hover:text-ink",
             )}
           >
-            <Icon size={16} aria-hidden className={active ? "text-accent" : "text-muted"} />
+            <NavIcon icon={item.icon} active={active} />
             {item.label}
           </Link>
         );

@@ -6,7 +6,7 @@ import { timeAgo, truncate } from "@/lib/format";
 import { ENQUIRY_STATUS_LABELS, label } from "@/lib/constants";
 import { queueStats, workerLiveness } from "@/lib/workflow/jobs";
 import { getMonthlyUsage } from "@/lib/usage";
-import { getOrgLimits, aiBudgetStatus, enquiryAllowanceStatus } from "@/lib/limits";
+import { getOrgLimits, aiBudgetStatus } from "@/lib/limits";
 import { Badge, Card, CardHeader, DataTable, EmptyState, PageHeader, Td, Th, statusTone } from "@/components/ui";
 import { AlertTriangle, BadgeCheck, Boxes, Inbox, MessageSquare, Radar } from "lucide-react";
 
@@ -24,7 +24,10 @@ export default async function OverviewPage() {
       db.enquiry.findMany({
         orderBy: { createdAt: "desc" },
         take: 6,
-        include: { items: { select: { id: true, inventoryStatus: true, sourcingStatus: true } } },
+        include: {
+          items: { select: { id: true, inventoryStatus: true, sourcingStatus: true } },
+          Message: { select: { receivedAt: true } },
+        },
       }),
       db.searchSession.findMany({
         orderBy: { startedAt: "desc" },
@@ -98,11 +101,9 @@ export default async function OverviewPage() {
     },
   ].filter((item) => item.count > 0);
 
-  const [usage, limits, budget, allowance, sentQuotes] = await Promise.all([
+  const [usage, limits, sentQuotes] = await Promise.all([
     getMonthlyUsage(),
     getOrgLimits(),
-    aiBudgetStatus(),
-    enquiryAllowanceStatus(),
     db.customerQuotation.findMany({
       where: { sentAt: { not: null } },
       orderBy: { sentAt: "desc" },
@@ -110,6 +111,7 @@ export default async function OverviewPage() {
       select: { sentAt: true, enquiry: { select: { createdAt: true } } },
     }),
   ]);
+  const budget = await aiBudgetStatus(limits);
 
   const quoteDurationsDays = sentQuotes
     .map((q) => (q.sentAt && q.enquiry?.createdAt ? (q.sentAt.getTime() - q.enquiry.createdAt.getTime()) / 86_400_000 : null))
@@ -122,14 +124,9 @@ export default async function OverviewPage() {
         ? quoteDurationsDays[Math.floor(quoteDurationsDays.length / 2)]
         : (quoteDurationsDays[quoteDurationsDays.length / 2 - 1] + quoteDurationsDays[quoteDurationsDays.length / 2]) / 2;
 
-  const enquiryIds = recentEnquiries.map((e) => e.id);
-  const lastMessages = enquiryIds.length
-    ? await db.message.findMany({
-        where: { enquiryId: { in: enquiryIds } },
-        select: { enquiryId: true, receivedAt: true },
-      })
-    : [];
-  const receivedByEnquiry = new Map(lastMessages.map((m) => [m.enquiryId, m.receivedAt]));
+  const receivedByEnquiry = new Map<string, Date | undefined>(
+    recentEnquiries.map((enquiry) => [enquiry.id, enquiry.Message?.receivedAt] as const),
+  );
 
   const activeItems = recentEnquiries.reduce(
     (sum, enquiry) => sum + enquiry.items.filter((item) => item.sourcingStatus !== "NOT_REQUIRED").length,

@@ -48,8 +48,10 @@ export async function getDefaultLimits(): Promise<OrgLimits> {
 }
 
 export async function getOrgLimits(): Promise<OrgLimits> {
-  const defaults = await getDefaultLimits();
-  const stored = await getSettingJson<Partial<OrgLimits>>(LIMITS_KEY, {});
+  const [defaults, stored] = await Promise.all([
+    getDefaultLimits(),
+    getSettingJson<Partial<OrgLimits>>(LIMITS_KEY, {}),
+  ]);
   return {
     maxItemsPerEnquiry: clampNumber(stored.maxItemsPerEnquiry, defaults.maxItemsPerEnquiry, 1, 50),
     maxSearchQueriesPerItem: clampNumber(stored.maxSearchQueriesPerItem, defaults.maxSearchQueriesPerItem, 1, 10),

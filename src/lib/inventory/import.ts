@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { loadExcelWorkbook } from "../exceljs";
 import { sniffType } from "../storage";
 import { normalizeGrade, normalizeMaterial, normalizePressure, normalizeSchedule, normalizeSize, normalizeUnit } from "../catalog/normalize";
 import { inferCategoryFromDescription } from "../catalog/categories";
@@ -107,9 +108,7 @@ export async function readTabular(buffer: Buffer): Promise<TabularData> {
     return { headers, rows: dataRows, sheetName: "CSV" };
   }
   if (family === "excel") {
-    const ExcelJS = (await import("exceljs")).default;
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
+    const workbook = await loadExcelWorkbook(buffer);
     const sheet = workbook.worksheets[0];
     if (!sheet) throw new Error("The spreadsheet has no worksheets.");
     const rows: string[][] = [];

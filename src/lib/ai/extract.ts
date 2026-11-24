@@ -430,7 +430,7 @@ export async function extractEnquiry(
     : "";
   const aiRequest = (images: string[] | undefined) => ({
       system:
-        "You extract product line items from customer quotation requests for an industrial building materials trader in the UAE. " + secondPassNote +
+        "You extract product line items from customer quotation requests for an industrial building materials trader in the UAE. The message may start with a greeting; ignore greetings and read the attached documents. " + secondPassNote +
         "Return JSON only matching this shape: {\"isRfq\":boolean,\"classification\":\"RFQ\"|\"AVAILABILITY\"|\"FOLLOW_UP\"|\"SUPPLIER\"|\"BUSINESS_OTHER\"|\"PERSONAL\"|\"UNCLEAR\",\"classificationConfidence\":0..1,\"classificationReason\":string," +
         "\"customerName\":string|null,\"customerPhone\":string|null,\"customerEmail\":string|null,\"deliveryLocation\":string|null,\"deliveryDate\":string|null,\"currency\":string|null," +
         "\"items\":[{\"description\":string,\"quantity\":number|null,\"unit\":string|null,\"category\":string|null,\"brand\":string|null,\"size\":string|null,\"material\":string|null,\"grade\":string|null,\"pressureRating\":string|null,\"schedule\":string|null,\"standard\":string|null,\"otherSpecs\":object,\"sourceRef\":string|null,\"missingFields\":string[],\"confidence\":object}]," +
@@ -472,5 +472,15 @@ export async function extractEnquiry(
   }
 
   const items = finalizeItems(ai.data.items ?? [], options);
+  if (items.length === 0 && ruleItems.length > 0) {
+    // A greeting or an unusual layout can make the model return an empty list.
+    // Keep the parsed lines instead of showing an empty enquiry.
+    return {
+      extraction: { ...ai.data, items: ruleItems },
+      items: ruleItems,
+      source: "rule",
+      aiError: "The AI returned no product lines; the built-in parser was used.",
+    };
+  }
   return { extraction: ai.data, items, source: "ai" };
 }

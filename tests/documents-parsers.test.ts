@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import JSZip from "jszip";
+import { loadExcelJs } from "../src/lib/exceljs";
 import { extractDocument } from "../src/lib/intake/documents";
 
 describe("document parsers: docx and zip", () => {
@@ -20,6 +21,28 @@ describe("document parsers: docx and zip", () => {
     expect(result.unreadable).toBe(false);
     expect(result.text).toContain("RFQ for 2 inch ANSI 150 carbon steel flanges");
     expect(result.text).toContain("NACE MR0175");
+  });
+
+  it("reads a valid workbook whose SpreadsheetML elements are namespace-prefixed", async () => {
+    const ExcelJS = await loadExcelJs();
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("RFQ");
+    sheet.addRow(["Description", "Qty"]);
+    sheet.addRow(["SS316 elbow 1 inch", 10]);
+
+    const zip = await JSZip.loadAsync(Buffer.from(await workbook.xlsx.writeBuffer()));
+    for (const name of ["xl/workbook.xml", "xl/worksheets/sheet1.xml", "xl/sharedStrings.xml"]) {
+      const entry = zip.file(name);
+      if (!entry) continue;
+      let xml = await entry.async("string");
+      xml = xml.replace(/<(\/?)([A-Za-z_][\w.-]*)(?=[\s/>])/g, "<$1x:$2");
+      xml = xml.replace(/<x:([A-Za-z_][\w.-]*)([^>]*?)xmlns="([^"]+)"/, '<x:$1$2xmlns:x="$3"');
+      zip.file(name, xml);
+    }
+
+    const doc = await extractDocument(await zip.generateAsync({ type: "nodebuffer" }), "prefixed.xlsx");
+    expect(doc.unreadable).toBe(false);
+    expect(doc.text).toContain("SS316 elbow 1 inch");
   });
 
   it("does not crash on a corrupt .docx", async () => {

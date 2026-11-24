@@ -25,7 +25,7 @@ export default async function SourcingPage({
       take: 40,
       include: {
         enquiry: { select: { id: true, publicRef: true, customerName: true, currency: true } },
-        offers: true,
+        offers: { select: { isEligible: true, matchStatus: true, landedCostJson: true } },
         searchSessions: { orderBy: { startedAt: "desc" }, take: 1 },
       },
     }),
@@ -34,9 +34,15 @@ export default async function SourcingPage({
       orderBy: { createdAt: "desc" },
       take: 30,
       include: {
-        supplier: true,
-        enquiryItem: { include: { enquiry: { select: { id: true, publicRef: true } } } },
-        items: true,
+        supplier: { select: { name: true, email: true, phone: true } },
+        enquiryItem: {
+          select: {
+            id: true,
+            description: true,
+            enquiry: { select: { id: true, publicRef: true } },
+          },
+        },
+        items: { select: { description: true, unitPrice: true, currency: true, moq: true }, take: 1 },
       },
     }),
   ]);

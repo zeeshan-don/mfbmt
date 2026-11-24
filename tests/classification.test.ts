@@ -70,4 +70,15 @@ describe("message classification", () => {
     expect(result.classification).toBe("RFQ");
     expect(result.confidence).toBeLessThanOrEqual(0.65);
   });
+
+  it("treats a greeting with an attachment as a quotation request", () => {
+    const result = ruleClassify({
+      ...base,
+      channel: "EMAIL",
+      hasAttachments: true,
+      text: "Hi, I urgently need these items",
+    });
+    expect(result.classification).toBe("RFQ");
+    expect(result.isQuotationRequest).toBe(true);
+  });
 });

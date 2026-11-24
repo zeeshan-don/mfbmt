@@ -6,14 +6,13 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { RealtimeRefresh } from "@/components/realtime-refresh";
 import { Badge } from "@/components/ui";
 import { isDemoMode } from "@/lib/env";
-import { workerLiveness } from "@/lib/workflow/jobs";
+import { workerLiveness, type WorkerLiveness } from "@/lib/workflow/jobs";
 import { LogOut } from "lucide-react";
 import { logoutAction } from "../logout-action";
 
 export const dynamic = "force-dynamic";
 
-async function SystemStatus() {
-  const worker = await workerLiveness();
+function SystemStatus({ worker }: { worker: WorkerLiveness }) {
   if (worker.status === "HEALTHY") {
     return (
       <span className="inline-flex items-center gap-1.5">
@@ -46,9 +45,10 @@ async function SystemStatus() {
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
-  const [organization, unread] = await Promise.all([
+  const [organization, unread, worker] = await Promise.all([
     db.organization.findUnique({ where: { id: user.organizationId } }),
     db.notification.count({ where: { isRead: false, ...(user.role === "OWNER" ? {} : { userId: user.id }) } }),
+    workerLiveness(),
   ]);
 
   return (
@@ -85,7 +85,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               <MobileNav role={user.role} isDemo={isDemoMode} />
             </div>
             <div className="hidden items-center gap-2 text-xs text-muted lg:flex">
-              <SystemStatus />
+              <SystemStatus worker={worker} />
               <span className="text-line">·</span>
               {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
             </div>
@@ -121,7 +121,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </div>
           </div>
           <div className="border-t border-line px-4 py-1 text-[11px] text-muted lg:hidden">
-            <SystemStatus />
+            <SystemStatus worker={worker} />
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:py-8">{children}</main>

@@ -551,7 +551,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
             detectedMime: sniffType(buffer).mime,
           },
         });
-        if (doc.text || doc.unreadable) {
+        if (doc.text || doc.unreadable || (doc.images?.length ?? 0) > 0) {
           const sourceDoc = {
             filename: attachment.filename,
             kind: attachment.mimeType.includes("pdf")
@@ -617,7 +617,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
         reviewReason: needsReview
           ? (enquiry.reviewReason ??
             (unreadableFiles > 0
-              ? "Some pages or files could not be read. Please check the products against the original document."
+              ? "Some pages or files need a quick check. Please compare the products with the original document."
               : "No product lines could be found in this request. Please add them or check the original document."))
           : null,
       },
@@ -718,7 +718,7 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
       extractedJson: stringifyJson(extraction.extraction),
       reviewReason: requiresReview
         ? unreadableFiles > 0
-          ? "Some attachments could not be read. Please check the products against the original document."
+          ? "Some attachments need a quick check. Please compare the products with the original document."
           : items.length === 0
             ? "No product lines could be found. Please add them or check the original document."
             : extraction.aiError

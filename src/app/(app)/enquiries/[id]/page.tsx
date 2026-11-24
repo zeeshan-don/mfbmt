@@ -603,7 +603,7 @@ export default async function EnquiryDetailPage({
                         </a>
                       ) : null}
                       {attachment.extractionStatus === "NEEDS_REVIEW" || attachment.extractionStatus === "FAILED" ? (
-                        <p className="mt-1 text-[11px] text-warn">{attachment.extractionNote ?? "Could not be read reliably."}</p>
+                        <p className="mt-1 text-[11px] text-muted">Check this file against the extracted lines.</p>
                       ) : null}
                       {attachment.pageCount ? (
                         <p className="mt-1 text-[10px] text-muted">{attachment.pageCount} page(s)</p>

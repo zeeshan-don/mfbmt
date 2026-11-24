@@ -57,20 +57,9 @@ export default async function EnquiriesPage({
     include: {
       items: { select: { id: true, description: true, inventoryStatus: true, sourcingStatus: true, missingFields: true } },
       quotations: { select: { id: true, status: true, quoteNumber: true }, orderBy: { version: "desc" }, take: 1 },
+      Message: { select: { receivedAt: true } },
     },
   });
-
-  const lastMessages = await db.message.findMany({
-    where: { enquiryId: { in: enquiries.map((enquiry) => enquiry.id) } },
-    select: { enquiryId: true, receivedAt: true },
-    orderBy: { receivedAt: "desc" },
-  });
-  const receivedByEnquiry = new Map<string, Date>();
-  for (const message of lastMessages) {
-    if (message.enquiryId && !receivedByEnquiry.has(message.enquiryId)) {
-      receivedByEnquiry.set(message.enquiryId, message.receivedAt);
-    }
-  }
 
   return (
     <div className="space-y-5">
@@ -155,7 +144,7 @@ export default async function EnquiriesPage({
                       </span>
                     </Td>
                     <Td>
-                      <span className="text-xs text-soft">{timeAgo(receivedByEnquiry.get(enquiry.id) ?? enquiry.createdAt)}</span>
+                      <span className="text-xs text-soft">{timeAgo(enquiry.Message?.receivedAt ?? enquiry.createdAt)}</span>
                     </Td>
                     <Td align="right">
                       <span className="tabular">{enquiry.items.length}</span>

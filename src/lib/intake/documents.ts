@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { loadExcelWorkbook } from "../exceljs";
 import { sniffType } from "../storage";
 
 export type DocumentText = {
@@ -141,13 +142,31 @@ export async function extractPdf(buffer: Buffer): Promise<DocumentText> {
       }
 
       if (!ocrEnabled()) {
+        // If a vision model is configured, send the rendered pages to it rather
+        // than rejecting a valid scan because local OCR is off.
+        const visionImages: string[] = [];
+        if (env.AI_VISION_MODEL.trim()) {
+          const limit = Math.min(pageCount, MAX_VISION_IMAGES);
+          for (let index = 0; index < limit; index += 1) {
+            try {
+              const png = tasks.drawPageAsPNG(document, index, 200);
+              const image = await toVisionImage(Buffer.from(png));
+              if (image) visionImages.push(image);
+            } catch {
+              // Leave unrendered pages to the text path.
+            }
+          }
+        }
         return {
           text: textPages.map((page) => page.text).join("\n").trim(),
           pageCount,
           status: "NEEDS_REVIEW",
-          note: "This PDF has no readable text layer (it is a scan or a photo). Photo and scan reading is turned off, so nothing was assumed. Turn on OCR in Settings or enter the items manually.",
-          unreadable: true,
+          note: visionImages.length > 0
+            ? "This PDF has no text layer. The page images were sent to the AI to read."
+            : "This PDF has no readable text layer (it is a scan or a photo). Photo and scan reading is turned off, so nothing was assumed. Turn on OCR in Settings or enter the items manually.",
+          unreadable: visionImages.length === 0,
           pages: textPages.map((page) => ({ page: page.page, text: page.text, ocr: false })),
+          images: visionImages.length > 0 ? visionImages : undefined,
         };
       }
 
@@ -384,9 +403,7 @@ export async function extractExcel(buffer: Buffer): Promise<DocumentText> {
     };
   }
   try {
-    const ExcelJS = (await import("exceljs")).default;
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
+    const workbook = await loadExcelWorkbook(buffer);
     const chunks: string[] = [];
     let uncertain = false;
     workbook.eachSheet((sheet) => {
