@@ -1,5 +1,5 @@
 import { env } from "../env";
-import { ingestInboundMessage } from "../workflow/enquiry";
+import { ingestInboundMessage, isSenderExcluded } from "../workflow/enquiry";
 import { htmlToText } from "../sourcing/pages";
 import { getAccessToken } from "./oauth";
 import { getIntegration, saveIntegration } from "../integrations/store";
@@ -12,6 +12,9 @@ import { graphClientState } from "./routing";
 import { requireTenantId } from "../tenant";
 import { ingestSupplierReply } from "../workflow/supplierReply";
 import { withMutex } from "../concurrency/mutex";
+import { downloadGraphAttachments, graphErrorDetail, graphFetch, graphMailboxProfile } from "./graph";
+import { enqueueJob } from "../workflow/jobs";
+import { JOB_TYPES } from "../constants";
 
 /**
  * Automatic mailbox intake.
@@ -34,21 +37,56 @@ type GmailPart = {
   headers?: Array<{ name?: string; value?: string }>;
 };
 
+export type EmailStats = {
+  messagesScanned: number;
+  enquiriesCreated: number;
+  supplierReplies: number;
+  messagesIgnored: number;
+  attachmentsProcessed: number;
+  attachmentsFailed: number;
+};
+
+const EMPTY_STATS: EmailStats = {
+  messagesScanned: 0,
+  enquiriesCreated: 0,
+  supplierReplies: 0,
+  messagesIgnored: 0,
+  attachmentsProcessed: 0,
+  attachmentsFailed: 0,
+};
+
+function addStats(previous: Partial<EmailStats> | undefined, run: Partial<EmailStats> | undefined): EmailStats {
+  const total = { ...EMPTY_STATS, ...(previous ?? {}) };
+  for (const key of Object.keys(EMPTY_STATS) as Array<keyof EmailStats>) {
+    total[key] += run?.[key] ?? 0;
+  }
+  return total;
+}
+
 type EmailConfig = {
   /** Gmail incremental cursor (history id). */
   historyId?: string;
   /** Gmail watch expiry (epoch ms). */
   watchExpiration?: number;
-  /** Graph delta cursor. */
+  /** Graph delta cursor. Stored and used exactly as Microsoft returned it. */
   deltaLink?: string;
   /** Graph subscription id + expiry. */
   subscriptionId?: string;
   subscriptionExpiresAt?: number;
+  pushStatus?: "ACTIVE" | "FAILED" | "NOT_CONFIGURED";
+  pushError?: string | null;
   lastSyncAt?: string;
   lastSuccessAt?: string;
+  lastAttemptedSyncAt?: string;
   lastError?: string;
   processedCount?: number;
   mode?: "push" | "poll";
+  syncStatus?: "CONNECTING" | "SYNCED" | "ERROR" | "PAUSED" | "NOT_CONNECTED";
+  initialSyncCompleted?: boolean;
+  initialSyncDays?: number;
+  autoSyncEnabled?: boolean;
+  stats?: Partial<EmailStats>;
+  folder?: string;
   /** Connected mailbox address, used to route push notifications to this tenant. */
   accountEmail?: string;
 };
@@ -103,8 +141,12 @@ const emptyResult = (detail: string, ok = false): SyncResult => ({
  * read; there is no access to other accounts or personal folders beyond the
  * granted scope.
  */
-export async function syncEmailIntake(options: { trigger?: "poll" | "push" | "manual" } = {}): Promise<SyncResult> {
-  const lock = await withMutex("email-sync", async () => {
+export async function syncEmailIntake(
+  options: { trigger?: "poll" | "push" | "manual" | "initial" } = {},
+): Promise<SyncResult> {
+  // A sync for one company must never block another company's mailbox.
+  const lockKey = `email-sync:${await requireTenantId()}`;
+  const lock = await withMutex(lockKey, async () => {
     const provider = await activeEmailProvider();
     if (provider === "none") return emptyResult("No mailbox is connected.");
 
@@ -125,20 +167,28 @@ export async function syncEmailIntake(options: { trigger?: "poll" | "push" | "ma
     const result =
       provider === "gmail"
         ? await syncGmail(token, config, trigger)
-        : await syncGraph(token, config);
+        : await syncGraph(token, config, trigger);
 
     const now = new Date().toISOString();
+    const stats = result.stats ? addStats(config.stats, result.stats) : (config.stats ?? EMPTY_STATS);
     await saveIntegration({
       key: integrationKey,
       status: result.ok ? "CONNECTED" : "NEEDS_ATTENTION",
       lastError: result.ok ? null : result.detail,
       markSuccess: result.ok,
+      accountLabel: result.nextConfig.accountEmail ?? undefined,
       config: {
         ...result.nextConfig,
+        stats,
         lastSyncAt: now,
+        lastAttemptedSyncAt: now,
         lastSuccessAt: result.ok ? now : config.lastSuccessAt ?? null,
         processedCount: result.processed,
         mode: trigger === "push" ? "push" : "poll",
+        syncStatus: result.ok
+          ? (result.initialCompleted ?? config.initialSyncCompleted ? "SYNCED" : "CONNECTING")
+          : "ERROR",
+        initialSyncCompleted: result.initialCompleted ?? config.initialSyncCompleted ?? false,
         lastError: result.ok ? null : result.detail,
       },
     });
@@ -167,7 +217,11 @@ export async function syncEmailIntake(options: { trigger?: "poll" | "push" | "ma
   return lock.value as SyncResult;
 }
 
-type InternalSyncResult = SyncResult & { nextConfig: Partial<EmailConfig> };
+type InternalSyncResult = SyncResult & {
+  nextConfig: Partial<EmailConfig>;
+  stats?: Partial<EmailStats>;
+  initialCompleted?: boolean;
+};
 
 async function ingestAttachmentSet(
   attachments: Array<{ filename: string; buffer: Buffer }>,
@@ -474,40 +528,41 @@ type GraphMessage = {
   body?: { content?: string; contentType?: string };
   hasAttachments?: boolean;
   internetMessageHeaders?: Array<{ name?: string; value?: string }>;
+  /** Present when a delta page reports a message removed from the folder. */
+  "@removed"?: { reason?: string };
 };
 
 function graphHeader(message: GraphMessage, name: string): string | null {
   return message.internetMessageHeaders?.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value ?? null;
 }
 
-async function graphIngest(token: string, message: GraphMessage): Promise<{ ingested: boolean }> {
+type MessageOutcome = {
+  ingested: boolean;
+  ignored: boolean;
+  outcome: "ENQUIRY" | "SUPPLIER_REPLY" | "IGNORED" | "DUPLICATE" | "OTHER";
+  attachmentsProcessed: number;
+  attachmentsFailed: number;
+};
+
+async function graphIngest(token: string, message: GraphMessage): Promise<MessageOutcome> {
+  const from = parseEmailAddress(message.from?.emailAddress?.address ?? "");
+  if (!from) throw new Error("Message has no usable sender address.");
+
+  // Contact exclusions are checked before any attachment is downloaded.
+  const exclusion = await isSenderExcluded({ channel: "EMAIL", from });
   const attachmentFailures: string[] = [];
   const attachments: Array<{ filename: string; buffer: Buffer }> = [];
 
-  if (message.hasAttachments) {
-    const attResponse = await fetch(
-      `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(message.id)}/attachments`,
-      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
-    );
-    if (!attResponse.ok) {
-      attachmentFailures.push(`Attachment list failed (HTTP ${attResponse.status}).`);
-    } else {
-      const attData = (await attResponse.json()) as {
-        value?: Array<{ name?: string; contentBytes?: string; "@odata.type"?: string }>;
-      };
-      for (const attachment of (attData.value ?? []).slice(0, 10)) {
-        if (!attachment.name || !attachment.contentBytes) {
-          if (attachment.name) attachmentFailures.push(`${attachment.name}: not a file attachment.`);
-          continue;
-        }
-        attachments.push({ filename: attachment.name, buffer: Buffer.from(attachment.contentBytes, "base64") });
-      }
+  if (message.hasAttachments && !exclusion.excluded) {
+    const downloaded = await downloadGraphAttachments(token, message.id);
+    attachmentFailures.push(...downloaded.failures);
+    for (const name of downloaded.unsupported) {
+      attachmentFailures.push(`${name}: this attachment type is not supported.`);
     }
+    attachments.push(...downloaded.attachments.map((file) => ({ filename: file.filename, buffer: file.buffer })));
   }
 
   const accepted = await ingestAttachmentSet(attachments, attachmentFailures);
-  const from = parseEmailAddress(message.from?.emailAddress?.address ?? "");
-  if (!from) throw new Error("Message has no usable sender address.");
 
   const bodyTextValue =
     message.body?.contentType === "html" ? htmlToText(message.body.content ?? "") : (message.body?.content ?? "");
@@ -537,7 +592,13 @@ async function graphIngest(token: string, message: GraphMessage): Promise<{ inge
         meta: { failures: attachmentFailures },
       });
     }
-    return { ingested: !supplierReply.duplicate };
+    return {
+      ingested: !supplierReply.duplicate,
+      ignored: false,
+      outcome: supplierReply.duplicate ? "DUPLICATE" : "SUPPLIER_REPLY",
+      attachmentsProcessed: accepted.length,
+      attachmentsFailed: attachmentFailures.length,
+    };
   }
 
   const result = await ingestInboundMessage({
@@ -561,98 +622,223 @@ async function graphIngest(token: string, message: GraphMessage): Promise<{ inge
       meta: { failures: attachmentFailures },
     });
   }
-  return { ingested: !result.duplicate };
+  return {
+    ingested: !result.duplicate && !result.ignored,
+    ignored: result.ignored,
+    outcome: result.duplicate ? "DUPLICATE" : result.ignored ? "IGNORED" : "ENQUIRY",
+    attachmentsProcessed: accepted.length,
+    attachmentsFailed: attachmentFailures.length,
+  };
 }
 
-async function syncGraph(token: string, config: EmailConfig): Promise<InternalSyncResult> {
+/**
+ * Bounded first delta. Microsoft supports `$filter=receivedDateTime ge {value}`
+ * and `$orderby=receivedDateTime desc` on the message delta endpoint. The
+ * resulting deltaLink is durable and is reused exactly as returned thereafter.
+ */
+export function initialGraphDeltaUrl(folder: string, days: number, now: Date = new Date()): string {
+  const bounded = Math.max(1, Math.min(365, Math.round(days) || 30));
+  const since = new Date(now.getTime() - bounded * 24 * 60 * 60 * 1000).toISOString();
+  const filter = encodeURIComponent(`receivedDateTime ge ${since}`);
+  const orderBy = encodeURIComponent("receivedDateTime desc");
+  return (
+    `https://graph.microsoft.com/v1.0/me/mailFolders/${encodeURIComponent(folder)}/messages/delta` +
+    `?$select=${GRAPH_SELECT}&$top=50&$filter=${filter}&$orderby=${orderBy}&changeType=created`
+  );
+}
+
+async function syncGraph(
+  token: string,
+  config: EmailConfig,
+  trigger: "poll" | "push" | "manual" | "initial" = "poll",
+): Promise<InternalSyncResult> {
   let processed = 0;
   let skipped = 0;
   let failed = 0;
   const failures: string[] = [];
 
-  const folder = env.EMAIL_FOLDER || "inbox";
-  let url: string | null =
-    config.deltaLink ??
-    `https://graph.microsoft.com/v1.0/me/mailFolders/${encodeURIComponent(folder)}/messages/delta?$select=${GRAPH_SELECT}`;
-  let deltaLink: string | undefined = config.deltaLink;
-  let fetched = 0;
+  const folder = config.folder || env.EMAIL_FOLDER || "inbox";
+  const days = config.initialSyncDays ?? env.EMAIL_INITIAL_SYNC_DAYS;
+  const boundedDays = Math.max(1, Math.min(365, Math.round(days) || 30));
 
-  while (url && fetched < env.EMAIL_MAX_MESSAGES_PER_RUN) {
-    const response: Response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.body-content-type="text"' },
-      cache: "no-store",
-    });
+  let currentToken = token;
+  let refreshed = false;
+  let resetApplied = false;
+  let cursor: string | undefined = config.deltaLink;
+  let isInitial = !cursor;
+  let cutoff = isInitial ? Date.now() - boundedDays * 24 * 60 * 60 * 1000 : 0;
+  let url: string | null = cursor ?? initialGraphDeltaUrl(folder, boundedDays);
+  let scanned = 0;
+  let accountEmail = config.accountEmail;
+  if (!accountEmail) {
+    // A connection made by the pre-upgrade flow stored no mailbox address.
+    try {
+      accountEmail = (await graphMailboxProfile(currentToken)).mailboxEmail;
+    } catch {
+      // The sync continues; the address is cosmetic and retried next run.
+    }
+  }
+  let enquiriesCreated = 0;
+  let supplierReplies = 0;
+  let messagesIgnored = 0;
+  let attachmentsProcessed = 0;
+  let attachmentsFailed = 0;
+
+  const runStats = () => ({
+    messagesScanned: scanned,
+    enquiriesCreated,
+    supplierReplies,
+    messagesIgnored,
+    attachmentsProcessed,
+    attachmentsFailed,
+  });
+
+  const fail = (detail: string): InternalSyncResult => ({
+    ok: false,
+    processed,
+    skipped,
+    failed,
+    detail,
+    nextConfig: { folder, deltaLink: cursor },
+    stats: runStats(),
+    initialCompleted: config.initialSyncCompleted ?? false,
+  });
+
+  while (url && scanned < env.EMAIL_MAX_MESSAGES_PER_RUN) {
+    let response: Response;
+    try {
+      response = await graphFetch(url, currentToken, {
+        headers: { Prefer: 'outlook.body-content-type="text"' },
+      });
+    } catch (error) {
+      return fail(
+        `Microsoft Graph could not be reached. ${error instanceof Error ? error.message : "Please try again later."}`,
+      );
+    }
+
+    if (response.status === 401 && !refreshed) {
+      refreshed = true;
+      const next = await getAccessToken("microsoft", { force: true });
+      if (next) {
+        currentToken = next;
+        continue;
+      }
+      return fail("Microsoft rejected the mailbox session. Reconnect Outlook in Settings.");
+    }
     if (response.status === 410) {
-      // Delta cursor expired: start a fresh full delta.
-      url = `https://graph.microsoft.com/v1.0/me/mailFolders/${encodeURIComponent(folder)}/messages/delta?$select=${GRAPH_SELECT}`;
-      deltaLink = undefined;
-      if (fetched > 0) break;
+      // Delta cursor expired: rebuild a bounded delta. Already-ingested messages
+      // are deduplicated, so nothing is lost or duplicated by the replay.
+      if (resetApplied) return fail("Microsoft's mailbox sync cursor keeps expiring. Try again later.");
+      resetApplied = true;
+      cursor = undefined;
+      isInitial = true;
+      cutoff = Date.now() - boundedDays * 24 * 60 * 60 * 1000;
+      url = initialGraphDeltaUrl(folder, boundedDays);
       continue;
     }
-    if (!response.ok) {
-      return {
-        ok: false,
-        processed,
-        skipped,
-        failed,
-        detail: `Microsoft Graph mailbox request failed (HTTP ${response.status}).`,
-        nextConfig: config,
-      };
+    if (response.status === 403) {
+      return fail(
+        "Microsoft refused access to this mailbox. Reconnect Outlook and approve the read permission.",
+      );
     }
+    if (!response.ok) {
+      const detail = await graphErrorDetail(response);
+      return fail(
+        `Microsoft Graph mailbox request failed (HTTP ${response.status})${detail ? `: ${detail}` : "."}`,
+      );
+    }
+
     const data = (await response.json()) as {
       value?: GraphMessage[];
       "@odata.nextLink"?: string;
       "@odata.deltaLink"?: string;
     };
+
     for (const message of data.value ?? []) {
-      fetched += 1;
+      // Delta reports removals and read/unread changes that are not new mail.
+      if (message["@removed"]) continue;
+      if (isInitial && message.receivedDateTime) {
+        const received = Date.parse(message.receivedDateTime);
+        // Change events can fall outside the initial filter; skip old mail.
+        if (Number.isFinite(received) && received < cutoff) continue;
+      }
+      scanned += 1;
       try {
-        const outcome = await graphIngest(token, message);
+        const outcome = await graphIngest(currentToken, message);
         if (outcome.ingested) processed += 1;
         else skipped += 1;
+        if (outcome.outcome === "ENQUIRY") enquiriesCreated += 1;
+        if (outcome.outcome === "SUPPLIER_REPLY") supplierReplies += 1;
+        if (outcome.outcome === "IGNORED") messagesIgnored += 1;
+        attachmentsProcessed += outcome.attachmentsProcessed;
+        attachmentsFailed += outcome.attachmentsFailed;
       } catch (error) {
         failed += 1;
         failures.push(error instanceof Error ? error.message : "Message failed.");
       }
     }
-    if (data["@odata.deltaLink"]) deltaLink = data["@odata.deltaLink"];
+
+    // Never advance past a message that failed: keeping the previous cursor
+    // replays it next run, and deduplication prevents duplicates.
+    if (failed === 0 && data["@odata.deltaLink"]) cursor = data["@odata.deltaLink"];
     url = data["@odata.nextLink"] ?? null;
   }
 
-  const subscription = await ensureGraphSubscription(config);
+  // Only a completed page round yields a deltaLink. If the per-run limit was
+  // reached first, the previous cursor is kept and the next run replays safely.
+  const completed = Boolean(cursor);
+  const subscription = await ensureGraphSubscription(currentToken, config);
   const nextConfig: Partial<EmailConfig> = {
-    deltaLink,
+    deltaLink: cursor,
+    folder,
+    accountEmail,
+    initialSyncDays: boundedDays,
+    initialSyncCompleted: Boolean(config.initialSyncCompleted) || completed,
     subscriptionId: subscription.id ?? config.subscriptionId,
     subscriptionExpiresAt: subscription.expiresAt ?? config.subscriptionExpiresAt,
+    pushStatus: subscription.pushStatus,
+    pushError: subscription.ok ? null : subscription.detail,
   };
-  if (!subscription.ok) failures.push(subscription.detail);
 
-  const ok = failed === 0 && failures.length === 0;
+  const ok = failed === 0;
+  const pushNote = subscription.ok ? "" : ` ${subscription.detail}`;
   return {
     ok,
     processed,
     skipped,
     failed,
     detail: ok
-      ? `Checked ${fetched} message(s) in Outlook: ${processed} new, ${skipped} already seen.`
-      : `Checked ${fetched} message(s): ${processed} new, ${skipped} seen, ${failed} failed. ${failures.slice(0, 2).join(" ")}`,
+      ? `Checked ${scanned} message(s) in Outlook${trigger === "initial" ? " (first scan)" : ""}: ${processed} new, ${skipped} already seen.${pushNote}`
+      : `Checked ${scanned} message(s): ${processed} new, ${skipped} seen, ${failed} failed. ${failures.slice(0, 2).join(" ")}`,
     nextConfig,
+    stats: runStats(),
+    initialCompleted: nextConfig.initialSyncCompleted,
   };
 }
 
 async function ensureGraphSubscription(
+  token: string,
   config: EmailConfig,
-): Promise<{ ok: boolean; detail: string; id?: string; expiresAt?: number }> {
+): Promise<{
+  ok: boolean;
+  detail: string;
+  id?: string;
+  expiresAt?: number;
+  pushStatus: "ACTIVE" | "FAILED" | "NOT_CONFIGURED";
+}> {
   if (!env.GRAPH_WEBHOOK_CLIENT_STATE) {
-    return { ok: false, detail: "Graph push is not configured (GRAPH_WEBHOOK_CLIENT_STATE is empty); polling is used." };
+    return {
+      ok: true,
+      detail: "Push notifications are not configured; the mailbox is polled on a schedule.",
+      pushStatus: "NOT_CONFIGURED",
+    };
   }
-  const folder = env.EMAIL_FOLDER || "inbox";
+  // Delegated shared-mailbox folders cannot use Graph change notifications.
+  // This pass only connects the signed-in user's own mailbox.
+  const folder = config.folder || env.EMAIL_FOLDER || "inbox";
   const notificationUrl = `${env.APP_URL.replace(/\/$/, "")}/api/webhooks/microsoft`;
   const minutes = Math.min(4200, Math.max(15, env.GRAPH_SUBSCRIPTION_MINUTES));
   const expirationDateTime = new Date(Date.now() + minutes * 60 * 1000).toISOString();
-
-  const token = await getAccessToken("microsoft");
-  if (!token) return { ok: false, detail: "Microsoft 365 is not connected." };
   const organizationId = await requireTenantId();
   const clientState = graphClientState(organizationId, env.GRAPH_WEBHOOK_CLIENT_STATE);
 
@@ -660,27 +846,34 @@ async function ensureGraphSubscription(
     if (config.subscriptionId) {
       const current = config.subscriptionExpiresAt ?? 0;
       if (current > Date.now() + 60 * 60 * 1000) {
-        return { ok: true, detail: "Subscription is current.", id: config.subscriptionId, expiresAt: current };
+        return {
+          ok: true,
+          detail: "Subscription is current.",
+          id: config.subscriptionId,
+          expiresAt: current,
+          pushStatus: "ACTIVE",
+        };
       }
-      const patch = await fetch(`https://graph.microsoft.com/v1.0/subscriptions/${config.subscriptionId}`, {
-        method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ expirationDateTime }),
-      });
+      const patch = await graphFetch(
+        `https://graph.microsoft.com/v1.0/subscriptions/${encodeURIComponent(config.subscriptionId)}`,
+        token,
+        { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expirationDateTime }) },
+      );
       if (patch.ok) {
         return {
           ok: true,
           detail: "Subscription renewed.",
           id: config.subscriptionId,
           expiresAt: new Date(expirationDateTime).getTime(),
+          pushStatus: "ACTIVE",
         };
       }
-      // Fall through and create a new subscription.
+      // Fall through and create a new subscription (the old one expired/was removed).
     }
 
-    const response = await fetch("https://graph.microsoft.com/v1.0/subscriptions", {
+    const response = await graphFetch("https://graph.microsoft.com/v1.0/subscriptions", token, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         changeType: "created",
         notificationUrl,
@@ -691,8 +884,12 @@ async function ensureGraphSubscription(
       }),
     });
     if (!response.ok) {
-      const detail = (await response.text().catch(() => "")).slice(0, 240);
-      return { ok: false, detail: `Graph subscription failed (HTTP ${response.status}). ${detail}` };
+      const detail = await graphErrorDetail(response);
+      return {
+        ok: false,
+        detail: `Mailbox push notifications could not be enabled (HTTP ${response.status})${detail ? `: ${detail}` : "."} Polling continues.`,
+        pushStatus: "FAILED",
+      };
     }
     const data = (await response.json()) as { id?: string; expirationDateTime?: string };
     return {
@@ -700,9 +897,14 @@ async function ensureGraphSubscription(
       detail: "Subscription created.",
       id: data.id,
       expiresAt: data.expirationDateTime ? new Date(data.expirationDateTime).getTime() : undefined,
+      pushStatus: "ACTIVE",
     };
   } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message : "Graph subscription failed." };
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : "Graph subscription failed.",
+      pushStatus: "FAILED",
+    };
   }
 }
 
@@ -735,15 +937,24 @@ export async function renewEmailSubscriptions(): Promise<{ ok: boolean; detail: 
     return { ok: true, detail: `Gmail push watch renewed until ${new Date(watch.expiration).toISOString()}.` };
   }
 
-  const subscription = await ensureGraphSubscription(config);
+  const subscription = await ensureGraphSubscription(token, config);
   if (!subscription.ok) {
-    await saveIntegration({ key, lastError: subscription.detail });
+    await saveIntegration({
+      key,
+      lastError: subscription.detail,
+      config: { pushStatus: subscription.pushStatus, pushError: subscription.detail },
+    });
     return { ok: false, detail: subscription.detail };
   }
   await saveIntegration({
     key,
     status: "CONNECTED",
-    config: { subscriptionId: subscription.id, subscriptionExpiresAt: subscription.expiresAt },
+    config: {
+      subscriptionId: subscription.id,
+      subscriptionExpiresAt: subscription.expiresAt,
+      pushStatus: subscription.pushStatus,
+      pushError: null,
+    },
     lastError: null,
     markSuccess: true,
   });
@@ -755,9 +966,71 @@ export function emailSyncState(configJson: string | null | undefined) {
   return {
     lastSyncAt: config.lastSyncAt ?? null,
     lastSuccessAt: config.lastSuccessAt ?? null,
+    lastAttemptedSyncAt: config.lastAttemptedSyncAt ?? null,
     mode: config.mode ?? null,
     watchExpiration: config.watchExpiration ?? null,
     subscriptionExpiresAt: config.subscriptionExpiresAt ?? null,
+    pushStatus: config.pushStatus ?? null,
+    pushError: config.pushError ?? null,
+    syncStatus: config.syncStatus ?? null,
+    initialSyncCompleted: config.initialSyncCompleted ?? false,
+    initialSyncDays: config.initialSyncDays ?? null,
+    autoSyncEnabled: config.autoSyncEnabled !== false,
+    folder: config.folder ?? null,
+    stats: config.stats ?? {},
     lastError: config.lastError ?? null,
+  };
+}
+
+/** True unless the owner explicitly paused automatic mailbox processing. */
+export async function emailAutoSyncEnabled(): Promise<boolean> {
+  const integration = await getIntegration("MICROSOFT365");
+  const config = parseJson<EmailConfig>(integration?.configJson ?? "{}", {});
+  return config.autoSyncEnabled !== false;
+}
+
+/**
+ * Owner preferences for the connected Outlook mailbox. Changing the folder or
+ * history window invalidates the delta cursor, so the next scan starts a fresh
+ * bounded delta. Historical enquiries and attachments are never deleted.
+ */
+export async function saveOutlookPreferences(input: {
+  folder: string;
+  initialSyncDays: number;
+  autoSyncEnabled: boolean;
+}): Promise<{ ok: boolean; detail: string }> {
+  const integration = await getIntegration("MICROSOFT365");
+  if (!integration || integration.status === "DISCONNECTED" || integration.status === "NOT_CONFIGURED") {
+    return { ok: false, detail: "Connect Outlook before changing its settings." };
+  }
+  const config = parseJson<EmailConfig>(integration.configJson, {});
+  const folder = input.folder.trim().slice(0, 120) || "inbox";
+  const days = Math.max(1, Math.min(365, Math.round(input.initialSyncDays) || 30));
+  const folderChanged = folder !== (config.folder ?? env.EMAIL_FOLDER);
+  await saveIntegration({
+    key: "MICROSOFT365",
+    config: {
+      folder,
+      initialSyncDays: days,
+      autoSyncEnabled: input.autoSyncEnabled,
+      ...(folderChanged
+        ? { deltaLink: null, subscriptionId: null, subscriptionExpiresAt: null, initialSyncCompleted: false, syncStatus: "CONNECTING" }
+        : {}),
+    },
+  });
+  if (folderChanged) {
+    // Read the new folder promptly instead of waiting for the next interval.
+    await enqueueJob({
+      type: JOB_TYPES.SYNC_EMAIL,
+      payload: { trigger: "manual" },
+      idempotencyKey: `email-folder-change:${Date.now()}`,
+      maxAttempts: 3,
+    }).catch(() => undefined);
+  }
+  return {
+    ok: true,
+    detail: folderChanged
+      ? `Now reading the ${folder} folder. The next scan starts fresh.`
+      : "Outlook settings saved.",
   };
 }

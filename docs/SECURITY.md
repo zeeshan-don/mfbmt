@@ -104,3 +104,12 @@ Production file storage is private and fail-closed; no public ACL is applied, MI
 Owner invitations store only a token hash, are single-use and expire. Provisioning masks password entry, never accepts passwords on the command line, logs an audit record, and refuses cross-tenant email reuse or implicit owner resets.
 
 Integration diagnostics are owner-only and tenant-scoped, display no secrets, and perform no outbound customer/supplier messages. Regression coverage includes cross-tenant file access, supplier reply correlation/isolation, invitation conflicts and diagnostics isolation.
+
+## Microsoft OAuth and mailbox credentials
+
+- Microsoft sign-in uses the Authorization Code flow with PKCE (S256). The `state` value is 192 bits of randomness inside an HMAC-signed, HttpOnly, SameSite=Lax cookie bound to the initiating organisation and owner, expires after 10 minutes, and is deleted before the callback is processed (single use).
+- The callback verifies the signed state, the PKCE verifier and the currently signed-in owner's organisation. Mailbox identity comes from Graph `/me`; a typed email address or `login_hint` is never treated as identity proof.
+- Access and refresh tokens are AES-256-GCM encrypted with `CREDENTIAL_ENCRYPTION_KEY` and stored per organisation. They are never logged, placed in URLs, or returned to the browser. Decryption failure marks the integration as needing attention instead of pretending it is connected.
+- Initial consent requests only `openid profile email offline_access User.Read Mail.Read`. `Mail.Send` is a separate owner action and is re-checked at send time; supplier RFQs remain gated by the existing approval workflow.
+- A webhook batch is validated per notification: the per-organisation client state must match the platform secret and the subscription id must belong to that company. Invalid notifications are rejected, never re-routed.
+- Email bodies, attachment contents, customer pricing and tokens are never written to logs. Customer-facing errors are sanitised.

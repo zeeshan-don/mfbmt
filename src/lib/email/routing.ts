@@ -1,5 +1,6 @@
 import { rawDb } from "../db-base";
 import { parseJson } from "../json";
+import { timingSafeEqual } from "../crypto";
 
 /**
  * Resolves the organization that owns a provider notification.
@@ -15,7 +16,7 @@ export async function resolveEmailOrganization(
   accountEmail?: string | null,
 ): Promise<string | null> {
   const integrations = await rawDb.integration.findMany({
-    where: { key: provider, status: "CONNECTED" },
+    where: { key: provider, status: { in: ["CONNECTED", "CONNECTING"] } },
     select: { organizationId: true, configJson: true },
   });
 
@@ -44,4 +45,71 @@ export function parseGraphClientState(value: string): { organizationId: string; 
   const separator = rest.indexOf(":");
   if (separator <= 0) return null;
   return { organizationId: rest.slice(0, separator), secret: rest.slice(separator + 1) };
+}
+
+export type GraphNotification = {
+  subscriptionId?: string;
+  clientState?: string;
+  changeType?: string;
+  resource?: string;
+  lifecycleEvent?: string;
+};
+
+/**
+ * Validates and groups one webhook batch by verified organisation.
+ *
+ * A single Graph delivery may contain notifications for several subscriptions
+ * belonging to different MFBMT companies. Every entry must carry a valid
+ * per-tenant clientState; an invalid entry rejects the whole batch rather than
+ * being routed somewhere else. The legacy global clientState is accepted only
+ * when exactly one company has Outlook connected.
+ */
+export async function groupGraphNotifications(
+  notifications: GraphNotification[],
+  secret: string,
+): Promise<
+  | { ok: true; groups: Array<{ organizationId: string; notifications: GraphNotification[] }> }
+  | { ok: false; status: number; error: string }
+> {
+  if (!secret) return { ok: false, status: 503, error: "Microsoft Graph push is not configured." };
+  if (notifications.length === 0) return { ok: true, groups: [] };
+
+  const groups = new Map<string, GraphNotification[]>();
+  let legacyOrganization: string | null | undefined;
+
+  for (const notification of notifications) {
+    const parsed = notification.clientState ? parseGraphClientState(notification.clientState) : null;
+    let organizationId: string;
+
+    if (parsed) {
+      if (!timingSafeEqual(parsed.secret, secret)) {
+        return { ok: false, status: 401, error: "Invalid client state." };
+      }
+      organizationId = parsed.organizationId;
+    } else {
+      // Legacy subscription created before per-tenant state existed.
+      if (!notification.clientState || !timingSafeEqual(notification.clientState, secret)) {
+        return { ok: false, status: 401, error: "Invalid client state." };
+      }
+      if (legacyOrganization === undefined) {
+        legacyOrganization = await resolveEmailOrganization("MICROSOFT365", null);
+      }
+      if (!legacyOrganization) {
+        return { ok: false, status: 422, error: "Notification cannot be routed to a company." };
+      }
+      organizationId = legacyOrganization;
+    }
+
+    const list = groups.get(organizationId) ?? [];
+    list.push(notification);
+    groups.set(organizationId, list);
+  }
+
+  return {
+    ok: true,
+    groups: [...groups.entries()].map(([organizationId, entries]) => ({
+      organizationId,
+      notifications: entries,
+    })),
+  };
 }

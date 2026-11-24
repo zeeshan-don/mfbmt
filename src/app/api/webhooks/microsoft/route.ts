@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { db } from "@/lib/db";
-import { timingSafeEqual, sha256 } from "@/lib/crypto";
+import { sha256 } from "@/lib/crypto";
 import { enqueueJob } from "@/lib/workflow/jobs";
 import { JOB_TYPES } from "@/lib/constants";
-import { parseGraphClientState, resolveEmailOrganization } from "@/lib/email/routing";
+import { groupGraphNotifications, type GraphNotification } from "@/lib/email/routing";
 import { runWithTenant } from "@/lib/tenant";
+import { getIntegration } from "@/lib/integrations/store";
+import { parseJson } from "@/lib/json";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,12 +15,12 @@ export const dynamic = "force-dynamic";
 /**
  * Microsoft Graph change notifications.
  *
- * - Subscription validation: Graph sends `?validationToken=` and expects it
- *   echoed as text/plain within 10 seconds.
- * - Notifications: every entry carries the `clientState` we set when creating
- *   the subscription. It is `org:<organizationId>:<shared secret>`, so a valid
- *   notification is routed to its company and cannot be replayed against
- *   another. A durable receipt is written and a delta sync is queued.
+ * - Validation: echo `validationToken` as plain text.
+ * - Notifications: a delivery may contain subscriptions from several MFBMT
+ *   companies. Each entry is verified by its per-organisation clientState and
+ *   its subscription id, then queued inside that company's tenant context. A
+ *   notification is never routed to a different company.
+ * - This route performs no mailbox scan and no AI work; the worker does that.
  */
 export async function POST(request: Request) {
   const url = new URL(request.url);
@@ -34,15 +36,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Microsoft Graph push is not configured." }, { status: 503 });
   }
 
-  let payload: {
-    value?: Array<{
-      subscriptionId?: string;
-      clientState?: string;
-      changeType?: string;
-      resource?: string;
-      lifecycleEvent?: string;
-    }>;
-  };
+  let payload: { value?: GraphNotification[] };
   try {
     payload = (await request.json()) as typeof payload;
   } catch {
@@ -52,49 +46,50 @@ export async function POST(request: Request) {
   const notifications = payload.value ?? [];
   if (notifications.length === 0) return new NextResponse(null, { status: 202 });
 
-  const organizationIds = new Set<string>();
-  for (const notification of notifications) {
-    const parsed = notification.clientState ? parseGraphClientState(notification.clientState) : null;
-    if (parsed) {
-      if (!timingSafeEqual(parsed.secret, env.GRAPH_WEBHOOK_CLIENT_STATE)) {
-        return NextResponse.json({ error: "Invalid client state." }, { status: 401 });
+  const grouped = await groupGraphNotifications(notifications, env.GRAPH_WEBHOOK_CLIENT_STATE);
+  if (!grouped.ok) return NextResponse.json({ error: grouped.error }, { status: grouped.status });
+  if (grouped.groups.length === 0) return new NextResponse(null, { status: 202 });
+
+  for (const group of grouped.groups) {
+    const outcome = await runWithTenant({ organizationId: group.organizationId, source: "webhook" }, async () => {
+      const integration = await getIntegration("MICROSOFT365");
+      if (!integration || !["CONNECTED", "CONNECTING"].includes(integration.status)) {
+        return { ok: false as const, status: 404, error: "This company has no connected Outlook mailbox." };
       }
-      organizationIds.add(parsed.organizationId);
-      continue;
-    }
-    // Backwards compatibility for a subscription created before per-tenant
-    // state: accept only when exactly one company has Microsoft connected.
-    if (!notification.clientState || !timingSafeEqual(notification.clientState, env.GRAPH_WEBHOOK_CLIENT_STATE)) {
-      return NextResponse.json({ error: "Invalid client state." }, { status: 401 });
-    }
-    const organizationId = await resolveEmailOrganization("MICROSOFT365", null);
-    if (!organizationId) return NextResponse.json({ error: "Notification cannot be routed." }, { status: 422 });
-    organizationIds.add(organizationId);
-  }
+      const config = parseJson<{ subscriptionId?: string; autoSyncEnabled?: boolean }>(integration.configJson, {});
 
-  if (organizationIds.size !== 1) {
-    return NextResponse.json({ error: "Notification spans more than one workspace." }, { status: 400 });
-  }
-  const organizationId = [...organizationIds][0];
+      for (const notification of group.notifications) {
+        // A subscription id proves which mailbox the event belongs to. If we
+        // know our subscription and it differs, this event is not ours.
+        if (
+          notification.subscriptionId &&
+          config.subscriptionId &&
+          notification.subscriptionId !== config.subscriptionId
+        ) {
+          return { ok: false as const, status: 401, error: "Notification subscription does not match this mailbox." };
+        }
+      }
 
-  const externalId = `graph:${sha256(JSON.stringify(notifications)).slice(0, 40)}`;
-  const lifecycle = notifications.some((notification) => Boolean(notification.lifecycleEvent));
+      // The owner can pause automatic processing without disconnecting.
+      if (config.autoSyncEnabled === false) return { ok: true as const };
 
-  try {
-    return await runWithTenant({ organizationId, source: "webhook" }, async () => {
-      try {
-        await db.webhookEvent.create({
-          data: {
+      const externalId = `graph:${sha256(JSON.stringify(group.notifications)).slice(0, 40)}`;
+      const lifecycle = group.notifications.some((notification) => Boolean(notification.lifecycleEvent));
+
+      // Persist the receipt idempotently, then queue durably. A retried delivery
+      // still ensures the job exists instead of returning success with no work.
+      await db.webhookEvent.createMany({
+        data: [
+          {
             provider: "MICROSOFT365",
             externalId,
-            payloadHash: sha256(JSON.stringify(payload)),
-            status: "QUEUED",
+            payloadHash: sha256(JSON.stringify(group.notifications)),
+            status: "RECEIVED",
             processedAt: new Date(),
           },
-        });
-      } catch {
-        return new NextResponse(null, { status: 202 });
-      }
+        ],
+        skipDuplicates: true,
+      });
 
       try {
         await enqueueJob({
@@ -110,13 +105,23 @@ export async function POST(request: Request) {
             data: { status: "FAILED", error: error instanceof Error ? error.message.slice(0, 300) : "queue failed" },
           })
           .catch(() => undefined);
-        return NextResponse.json({ error: "Could not queue the mailbox sync." }, { status: 503 });
+        return { ok: false as const, status: 503, error: "Could not queue the mailbox sync." };
       }
 
-      return new NextResponse(null, { status: 202 });
+      await db.webhookEvent
+        .updateMany({
+          where: { provider: "MICROSOFT365", externalId },
+          data: { status: "QUEUED", processedAt: new Date() },
+        })
+        .catch(() => undefined);
+
+      return { ok: true as const };
     });
-  } catch (error) {
-    console.error("[microsoft] notification handling failed", error);
-    return NextResponse.json({ error: "Could not handle the notification." }, { status: 503 });
+
+    if (!outcome.ok) {
+      return NextResponse.json({ error: outcome.error }, { status: outcome.status });
+    }
   }
+
+  return new NextResponse(null, { status: 202 });
 }

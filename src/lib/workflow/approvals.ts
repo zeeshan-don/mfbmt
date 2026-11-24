@@ -317,15 +317,14 @@ export async function decideApproval(input: {
       // this idempotent if the same approval is ever applied twice.
       const sendResult = await sendSupplierQuoteRequest(quote.id);
       if (!sendResult.ok) {
-        await db.approval.update({
-          where: { id: approval.id },
-          data: { status: "CANCELLED", reason: sendResult.detail.slice(0, 500) },
-        });
+        // The owner's approval is valid even when transmission cannot happen
+        // yet (for example no email/WhatsApp channel is connected). Keep the
+        // decision and record why nothing was sent, so it can be retried after
+        // the channel is fixed instead of silently cancelling the approval.
         await db.supplierQuote.update({
           where: { id: quote.id },
           data: { lastError: sendResult.detail.slice(0, 500) },
         });
-        return { ok: false, error: sendResult.detail };
       }
     } else {
       await db.supplierQuote.update({ where: { id: quote.id }, data: { status: "REQUESTED" } });

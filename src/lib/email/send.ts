@@ -1,6 +1,6 @@
 import { env, isDemoMode } from "../env";
-import { getAccessToken } from "./oauth";
-import { getIntegration } from "../integrations/store";
+import { getAccessToken, microsoftSendingEnabled } from "./oauth";
+import { getIntegration, saveIntegration } from "../integrations/store";
 import { getCurrentOrganization } from "../organization";
 
 export type OutgoingAttachment = { filename: string; content: Buffer; contentType: string };
@@ -140,6 +140,14 @@ export async function sendEmail(input: {
       return { ok: true, providerIds: { messageId: data.id, threadId: data.threadId } };
     }
 
+    // Connecting a mailbox does not authorise sending. Mail.Send is a separate consent.
+    if (!(await microsoftSendingEnabled())) {
+      return {
+        ok: false,
+        error:
+          "Email sending is not enabled for this Outlook mailbox. Enable it in Settings, then choose the sending permission.",
+      };
+    }
     const token = await getAccessToken("microsoft");
     if (!token) return { ok: false, error: "Microsoft 365 needs to be reconnected in Settings." };
     const response = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
@@ -162,6 +170,18 @@ export async function sendEmail(input: {
     });
     if (!response.ok) {
       const detail = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+      if (response.status === 401 || response.status === 403) {
+        // The token is the authority on the granted permission, not our config.
+        await saveIntegration({
+          key: "MICROSOFT365",
+          config: { sendingEnabled: false },
+          lastError: "Microsoft no longer permits sending from this mailbox. Grant the sending permission again in Settings.",
+        }).catch(() => undefined);
+        return {
+          ok: false,
+          error: "Microsoft no longer permits sending from this mailbox. Enable email sending again in Settings.",
+        };
+      }
       return {
         ok: false,
         error: detail.error?.message ?? `Microsoft Graph returned HTTP ${response.status}.`,
@@ -205,9 +225,13 @@ export async function testEmailConnection(): Promise<{ ok: boolean; detail: stri
   });
   if (!response.ok) return { ok: false, detail: `Microsoft Graph returned HTTP ${response.status}.` };
   const profile = (await response.json()) as { mail?: string; userPrincipalName?: string };
+  const account = profile.mail ?? profile.userPrincipalName ?? null;
+  const sending = await microsoftSendingEnabled();
   return {
     ok: true,
-    detail: `Connected to ${profile.mail ?? profile.userPrincipalName ?? "the mailbox"}.`,
-    account: profile.mail,
+    detail: `Connected to ${account ?? "the mailbox"}. ${
+      sending ? "Email sending is enabled." : "Email sending is not enabled (read-only connection)."
+    }`,
+    account: account ?? undefined,
   };
 }

@@ -1,7 +1,7 @@
 import { env, integrationEnv } from "../env";
 import { getIntegration, saveIntegration } from "./store";
 import { testWhatsAppConnection } from "./whatsapp";
-import { testEmailConnection } from "../email/send";
+import { activeEmailProvider, testEmailConnection } from "../email/send";
 import { aiStatus, completeJson } from "../ai/provider";
 import { getSearchAdapters } from "../sourcing/registry";
 import { getRate } from "../costing/fx";
@@ -196,22 +196,24 @@ export async function runIntegrationDiagnostic(key: IntegrationKey): Promise<Liv
         const result = await testEmailConnection();
         const expected = key === "GMAIL" ? "gmail" : "microsoft365";
         // testEmailConnection checks whichever mailbox is connected. A Gmail
-        // result must not be recorded as a Microsoft 365 success.
-        const matches = result.ok && (key === "GMAIL" ? result.account !== undefined : true);
-        const status: IntegrationDiagnostic["status"] = result.ok ? "CONNECTED" : "NEEDS_ATTENTION";
+        // result must never be recorded as a Microsoft 365 success (or vice versa).
+        const actual = await activeEmailProvider();
+        const matches = result.ok && actual === expected;
+        const status: IntegrationDiagnostic["status"] = matches ? "CONNECTED" : "NEEDS_ATTENTION";
+        const mismatchDetail = result.ok
+          ? `The connected mailbox is ${actual === "none" ? "not connected" : actual === "gmail" ? "Gmail" : "Microsoft 365"}.`
+          : result.detail;
         await saveIntegration({
           key,
-          status: result.ok ? "CONNECTED" : "NEEDS_ATTENTION",
+          status,
           accountLabel: result.account ?? null,
-          lastError: result.ok ? null : result.detail,
-          markSuccess: result.ok,
+          lastError: matches ? null : mismatchDetail,
+          markSuccess: matches,
         });
         return {
-          ok: result.ok,
+          ok: matches,
           status,
-          detail: result.ok
-            ? `${result.detail}${matches ? "" : " (verify the expected provider is the connected mailbox)"}`
-            : result.detail,
+          detail: matches ? result.detail : mismatchDetail,
           liveRequest: true,
         };
       }

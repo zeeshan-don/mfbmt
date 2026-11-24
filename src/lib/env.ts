@@ -72,6 +72,8 @@ const schema = z.object({
   EMAIL_AUTO_SYNC: z.string().default("true"),
   EMAIL_POLL_INTERVAL_MS: z.coerce.number().default(120_000),
   EMAIL_MAX_MESSAGES_PER_RUN: z.coerce.number().default(100),
+  /** Bounded first scan. Years of historical mail are never ingested by default. */
+  EMAIL_INITIAL_SYNC_DAYS: z.coerce.number().default(30),
   GMAIL_CLIENT_ID: z.string().default(""),
   GMAIL_CLIENT_SECRET: z.string().default(""),
   GMAIL_REDIRECT_URI: z.string().default(""),

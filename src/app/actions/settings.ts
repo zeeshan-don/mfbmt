@@ -5,10 +5,10 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { authorizeOwner, hashPassword } from "@/lib/auth";
 import { writeAudit } from "@/lib/audit";
-import { env, integrationEnv } from "@/lib/env";
+import { env } from "@/lib/env";
 import { testWhatsAppConnection } from "@/lib/integrations/whatsapp";
 import { testEmailConnection } from "@/lib/email/send";
-import { syncEmailIntake, renewEmailSubscriptions } from "@/lib/email/sync";
+import { syncEmailIntake, renewEmailSubscriptions, saveOutlookPreferences } from "@/lib/email/sync";
 import { getRate } from "@/lib/costing/fx";
 import { saveIntegration } from "@/lib/integrations/store";
 import { disconnect } from "@/lib/email/oauth";
@@ -160,6 +160,26 @@ export async function syncEmailNowAction() {
   const result = await syncEmailIntake({ trigger: "manual" });
   revalidateOrgPath(user.organizationId, "/settings");
   revalidateOrgPath(user.organizationId, "/enquiries");
+  redirect(`/settings?sync=${encodeURIComponent(result.detail)}#integrations`);
+}
+
+export async function saveOutlookPreferencesAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const result = await saveOutlookPreferences({
+    folder: String(formData.get("folder") ?? "inbox"),
+    initialSyncDays: Number(String(formData.get("initialSyncDays") ?? "30")),
+    autoSyncEnabled: formData.get("autoSyncEnabled") === "on",
+  });
+  await writeAudit({
+    actorId: user.id,
+    actorLabel: user.name,
+    action: "integration.outlook_preferences_saved",
+    entityType: "Integration",
+    entityId: "MICROSOFT365",
+    meta: { ok: result.ok },
+  });
+  revalidateOrgPath(user.organizationId, "/settings");
   redirect(`/settings?sync=${encodeURIComponent(result.detail)}#integrations`);
 }
 

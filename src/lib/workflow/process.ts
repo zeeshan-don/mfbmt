@@ -64,7 +64,7 @@ export async function processJob(jobId: string, workerId: string): Promise<{ ok:
     case JOB_TYPES.SYNC_EMAIL: {
       const { syncEmailIntake } = await import("../email/sync");
       const result = await syncEmailIntake({
-        trigger: (payload.trigger as "poll" | "push" | "manual") ?? "poll",
+        trigger: (payload.trigger as "poll" | "push" | "manual" | "initial") ?? "poll",
       });
       return { ok: result.ok, message: result.detail };
     }

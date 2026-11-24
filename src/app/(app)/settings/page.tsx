@@ -5,6 +5,7 @@ import { env, integrationEnv, whatsAppSignupConfig, MAX_UPLOAD_MB } from "@/lib/
 import { aiStatus } from "@/lib/ai/provider";
 import { getWhatsAppConnection } from "@/lib/integrations/whatsapp";
 import { emailSyncState } from "@/lib/email/sync";
+import { microsoftConnectionState } from "@/lib/email/oauth";
 import { ensureIntegrations } from "@/lib/integrations/store";
 import { PERMISSIONS, ROLES, INTEGRATION_STATUS_LABELS } from "@/lib/constants";
 import { formatDateTime, timeAgo } from "@/lib/format";
@@ -13,6 +14,7 @@ import { WhatsAppConnect } from "@/components/whatsapp-connect";
 import {
   testIntegrationAction,
   syncEmailNowAction,
+  saveOutlookPreferencesAction,
   disconnectEmailAction,
   saveOrganizationAction,
   addExcludedContactAction,
@@ -52,6 +54,9 @@ export default async function SettingsPage({
     error?: string;
     sync?: string;
     disconnected?: string;
+    connected?: string;
+    sending?: string;
+    mailbox?: string;
     wa?: string;
   }>;
 }) {
@@ -78,8 +83,21 @@ export default async function SettingsPage({
   const ai = aiStatus();
   const waSignup = whatsAppSignupConfig();
   const byKey = new Map(integrations.map((row) => [row.key, row]));
-  const emailState = emailSyncState(gmail?.configJson ?? microsoft?.configJson ?? null);
+  const microsoftState = microsoftConnectionState(microsoft?.configJson, microsoft?.status);
+  const microsoftSyncState = emailSyncState(microsoft?.configJson ?? null);
+  const emailState = emailSyncState(
+    gmail?.status === "CONNECTED" ? gmail.configJson : (microsoft?.configJson ?? gmail?.configJson ?? null),
+  );
   const connectedMailbox = gmail?.status === "CONNECTED" ? "Gmail" : microsoft?.status === "CONNECTED" ? "Microsoft 365" : null;
+
+  // Actual mailbox outcomes for this company, not a hard-coded success state.
+  const [emailMessageCount, emailEnquiries, emailSupplierReplies, emailIgnored, attachmentsReview] = await Promise.all([
+    db.message.count({ where: { channel: "EMAIL" } }),
+    db.enquiry.count({ where: { channel: "EMAIL" } }),
+    db.supplierEmailReply.count(),
+    db.message.count({ where: { channel: "EMAIL", processingStatus: "IGNORED" } }),
+    db.attachment.count({ where: { extractionStatus: { in: ["FAILED", "NEEDS_REVIEW"] } } }),
+  ]);
 
   const rows: IntegrationRow[] = [
     {
@@ -178,7 +196,7 @@ export default async function SettingsPage({
       lastCheckedAt: microsoft?.lastCheckedAt ?? null,
       lastSuccessAt: microsoft?.lastSuccessAt ?? null,
       lastError: microsoft?.lastError ?? null,
-      scopes: "Mail.Read, Mail.Send, offline_access",
+      scopes: "read-only: Mail.Read · sending is a separate optional permission",
       push: integrationEnv.graphPush(),
       configured: oauthConfigured.microsoft,
       provider: "microsoft" as const,
@@ -194,6 +212,16 @@ export default async function SettingsPage({
 
       {flags.error ? <Notice tone="danger" title="Could not save">{flags.error}</Notice> : null}
       {flags.saved ? <Notice tone="ok">Settings saved.</Notice> : null}
+      {flags.connected ? (
+        <Notice tone="ok" title="Outlook connected">
+          {flags.mailbox ? `${flags.mailbox} is connected. ` : ""}The first mailbox scan starts in the background; new email is read automatically.
+        </Notice>
+      ) : null}
+      {flags.sending ? (
+        <Notice tone="ok" title="Email sending enabled">
+          Sending permission was granted for {flags.mailbox ?? "the connected mailbox"}. Supplier RFQs still require your approval before anything is sent.
+        </Notice>
+      ) : null}
       {flags.wa === "connected" ? <Notice tone="ok">WhatsApp linked. Run a connection test to confirm it.</Notice> : null}
       {flags.sync ? <Notice tone="info" title="Mailbox check">{flags.sync}</Notice> : null}
       {flags.disconnected ? <Notice tone="info">Mailbox disconnected.</Notice> : null}
@@ -261,6 +289,11 @@ export default async function SettingsPage({
         <p className="text-xs text-muted">
           New enquiries are read automatically. Push notifications are used where configured; otherwise the worker polls with a
           persistent cursor, so messages are not re-read or missed.
+        </p>
+        <p className="text-[11px] text-muted">
+          Connect with secure Microsoft sign-in — MFBMT never receives the mailbox password. The first connection is read-only;
+          email sending requires a separate permission you grant explicitly. Shared mailboxes are not supported in this
+          release; connect the mailbox owner&apos;s own Microsoft account.
         </p>
         {connectedMailbox ? (
           <Card>
@@ -332,7 +365,7 @@ export default async function SettingsPage({
                       href="/api/integrations/microsoft/start"
                       className="inline-flex h-8 items-center rounded-control border border-line bg-surface px-2.5 text-xs text-ink hover:bg-elevated"
                     >
-                      {row.status === "CONNECTED" ? "Reconnect Outlook" : "Connect Outlook"}
+                      {row.status === "CONNECTED" ? "Reconnect Microsoft Outlook" : "Connect Microsoft Outlook"}
                     </a>
                   )
                 ) : (
@@ -355,6 +388,116 @@ export default async function SettingsPage({
             </Card>
           ))}
         </div>
+
+        {microsoftState.connected ? (
+          <Card>
+            <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-ink">Outlook mailbox health</h3>
+                <p className="mt-0.5 text-[11px] text-muted">
+                  {microsoftState.accountEmail ?? "Mailbox address unavailable"}
+                  {microsoftState.displayName ? ` · ${microsoftState.displayName}` : ""}
+                </p>
+              </div>
+              <Badge tone={statusTone(microsoftState.status)} dot>
+                {INTEGRATION_STATUS_LABELS[microsoftState.status] ?? microsoftState.status}
+              </Badge>
+            </div>
+            <div className="grid gap-2 px-4 py-3 text-xs text-soft sm:grid-cols-3">
+              <p>
+                <span className="text-muted">Connection:</span>{" "}
+                {microsoftState.mailboxMode === "user" ? "Your own mailbox" : "Shared mailbox"}
+              </p>
+              <p>
+                <span className="text-muted">Monitored folder:</span> {microsoftState.folder}
+              </p>
+              <p>
+                <span className="text-muted">First scan:</span>{" "}
+                {microsoftState.initialSyncCompleted ? "Complete" : "In progress"} · last {microsoftState.initialSyncDays} days
+              </p>
+              <p>
+                <span className="text-muted">Automatic sync:</span> {microsoftSyncState.autoSyncEnabled ? "On" : "Paused"}
+              </p>
+              <p>
+                <span className="text-muted">Push notifications:</span>{" "}
+                {microsoftSyncState.pushStatus === "ACTIVE"
+                  ? "Active"
+                  : microsoftSyncState.pushStatus === "FAILED"
+                    ? "Unavailable — polling continues"
+                    : "Not configured — polling continues"}
+              </p>
+              <p>
+                <span className="text-muted">Email sending:</span>{" "}
+                {microsoftState.sendingEnabled ? "Enabled (still requires approval)" : "Read-only"}
+              </p>
+              <p>
+                <span className="text-muted">Emails received:</span> {emailMessageCount}
+              </p>
+              <p>
+                <span className="text-muted">Enquiries from email:</span> {emailEnquiries}
+              </p>
+              <p>
+                <span className="text-muted">Supplier replies matched:</span> {emailSupplierReplies}
+              </p>
+              <p>
+                <span className="text-muted">Messages ignored:</span> {emailIgnored}
+              </p>
+              <p>
+                <span className="text-muted">Attachments needing review:</span> {attachmentsReview}
+              </p>
+              <p>
+                <span className="text-muted">Last scan:</span>{" "}
+                {microsoftSyncState.stats.messagesScanned ?? 0} message(s),{" "}
+                {microsoftSyncState.stats.attachmentsProcessed ?? 0} attachment(s)
+              </p>
+              <p>
+                <span className="text-muted">Last successful sync:</span>{" "}
+                {microsoftSyncState.lastSuccessAt ? timeAgo(new Date(microsoftSyncState.lastSuccessAt)) : "Never"}
+              </p>
+              <p>
+                <span className="text-muted">Last error:</span> {microsoftSyncState.lastError ?? "none"}
+              </p>
+            </div>
+            <div className="border-t border-line px-4 py-3">
+              <form action={saveOutlookPreferencesAction} className="flex flex-wrap items-end gap-3">
+                <label className="text-[11px] text-muted">
+                  Monitored folder
+                  <input name="folder" defaultValue={microsoftState.folder} className={`${inputClass} mt-1 w-36`} />
+                </label>
+                <label className="text-[11px] text-muted">
+                  First scan (days)
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    name="initialSyncDays"
+                    defaultValue={microsoftState.initialSyncDays}
+                    className={`${inputClass} mt-1 w-24`}
+                  />
+                </label>
+                <label className="flex items-center gap-2 pb-2 text-xs text-soft">
+                  <input
+                    type="checkbox"
+                    name="autoSyncEnabled"
+                    defaultChecked={microsoftSyncState.autoSyncEnabled}
+                    className="h-4 w-4"
+                  />
+                  Read new email automatically
+                </label>
+                <Button size="sm">Save</Button>
+              </form>
+              {!microsoftState.sendingEnabled ? (
+                <div className="mt-3 rounded-control border border-line bg-elevated px-3 py-2 text-[11px] text-muted">
+                  Sending is off. Supplier RFQs can be prepared but not emailed until you{" "}
+                  <a className="text-accent underline" href="/api/integrations/microsoft/start?intent=send">
+                    enable email sending
+                  </a>{" "}
+                  with a separate Microsoft permission. Approval is still required before any supplier email is sent.
+                </div>
+              ) : null}
+            </div>
+          </Card>
+        ) : null}
 
         <div className="grid gap-3 lg:grid-cols-2">
           <Card>

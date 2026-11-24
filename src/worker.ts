@@ -13,6 +13,7 @@ import type { Server } from "node:http";
 import { runWithTenant } from "./lib/tenant";
 import { JOB_TYPES } from "./lib/constants";
 import { activeEmailProvider } from "./lib/email/send";
+import { emailAutoSyncEnabled } from "./lib/email/sync";
 
 // Fail closed in production before doing any work.
 assertProductionConfig();
@@ -40,7 +41,8 @@ async function ensureRecurringJobs() {
       // a mailbox connected through OAuth must be polled even when the env flag
       // still says "none".
       const emailProvider = await activeEmailProvider();
-      if (env.EMAIL_AUTO_SYNC === "true" && emailProvider !== "none") {
+      const autoSync = emailProvider === "microsoft365" ? await emailAutoSyncEnabled() : true;
+      if (env.EMAIL_AUTO_SYNC === "true" && emailProvider !== "none" && autoSync) {
         await enqueueJob({
           type: JOB_TYPES.SYNC_EMAIL,
           payload: { trigger: "poll" },

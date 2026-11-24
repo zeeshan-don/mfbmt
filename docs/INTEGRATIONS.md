@@ -196,3 +196,9 @@ per-company encrypted credentials. Application-level provider app credentials ma
 WhatsApp/mailbox credentials are never shared. Attendance routing: WhatsApp by Phone Number ID, Gmail
 push by the saved mailbox address, Microsoft Graph by signed per-organization `clientState`, inbound
 email forwarding by explicit `x-organization-slug`. See `docs/MULTITENANCY.md`.
+
+## Outlook connection state
+
+`Integration` (`key = MICROSOFT365`) keeps non-secret mailbox metadata in `configJson`: connected provider, authenticated mailbox address, display name, Graph user id, verified tenant id, mailbox mode (`user`), monitored folder, granted scopes, sending-enabled flag, first-scan status and window, delta cursor, subscription id/expiry, push status/error, last attempt/success, last error and cumulative sync counters. Tokens live only in encrypted `secretsJson`.
+
+The Settings card shows the real mailbox identity and actual counts from the database (email messages, email enquiries, supplier replies, ignored messages, attachments needing review). It never shows a green Connected badge from the mere presence of a token: integration health requires a successful provider identity check and an active connection status.

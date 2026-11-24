@@ -106,3 +106,13 @@ supplies `In-Reply-To`/`References` when returned.
 
 No supplier email is sent automatically. Supplier RFQs, follow-ups and purchase
 orders each require explicit owner approval.
+
+## Outlook intake path
+
+Outlook messages use the same pipeline as Gmail and WhatsApp: contact exclusions are applied before attachment download and before anything is persisted; known supplier replies are correlated by provider
+thread, In-Reply-To/References or RFQ token; customer messages go through
+`ingestInboundMessage()` and the existing classification/extraction jobs.
+Supplier attachments are read by `extractDocument()` and their page/sheet
+evidence is stored with the offer, which remains `UNVERIFIED` until the existing
+review/approval process says otherwise. No second procurement pipeline exists for
+Outlook.

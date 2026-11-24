@@ -141,3 +141,9 @@ independent. `tests/industrial-spec.test.ts` covers the OGS category rules.
 New storage keys are `organizations/{organizationId}/attachments/{yyyy-mm}/{random}` and `organizations/{organizationId}/quotations/{quote}-v{version}.pdf`. The organization id is taken from server-side tenant context, never from the request. Downloads verify the attachment's database ownership before a short-lived signed URL is issued. Legacy `attachments/...` keys remain readable through the same ownership check and are not rewritten automatically; use `npm run audit:attachments` to inventory them.
 
 Supplier email replies, owner invitations and integration diagnostics are all organization-scoped models/operations. Diagnostics never read or refresh another tenant's credentials, and a supplier reply can only match an RFQ owned by the same organization.
+
+## Mailbox isolation
+
+Every mailbox operation runs inside the owning organisation's `runWithTenant` context: OAuth callback, webhook, worker job, manual sync and disconnect. Credentials are read through the tenant-scoped `Integration` row only, so one company's token can never be used for another.
+
+Graph notifications carry `org:<organizationId>:<secret>` as `clientState`. The webhook groups a mixed-provider batch by organisation, verifies each subscription id against that organisation's stored subscription, writes a tenant-scoped `WebhookEvent` receipt and enqueues one durable job per company. An event with an invalid state or an unknown subscription is rejected rather than routed to a default tenant. The sync mutex key is `email-sync:<organizationId>`, so one company's scan cannot block another's.
