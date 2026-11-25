@@ -57,60 +57,77 @@ model Organization {
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
-  users                  User[]
-  sessions               Session[]
-  contacts               Contact[]
-  excludedContacts       ExcludedContact[]
-  conversations          Conversation[]
-  messages               Message[]
-  attachments            Attachment[]
-  documentPackages       DocumentPackage[]
-  enquiries              Enquiry[]
-  enquiryItems           EnquiryItem[]
-  products               Product[]
-  productSpecifications  ProductSpecification[]
-  inventoryLocations     InventoryLocation[]
-  inventoryStocks        InventoryStock[]
-  inventoryMovements     InventoryMovement[]
-  suppliers              Supplier[]
-  supplierContacts       SupplierContact[]
-  supplierProducts       SupplierProduct[]
-  searchSessions         SearchSession[]
-  searchQueries          SearchQuery[]
-  searchResults          SearchResult[]
-  researchRuns           ResearchRun[]
-  researchQueries        ResearchQuery[]
-  researchSources        ResearchSource[]
-  researchPages          ResearchPage[]
-  researchEvidence       ResearchEvidence[]
-  researchCandidates     ResearchCandidate[]
-  researchEvents         ResearchEvent[]
-  supplierOffers         SupplierOffer[]
-  supplierQuotes         SupplierQuote[]
-  supplierQuoteItems     SupplierQuoteItem[]
-  approvals              Approval[]
-  customerQuotations     CustomerQuotation[]
-  customerQuotationItems CustomerQuotationItem[]
-  customers              Customer[]
-  customerContacts       CustomerContact[]
-  pricingRules           PricingRule[]
-  materialEquivalences   MaterialEquivalence[]
-  integrations           Integration[]
-  supplierEmailReplies   SupplierEmailReply[]
-  ownerInvitations       OwnerInvitation[]
-  mfaChallenges          MfaChallenge[]
-  backgroundJobs         BackgroundJob[]
-  webhookEvents          WebhookEvent[]
-  numberSequences        NumberSequence[]
-  auditLogs              AuditLog[]
-  notifications          Notification[]
-  exchangeRates          ExchangeRate[]
-  appSettings            AppSetting[]
-  aiUsage                AiUsage[]
-  searchCache            SearchCache[]
-  productPackaging       ProductPackaging[]
-  stockReservations      StockReservation[]
-  outboundMessages       OutboundMessage[]
+  users                    User[]
+  sessions                 Session[]
+  contacts                 Contact[]
+  excludedContacts         ExcludedContact[]
+  conversations            Conversation[]
+  messages                 Message[]
+  attachments              Attachment[]
+  documentPackages         DocumentPackage[]
+  enquiries                Enquiry[]
+  enquiryItems             EnquiryItem[]
+  products                 Product[]
+  productSpecifications    ProductSpecification[]
+  inventoryLocations       InventoryLocation[]
+  inventoryStocks          InventoryStock[]
+  inventoryMovements       InventoryMovement[]
+  suppliers                Supplier[]
+  supplierContacts         SupplierContact[]
+  supplierProducts         SupplierProduct[]
+  searchSessions           SearchSession[]
+  searchQueries            SearchQuery[]
+  searchResults            SearchResult[]
+  researchRuns             ResearchRun[]
+  researchQueries          ResearchQuery[]
+  researchSources          ResearchSource[]
+  researchPages            ResearchPage[]
+  researchEvidence         ResearchEvidence[]
+  researchCandidates       ResearchCandidate[]
+  researchEvents           ResearchEvent[]
+  supplierOffers           SupplierOffer[]
+  supplierQuotes           SupplierQuote[]
+  supplierQuoteItems       SupplierQuoteItem[]
+  approvals                Approval[]
+  customerQuotations       CustomerQuotation[]
+  customerQuotationItems   CustomerQuotationItem[]
+  customers                Customer[]
+  customerContacts         CustomerContact[]
+  pricingRules             PricingRule[]
+  materialEquivalences     MaterialEquivalence[]
+  integrations             Integration[]
+  supplierEmailReplies     SupplierEmailReply[]
+  ownerInvitations         OwnerInvitation[]
+  mfaChallenges            MfaChallenge[]
+  backgroundJobs           BackgroundJob[]
+  webhookEvents            WebhookEvent[]
+  numberSequences          NumberSequence[]
+  auditLogs                AuditLog[]
+  notifications            Notification[]
+  exchangeRates            ExchangeRate[]
+  appSettings              AppSetting[]
+  aiUsage                  AiUsage[]
+  searchCache              SearchCache[]
+  productPackaging         ProductPackaging[]
+  stockReservations        StockReservation[]
+  outboundMessages         OutboundMessage[]
+  salesOrders              SalesOrder[]
+  salesOrderLines          SalesOrderLine[]
+  purchaseOrders           PurchaseOrder[]
+  purchaseOrderLines       PurchaseOrderLine[]
+  supplierAcknowledgements SupplierAcknowledgement[]
+  goodsReceipts            GoodsReceipt[]
+  goodsReceiptLines        GoodsReceiptLine[]
+  deliveries               Delivery[]
+  deliveryLines            DeliveryLine[]
+  customerInvoices         CustomerInvoice[]
+  customerInvoiceLines     CustomerInvoiceLine[]
+  customerPayments         CustomerPayment[]
+  paymentAllocations       PaymentAllocation[]
+  supplierBills            SupplierBill[]
+  supplierPayments         SupplierPayment[]
+  orderStatusEvents        OrderStatusEvent[]
+  orderDiscrepancies       OrderDiscrepancy[]
 
   @@index([status])
 }
@@ -410,6 +427,7 @@ model Enquiry {
   customerName               String?
   customerPhone              String?
   customerEmail              String?
+  salesOrders                SalesOrder[]
   rawText                    String
   extractedJson              String? // original extraction snapshot; owner corrections are stored separately
   deliveryLocation           String?
@@ -499,6 +517,7 @@ model EnquiryItem {
   createdAt             DateTime                @default(now())
   updatedAt             DateTime                @updatedAt
   offers                SupplierOffer[]
+  salesOrderLines       SalesOrderLine[]
   searchSessions        SearchSession[]
   supplierQuotes        SupplierQuote[]
   quotationItems        CustomerQuotationItem[]
@@ -852,6 +871,8 @@ model Supplier {
   quotes              SupplierQuote[]
   researchCandidates  ResearchCandidate[]
   emailReplies        SupplierEmailReply[]
+  PurchaseOrder       PurchaseOrder[]
+  SupplierBill        SupplierBill[]
 
   @@index([organizationId, name])
   @@index([organizationId, domain])
@@ -1008,6 +1029,7 @@ model SupplierOffer {
   quoteItemId         String?                 @unique
   quoteItem           SupplierQuoteItem?      @relation(fields: [quoteItemId], references: [id])
   quotationItems      CustomerQuotationItem[]
+  purchaseOrderLines  PurchaseOrderLine[]
 
   @@index([enquiryItemId])
   @@index([organizationId])
@@ -1119,6 +1141,9 @@ model Customer {
   contacts       CustomerContact[]
   enquiries      Enquiry[]
   quotations     CustomerQuotation[]
+  salesOrders    SalesOrder[]
+  invoices       CustomerInvoice[]
+  payments       CustomerPayment[]
 
   @@index([organizationId, name])
   @@index([organizationId, email])
@@ -1188,6 +1213,7 @@ model CustomerQuotation {
   updatedAt              DateTime                @updatedAt
   items                  CustomerQuotationItem[]
   stockReservations      StockReservation[]
+  salesOrders            SalesOrder[]
 
   @@unique([organizationId, quoteNumber])
   @@unique([enquiryId, version])
@@ -1540,4 +1566,497 @@ model OutboundMessage {
   @@unique([organizationId, operationKey])
   @@index([organizationId, status])
   @@index([status, leaseExpiresAt])
+}
+
+/**
+ * ── Order-to-closure lifecycle ─────────────────────────────────────────────
+ * Sales orders, supplier purchase orders, receipts, deliveries, invoices and
+ * payments are separate durable records. Every financial amount is a Decimal,
+ * every document number is unique per tenant, and every conversion carries an
+ * idempotency key so retries cannot duplicate commercial commitments.
+ */
+
+model SalesOrder {
+  id                     String             @id @default(cuid())
+  organizationId         String             @default("__unset__")
+  organization           Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  orderNumber            String
+  idempotencyKey         String
+  status                 String             @default("ORDER_CONFIRMED")
+  // ORDER_CONFIRMED | PROCUREMENT_IN_PROGRESS | PARTIALLY_RECEIVED | READY_TO_DISPATCH | PARTIALLY_DELIVERED | DELIVERED | PARTIALLY_INVOICED | INVOICED | PARTIALLY_PAID | SETTLED | CLOSED | CANCELLED
+  enquiryId              String?
+  enquiry                Enquiry?           @relation(fields: [enquiryId], references: [id], onDelete: SetNull)
+  quotationId            String
+  quotation              CustomerQuotation  @relation(fields: [quotationId], references: [id])
+  quotationVersion       Int
+  customerId             String?
+  customer               Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerName           String
+  customerEmail          String?
+  customerPhone          String?
+  customerPoNumber       String?
+  customerPoReference    String?
+  acceptanceSource       String             @default("CUSTOMER_PO") // CUSTOMER_PO | EMAIL_ACCEPTANCE | OWNER_RECORDED
+  acceptanceEvidenceJson String             @default("{}")
+  resolutionJson         String             @default("{}")
+  acceptedAt             DateTime           @default(now())
+  acceptedById           String?
+  currency               String
+  subtotal               Decimal            @default(0) @db.Decimal(18, 4)
+  taxAmount              Decimal            @default(0) @db.Decimal(18, 4)
+  total                  Decimal            @default(0) @db.Decimal(18, 4)
+  paymentTerms           String?
+  deliveryTerms          String?
+  deliveryAddress        String?
+  agreedDeliveryDate     DateTime?
+  notes                  String?
+  closedAt               DateTime?
+  closedById             String?
+  closureNote            String?
+  closureOverrideById    String?
+  closureOverrideReason  String?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  lines                  SalesOrderLine[]
+  purchaseOrders         PurchaseOrder[]
+  deliveries             Delivery[]
+  invoices               CustomerInvoice[]
+  discrepancies          OrderDiscrepancy[]
+  statusEvents           OrderStatusEvent[]
+
+  @@unique([organizationId, orderNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status])
+  @@index([quotationId])
+  @@index([customerId])
+}
+
+model SalesOrderLine {
+  id                      String                @id @default(cuid())
+  organizationId          String                @default("__unset__")
+  organization            Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  salesOrderId            String
+  salesOrder              SalesOrder            @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  lineNo                  Int
+  enquiryItemId           String?
+  enquiryItem             EnquiryItem?          @relation(fields: [enquiryItemId], references: [id], onDelete: SetNull)
+  customerQuotationItemId String?
+  productId               String?
+  supplierOfferId         String?
+  description             String
+  specs                   String?
+  quantity                Decimal               @db.Decimal(18, 4)
+  unit                    String                @default("pcs")
+  unitPrice               Decimal               @db.Decimal(18, 4)
+  discountPct             Decimal               @default(0) @db.Decimal(9, 4)
+  discountAmount          Decimal               @default(0) @db.Decimal(18, 4)
+  taxRatePct              Decimal               @default(0) @db.Decimal(9, 4)
+  taxAmount               Decimal               @default(0) @db.Decimal(18, 4)
+  lineTotal               Decimal               @default(0) @db.Decimal(18, 4)
+  stockQuantity           Decimal               @default(0) @db.Decimal(18, 4)
+  procureQuantity         Decimal               @default(0) @db.Decimal(18, 4)
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+  purchaseOrderLines      PurchaseOrderLine[]
+  deliveryLines           DeliveryLine[]
+  invoiceLines            CustomerInvoiceLine[]
+
+  @@unique([salesOrderId, lineNo])
+  @@index([organizationId, salesOrderId])
+  @@index([enquiryItemId])
+}
+
+model PurchaseOrder {
+  id                   String                    @id @default(cuid())
+  organizationId       String                    @default("__unset__")
+  organization         Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  poNumber             String
+  idempotencyKey       String
+  version              Int                       @default(1)
+  status               String                    @default("AWAITING_APPROVAL")
+  // AWAITING_APPROVAL | APPROVED | SENT | ACKNOWLEDGED | PARTIALLY_ACKNOWLEDGED | REJECTED | REVISED | PARTIALLY_RECEIVED | RECEIVED | COMPLETED | CANCELLED
+  salesOrderId         String
+  salesOrder           SalesOrder                @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  supplierId           String
+  supplier             Supplier                  @relation(fields: [supplierId], references: [id])
+  currency             String
+  subtotal             Decimal                   @default(0) @db.Decimal(18, 4)
+  taxAmount            Decimal                   @default(0) @db.Decimal(18, 4)
+  total                Decimal                   @default(0) @db.Decimal(18, 4)
+  paymentTerms         String?
+  deliveryTerms        String?
+  deliveryLocation     String?
+  expectedDeliveryDate DateTime?
+  supplierNotes        String?
+  internalNotes        String?
+  approvedById         String?
+  approvedAt           DateTime?
+  sentAt               DateTime?
+  sentChannel          String?
+  sentTo               String?
+  providerMessageId    String?
+  sentSubject          String?
+  sentDocumentJson     String?
+  lastError            String?
+  createdById          String?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  lines                PurchaseOrderLine[]
+  acknowledgements     SupplierAcknowledgement[]
+  receipts             GoodsReceipt[]
+  supplierBills        SupplierBill[]
+
+  @@unique([organizationId, poNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status])
+  @@index([salesOrderId])
+  @@index([supplierId])
+}
+
+model PurchaseOrderLine {
+  id               String             @id @default(cuid())
+  organizationId   String             @default("__unset__")
+  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  purchaseOrderId  String
+  purchaseOrder    PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  salesOrderLineId String
+  salesOrderLine   SalesOrderLine     @relation(fields: [salesOrderLineId], references: [id], onDelete: Cascade)
+  supplierOfferId  String?
+  supplierOffer    SupplierOffer?     @relation(fields: [supplierOfferId], references: [id], onDelete: SetNull)
+  lineNo           Int
+  description      String
+  specs            String?
+  quantity         Decimal            @db.Decimal(18, 4)
+  unit             String             @default("pcs")
+  unitPrice        Decimal            @db.Decimal(18, 4)
+  taxRatePct       Decimal            @default(0) @db.Decimal(9, 4)
+  taxAmount        Decimal            @default(0) @db.Decimal(18, 4)
+  lineTotal        Decimal            @default(0) @db.Decimal(18, 4)
+  moq              Decimal?           @db.Decimal(18, 4)
+  leadTimeDays     Int?
+  createdAt        DateTime           @default(now())
+  receiptLines     GoodsReceiptLine[]
+
+  @@unique([purchaseOrderId, lineNo])
+  @@index([organizationId, purchaseOrderId])
+  @@index([salesOrderLineId])
+}
+
+model SupplierAcknowledgement {
+  id              String        @id @default(cuid())
+  organizationId  String        @default("__unset__")
+  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  outcome         String
+  reviewStatus    String        @default("PENDING")
+  promisedDate    DateTime?
+  linesJson       String        @default("[]")
+  deviationsJson  String        @default("[]")
+  notes           String?
+  evidenceJson    String        @default("{}")
+  source          String        @default("MANUAL")
+  recordedById    String?
+  receivedAt      DateTime      @default(now())
+  reviewedById    String?
+  reviewedAt      DateTime?
+  reviewNote      String?
+  createdAt       DateTime      @default(now())
+
+  @@index([organizationId, reviewStatus])
+  @@index([purchaseOrderId, createdAt])
+}
+
+model GoodsReceipt {
+  id               String             @id @default(cuid())
+  organizationId   String             @default("__unset__")
+  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  receiptNumber    String
+  idempotencyKey   String
+  purchaseOrderId  String
+  purchaseOrder    PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  supplierId       String
+  receivedAt       DateTime           @default(now())
+  deliveryNoteRef  String?
+  condition        String             @default("OK")
+  inspectionResult String?
+  notes            String?
+  photoPath        String?
+  recordedById     String?
+  createdAt        DateTime           @default(now())
+  lines            GoodsReceiptLine[]
+
+  @@unique([organizationId, receiptNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, purchaseOrderId])
+}
+
+model GoodsReceiptLine {
+  id                  String            @id @default(cuid())
+  organizationId      String            @default("__unset__")
+  organization        Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  goodsReceiptId      String
+  goodsReceipt        GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderLineId String
+  purchaseOrderLine   PurchaseOrderLine @relation(fields: [purchaseOrderLineId], references: [id], onDelete: Cascade)
+  quantityOrdered     Decimal           @db.Decimal(18, 4)
+  quantityReceived    Decimal           @db.Decimal(18, 4)
+  quantityAccepted    Decimal           @default(0) @db.Decimal(18, 4)
+  quantityRejected    Decimal           @default(0) @db.Decimal(18, 4)
+  batchNo             String?
+  condition           String            @default("OK")
+  inspectionResult    String?
+  discrepancyType     String?
+  discrepancyNote     String?
+  createdAt           DateTime          @default(now())
+
+  @@index([organizationId, goodsReceiptId])
+  @@index([purchaseOrderLineId])
+}
+
+model Delivery {
+  id                  String         @id @default(cuid())
+  organizationId      String         @default("__unset__")
+  organization        Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveryNumber      String
+  idempotencyKey      String
+  salesOrderId        String
+  salesOrder          SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  status              String         @default("DISPATCHED")
+  dispatchedAt        DateTime       @default(now())
+  deliveredAt         DateTime?
+  carrier             String?
+  vehicleRef          String?
+  trackingRef         String?
+  deliveryAddress     String?
+  proofOfDeliveryPath String?
+  receivedBy          String?
+  notes               String?
+  recordedById        String?
+  createdAt           DateTime       @default(now())
+  lines               DeliveryLine[]
+
+  @@unique([organizationId, deliveryNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, salesOrderId])
+}
+
+model DeliveryLine {
+  id               String         @id @default(cuid())
+  organizationId   String         @default("__unset__")
+  organization     Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveryId       String
+  delivery         Delivery       @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  salesOrderLineId String
+  salesOrderLine   SalesOrderLine @relation(fields: [salesOrderLineId], references: [id], onDelete: Cascade)
+  quantity         Decimal        @db.Decimal(18, 4)
+  createdAt        DateTime       @default(now())
+
+  @@index([organizationId, deliveryId])
+  @@index([salesOrderLineId])
+}
+
+model CustomerInvoice {
+  id             String                @id @default(cuid())
+  organizationId String                @default("__unset__")
+  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoiceNumber  String
+  idempotencyKey String
+  salesOrderId   String
+  salesOrder     SalesOrder            @relation(fields: [salesOrderId], references: [id])
+  customerId     String?
+  customer       Customer?             @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  status         String                @default("ISSUED")
+  invoiceDate    DateTime              @default(now())
+  dueDate        DateTime?
+  currency       String
+  subtotal       Decimal               @db.Decimal(18, 4)
+  discountTotal  Decimal               @default(0) @db.Decimal(18, 4)
+  taxAmount      Decimal               @db.Decimal(18, 4)
+  taxLabel       String?
+  taxRatePct     Decimal               @default(0) @db.Decimal(9, 4)
+  total          Decimal               @db.Decimal(18, 4)
+  amountPaid     Decimal               @default(0) @db.Decimal(18, 4)
+  deliveryId     String?
+  notes          String?
+  issuedById     String?
+  issuedAt       DateTime              @default(now())
+  createdAt      DateTime              @default(now())
+  lines          CustomerInvoiceLine[]
+  allocations    PaymentAllocation[]
+
+  @@unique([organizationId, invoiceNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status])
+  @@index([salesOrderId])
+  @@index([customerId])
+}
+
+model CustomerInvoiceLine {
+  id               String          @id @default(cuid())
+  organizationId   String          @default("__unset__")
+  organization     Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoiceId        String
+  invoice          CustomerInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  salesOrderLineId String?
+  salesOrderLine   SalesOrderLine? @relation(fields: [salesOrderLineId], references: [id], onDelete: SetNull)
+  description      String
+  quantity         Decimal         @db.Decimal(18, 4)
+  unit             String          @default("pcs")
+  unitPrice        Decimal         @db.Decimal(18, 4)
+  discountPct      Decimal         @default(0) @db.Decimal(9, 4)
+  discountAmount   Decimal         @default(0) @db.Decimal(18, 4)
+  taxRatePct       Decimal         @default(0) @db.Decimal(9, 4)
+  taxAmount        Decimal         @default(0) @db.Decimal(18, 4)
+  lineTotal        Decimal         @db.Decimal(18, 4)
+  createdAt        DateTime        @default(now())
+
+  @@index([organizationId, invoiceId])
+}
+
+model CustomerPayment {
+  id             String              @id @default(cuid())
+  organizationId String              @default("__unset__")
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentNumber  String
+  idempotencyKey String
+  customerId     String?
+  customer       Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  amount         Decimal             @db.Decimal(18, 4)
+  currency       String
+  receivedAt     DateTime            @default(now())
+  method         String              @default("BANK_TRANSFER")
+  reference      String?
+  proofPath      String?
+  notes          String?
+  status         String              @default("CONFIRMED")
+  recordedById   String?
+  reversedById   String?
+  reversedAt     DateTime?
+  reversalReason String?
+  createdAt      DateTime            @default(now())
+  allocations    PaymentAllocation[]
+
+  @@unique([organizationId, paymentNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status])
+  @@index([customerId])
+}
+
+model PaymentAllocation {
+  id             String          @id @default(cuid())
+  organizationId String          @default("__unset__")
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentId      String
+  payment        CustomerPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoiceId      String
+  invoice        CustomerInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amount         Decimal         @db.Decimal(18, 4)
+  createdAt      DateTime        @default(now())
+
+  @@unique([paymentId, invoiceId])
+  @@index([organizationId, invoiceId])
+}
+
+model SupplierBill {
+  id                 String            @id @default(cuid())
+  organizationId     String            @default("__unset__")
+  organization       Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  billNumber         String
+  idempotencyKey     String
+  supplierId         String
+  supplier           Supplier          @relation(fields: [supplierId], references: [id])
+  purchaseOrderId    String?
+  purchaseOrder      PurchaseOrder?    @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  goodsReceiptId     String?
+  supplierInvoiceRef String?
+  status             String            @default("OPEN")
+  currency           String
+  amount             Decimal           @db.Decimal(18, 4)
+  taxAmount          Decimal           @default(0) @db.Decimal(18, 4)
+  total              Decimal           @db.Decimal(18, 4)
+  paidAmount         Decimal           @default(0) @db.Decimal(18, 4)
+  dueDate            DateTime?
+  paymentTerms       String?
+  receivedAt         DateTime          @default(now())
+  notes              String?
+  recordedById       String?
+  createdAt          DateTime          @default(now())
+  payments           SupplierPayment[]
+
+  @@unique([organizationId, billNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status])
+  @@index([supplierId])
+  @@index([purchaseOrderId])
+}
+
+model SupplierPayment {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentNumber  String
+  idempotencyKey String
+  supplierBillId String
+  supplierBill   SupplierBill @relation(fields: [supplierBillId], references: [id], onDelete: Cascade)
+  amount         Decimal      @db.Decimal(18, 4)
+  currency       String
+  paidAt         DateTime     @default(now())
+  method         String       @default("BANK_TRANSFER")
+  reference      String?
+  proofPath      String?
+  notes          String?
+  status         String       @default("CONFIRMED")
+  recordedById   String?
+  reversedById   String?
+  reversedAt     DateTime?
+  reversalReason String?
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, paymentNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, supplierBillId])
+}
+
+model OrderStatusEvent {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  entityType     String
+  entityId       String
+  fromStatus     String?
+  toStatus       String
+  reason         String?
+  actorId        String?
+  actorLabel     String       @default("system")
+  metaJson       String       @default("{}")
+  createdAt      DateTime     @default(now())
+  salesOrder     SalesOrder?  @relation(fields: [salesOrderId], references: [id])
+  salesOrderId   String?
+
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, createdAt])
+}
+
+model OrderDiscrepancy {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  entityType     String
+  entityId       String
+  salesOrderId   String?
+  salesOrder     SalesOrder?  @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  code           String
+  severity       String       @default("BLOCKING")
+  status         String       @default("OPEN")
+  detailJson     String       @default("{}")
+  note           String?
+  resolvedById   String?
+  resolvedAt     DateTime?
+  resolutionNote String?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, status])
+  @@index([entityType, entityId])
+  @@index([salesOrderId])
 }

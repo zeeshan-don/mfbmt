@@ -7,6 +7,7 @@ import { ENQUIRY_STATUS_LABELS, label } from "@/lib/constants";
 import { queueStats, workerLiveness } from "@/lib/workflow/jobs";
 import { getMonthlyUsage } from "@/lib/usage";
 import { getOrgLimits, aiBudgetStatus } from "@/lib/limits";
+import { ownerOperationsBoard } from "@/lib/orders/dashboard";
 import { Badge, Card, CardHeader, DataTable, EmptyState, PageHeader, Td, Th, statusTone } from "@/components/ui";
 import { AlertTriangle, BadgeCheck, Boxes, Inbox, MessageSquare, Radar } from "lucide-react";
 
@@ -48,6 +49,8 @@ export default async function OverviewPage() {
       queueStats(),
       workerLiveness(),
     ]);
+
+  const orderBoard = user.role === "OWNER" ? await ownerOperationsBoard() : null;
 
   const attention = [
     {
@@ -218,6 +221,89 @@ export default async function OverviewPage() {
           ))}
         </div>
       </section>
+
+      {orderBoard ? (
+        <section aria-labelledby="operations-heading">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 id="operations-heading" className="text-sm font-semibold text-ink">
+              Commercial operations
+            </h2>
+            <Link href="/orders" className="text-xs font-medium text-accent hover:underline">
+              Open sales orders
+            </Link>
+          </div>
+          <Card>
+            <div className="grid gap-x-6 gap-y-3 px-4 py-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Confirmed order value</p>
+                {orderBoard.money.confirmedOrderValue.length === 0 ? (
+                  <p className="mt-1 text-sm text-muted">No open orders</p>
+                ) : (
+                  orderBoard.money.confirmedOrderValue.map((total) => (
+                    <p key={total.currency} className="mt-1 text-lg font-semibold tabular text-ink">
+                      {total.currency} {total.amount}
+                    </p>
+                  ))
+                )}
+                <p className="mt-1 text-[11px] text-muted">{orderBoard.overview.openSalesOrders} open sales orders</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Customer receivables</p>
+                {orderBoard.money.receivables.length === 0 ? (
+                  <p className="mt-1 text-sm text-muted">Nothing outstanding</p>
+                ) : (
+                  orderBoard.money.receivables.map((total) => (
+                    <p key={total.currency} className="mt-1 text-lg font-semibold tabular text-ink">
+                      {total.currency} {total.amount}
+                    </p>
+                  ))
+                )}
+                <p className="mt-1 text-[11px] text-muted">{orderBoard.overview.settledDeals} settled deals</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Supplier payables</p>
+                {orderBoard.money.payables.length === 0 ? (
+                  <p className="mt-1 text-sm text-muted">No open supplier bills</p>
+                ) : (
+                  orderBoard.money.payables.map((total) => (
+                    <p key={total.currency} className="mt-1 text-lg font-semibold tabular text-ink">
+                      {total.currency} {total.amount}
+                    </p>
+                  ))
+                )}
+                <p className="mt-1 text-[11px] text-muted">{orderBoard.overview.openSupplierPos} supplier POs open</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted">Order flow</p>
+                <p className="mt-1 text-sm text-ink">
+                  <span className="font-semibold tabular">{orderBoard.overview.ordersInProcurement}</span> in procurement
+                </p>
+                <p className="text-sm text-ink">
+                  <span className="font-semibold tabular">{orderBoard.overview.ordersInFulfilment}</span> in fulfilment
+                </p>
+                <p className="mt-1 text-[11px] text-muted">{orderBoard.overview.quotationsOutstanding} quotations outstanding</p>
+              </div>
+            </div>
+            {orderBoard.attention.length > 0 ? (
+              <ul className="divide-y divide-line border-t border-line">
+                {orderBoard.attention.slice(0, 6).map((entry) => (
+                  <li key={entry.code}>
+                    <Link href={entry.href} className="flex items-center justify-between gap-3 px-4 py-2 text-[12px] hover:bg-elevated/60">
+                      <span className="text-soft">
+                        <span className="mr-2 inline-flex min-w-5 justify-center rounded-full bg-warn/10 px-1.5 py-0.5 text-[11px] font-semibold text-warn tabular">
+                          {entry.count}
+                        </span>
+                        {entry.title}
+                      </span>
+                      <span className="text-accent">Review</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </Card>
+        </section>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">

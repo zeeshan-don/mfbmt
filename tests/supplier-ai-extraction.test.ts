@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import { db } from "../src/lib/db";
 import { hashPassword } from "../src/lib/auth";
 import {
+  collectSupplierVisionImages,
   detectSupplierIntentByRules,
+  extractSupplierQuotation,
   normalizeSupplierExtraction,
   type SupplierQuotationExtraction,
 } from "../src/lib/ai/supplierExtraction";
@@ -287,6 +289,62 @@ describe("supplier AI extraction schema and merge", () => {
     expect(normalized.currency).toBe("AED");
     expect(normalized.supplier_name).toBeNull();
     expect(normalized.quoted_items[0].unit_price).toBe(12.5);
+  });
+
+  it("keeps only bounded, unique image data URLs for supplier vision", () => {
+    const images = Array.from({ length: 8 }, (_, index) => `data:image/jpeg;base64,${index}`);
+    const collected = collectSupplierVisionImages([
+      { filename: "scan.pdf", text: "", images: [images[0], images[1], images[0], "https://example.com/not-an-image"] },
+      { filename: "drawing.png", text: "", images: images.slice(2) },
+    ]);
+
+    expect(collected).toEqual(images.slice(0, 6));
+    expect(collected).toHaveLength(6);
+  });
+
+  it("passes supplier attachment page images to the configured vision model", async () => {
+    installAi();
+    const image = "data:image/jpeg;base64,c2Nhbm5lZC1xdW90YXRpb24=";
+    const result = await extractSupplierQuotation({
+      subject: "Quotation attached",
+      body: "Please find our offer attached.",
+      documents: [{ filename: "supplier-quote.pdf", text: "", pageCount: 2, status: "PARTIAL", images: [image] }],
+      rfqItems: [{ ref: "RFQ-ITEM-1", description: "Gate valve SS316" }],
+    });
+
+    expect(result.status).toBe("OK");
+    expect(completeJsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobType: "supplier.reply.extraction",
+        images: [image],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("falls back to text-only supplier extraction when a provider rejects vision input", async () => {
+    completeJsonMock.mockImplementation((async (callOptions: { images?: string[]; jobType?: string }) => {
+      if (callOptions.jobType !== "supplier.reply.extraction") {
+        return { ok: true as const, data: { intent: "QUOTATION", confidence: 0.9, reason: "Supplier offer." } };
+      }
+      if (callOptions.images?.length) {
+        return { ok: false as const, error: "Provider returned 400: image inputs are not supported" };
+      }
+      return { ok: true as const, data: extraction(), usage: { inputTokens: 100, outputTokens: 70, model: "test-model" } };
+    }) as unknown as typeof provider.completeJson);
+
+    const image = "data:image/png;base64,cXVvdGU=";
+    const result = await extractSupplierQuotation({
+      body: "Please find our quotation attached.",
+      documents: [{ filename: "quote.png", text: "Unit price: AED 12.50", images: [image] }],
+      rfqItems: [],
+    });
+
+    expect(result.status).toBe("OK");
+    const extractionCalls = completeJsonMock.mock.calls.filter(([options]) => options.jobType === "supplier.reply.extraction");
+    expect(extractionCalls).toHaveLength(2);
+    expect(extractionCalls[0][0].images).toEqual([image]);
+    expect(extractionCalls[1][0].images).toBeUndefined();
   });
 
   it("selects the RFQ line and keeps an alternative product separate", () => {

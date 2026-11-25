@@ -5,6 +5,7 @@ import { enqueueJob } from "./jobs";
 import { sendSupplierQuoteRequest } from "./supplierQuotes";
 import { JOB_TYPES } from "../constants";
 import { marginPct } from "../pricing/rules";
+import { approveSupplierPurchaseOrder } from "../orders/purchaseOrders";
 import {
   InsufficientStockError,
   releaseQuotationReservationsInTransaction,
@@ -473,6 +474,52 @@ export async function decideApproval(input: {
     });
 
     return { ok: true, redirectTo: `/enquiries/${item.enquiryId}` };
+  }
+
+  // ---- SUPPLIER_PO --------------------------------------------------------
+  // A supplier purchase order is a purchase commitment: it needs its own
+  // explicit owner approval, and approval never sends it.
+  if (approval.type === "SUPPLIER_PO") {
+    const po = await db.purchaseOrder.findUnique({ where: { id: approval.entityId } });
+    if (!po) return { ok: false, error: "The purchase order no longer exists." };
+
+    if (input.decision === "APPROVED") {
+      const result = await approveSupplierPurchaseOrder({
+        purchaseOrderId: po.id,
+        userId: input.userId,
+        actorLabel: input.actorLabel,
+        reason: input.reason ?? null,
+      });
+      if (!result.ok) return result;
+    } else {
+      const applied = await db.$transaction(async (tx) => {
+        const claimed = await tx.approval.updateMany({
+          where: { id: approval.id, status: "PENDING" },
+          data: {
+            status: input.decision,
+            decidedById: input.userId,
+            decidedAt: new Date(),
+            reason: input.reason?.trim() || null,
+          },
+        });
+        if (claimed.count === 0) return false;
+        await tx.purchaseOrder.updateMany({
+          where: { id: po.id, status: "AWAITING_APPROVAL" },
+          data: { status: "CANCELLED" },
+        });
+        return true;
+      });
+      if (!applied) return { ok: false, error: "This item has already been decided." };
+      await writeAudit({
+        actorId: input.userId,
+        actorLabel: input.actorLabel,
+        action: "purchase_order.rejected",
+        entityType: "PurchaseOrder",
+        entityId: po.id,
+        meta: { approvalId: approval.id, reason: input.reason ?? null },
+      });
+    }
+    return { ok: true, redirectTo: `/orders/${po.salesOrderId}` };
   }
 
   // ---- PRICING_OVERRIDE ---------------------------------------------------

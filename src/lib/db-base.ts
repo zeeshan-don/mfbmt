@@ -16,6 +16,11 @@ export const rawDb =
   globalForPrisma.prismaRaw ??
   new PrismaClient({
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
+    // Commercial lifecycle writes (receipt, dispatch, invoice, payment, closure)
+    // recompute order status inside one interactive transaction. Over a pooled
+    // remote database that reads/writes can exceed Prisma's 5s default, which
+    // surfaced as P2028 and a 500 on goods receipt.
+    transactionOptions: { maxWait: 10_000, timeout: 20_000 },
   });
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prismaRaw = rawDb;

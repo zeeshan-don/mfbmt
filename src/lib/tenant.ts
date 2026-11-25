@@ -91,6 +91,23 @@ export const TENANT_MODELS = new Set([
   "ProductPackaging",
   "StockReservation",
   "OutboundMessage",
+  "SalesOrder",
+  "SalesOrderLine",
+  "PurchaseOrder",
+  "PurchaseOrderLine",
+  "SupplierAcknowledgement",
+  "GoodsReceipt",
+  "GoodsReceiptLine",
+  "Delivery",
+  "DeliveryLine",
+  "CustomerInvoice",
+  "CustomerInvoiceLine",
+  "CustomerPayment",
+  "PaymentAllocation",
+  "SupplierBill",
+  "SupplierPayment",
+  "OrderStatusEvent",
+  "OrderDiscrepancy",
 ]);
 
 export class TenantContextError extends Error {

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
@@ -35,6 +35,12 @@ export default async function ApprovalDetailPage({
     },
   });
   if (!approval) notFound();
+  // A supplier purchase order is reviewed on the order itself, where its
+  // lines, supplier and commercial history are shown together.
+  if (approval.type === "SUPPLIER_PO") {
+    const po = await db.purchaseOrder.findUnique({ where: { id: approval.entityId }, select: { salesOrderId: true } });
+    redirect(po ? `/orders/${po.salesOrderId}` : "/orders");
+  }
 
   const payload = parseJson<Record<string, unknown>>(approval.payloadJson, {});
 

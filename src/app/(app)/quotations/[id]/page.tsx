@@ -36,6 +36,9 @@ export default async function QuotationPage({
   });
 
   const isOwner = user.role === "OWNER";
+  // A new quotation is created AWAITING_APPROVAL, so prices must stay editable
+  // until the approval is decided, not only in DRAFT.
+  const canPrice = isOwner && (quotation.status === "DRAFT" || quotation.status === "AWAITING_APPROVAL");
   const costKnown = quotation.internalCostComplete && quotation.internalCostTotal != null;
   const internalMargin = costKnown ? quotation.subtotal - (quotation.internalCostTotal ?? 0) : null;
   const totalQty = quotation.items.reduce((sum, line) => sum + line.quantity, 0);
@@ -103,7 +106,7 @@ export default async function QuotationPage({
             <div className="scroll-x">
               <table
                 className="w-full text-sm"
-                style={{ minWidth: isOwner ? (quotation.status === "DRAFT" ? 800 : 640) : 560 }}
+                style={{ minWidth: canPrice ? 800 : isOwner ? 640 : 560 }}
               >
                 <thead>
                   <tr className="text-[11px] uppercase tracking-wide text-muted">
@@ -112,7 +115,7 @@ export default async function QuotationPage({
                     {isOwner ? <th scope="col" className="border-b border-line px-3 py-2 text-right">Cost</th> : null}
                     <th scope="col" className="border-b border-line px-3 py-2 text-right">Unit price</th>
                     <th scope="col" className="border-b border-line px-3 py-2 text-right">Total</th>
-                    {isOwner && quotation.status === "DRAFT" ? <th scope="col" className="border-b border-line px-3 py-2 text-right">Set price</th> : null}
+                    {canPrice ? <th scope="col" className="border-b border-line px-3 py-2 text-right">Set price</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -137,7 +140,7 @@ export default async function QuotationPage({
                       ) : null}
                       <td className="border-b border-line/70 px-3 py-2.5 text-right align-top tabular">{formatMoney(line.unitPrice, quotation.currency)}</td>
                       <td className="border-b border-line/70 px-3 py-2.5 text-right align-top tabular">{formatMoney(line.lineTotal, quotation.currency)}</td>
-                      {isOwner && quotation.status === "DRAFT" ? (
+                      {canPrice ? (
                         <td className="border-b border-line/70 px-3 py-2 align-top">
                           <form action={updateQuotationPriceAction} className="flex items-center justify-end gap-1">
                             <input type="hidden" name="quotationId" value={quotation.id} />
@@ -160,19 +163,19 @@ export default async function QuotationPage({
                   <tr>
                     <td colSpan={isOwner ? 4 : 3} className="px-3 py-2 text-right text-xs text-muted">Subtotal</td>
                     <td className="px-3 py-2 text-right text-sm tabular text-ink">{formatMoney(quotation.subtotal, quotation.currency)}</td>
-                    {isOwner && quotation.status === "DRAFT" ? <td /> : null}
+                    {canPrice ? <td /> : null}
                   </tr>
                   {quotation.taxAmount > 0 ? (
                     <tr>
                       <td colSpan={isOwner ? 4 : 3} className="px-3 py-2 text-right text-xs text-muted">Tax</td>
                       <td className="px-3 py-2 text-right text-sm tabular text-ink">{formatMoney(quotation.taxAmount, quotation.currency)}</td>
-                      {isOwner && quotation.status === "DRAFT" ? <td /> : null}
+                      {canPrice ? <td /> : null}
                     </tr>
                   ) : null}
                   <tr>
                     <td colSpan={isOwner ? 4 : 3} className="px-3 py-2 text-right text-xs font-medium text-ink">Total</td>
                     <td className="px-3 py-2 text-right text-base font-semibold tabular text-ink">{formatMoney(quotation.total, quotation.currency)}</td>
-                    {isOwner && quotation.status === "DRAFT" ? <td /> : null}
+                    {canPrice ? <td /> : null}
                   </tr>
                 </tfoot>
               </table>

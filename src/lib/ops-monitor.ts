@@ -219,6 +219,10 @@ export async function runOpsCheck(): Promise<{ alerted: string[] }> {
     });
   }
 
+  const { runOrderReminderCheck } = await import("./orders/reminders");
+  const reminders = await runOrderReminderCheck(now).catch(() => ({ notified: 0 }));
+  if (reminders.notified > 0) alerted.push("order-reminders");
+
   await setSettingJson(CHECK_KEY, now.toISOString());
   return { alerted };
 }

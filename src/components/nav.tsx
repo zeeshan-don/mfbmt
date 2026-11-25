@@ -17,6 +17,7 @@ import {
   PlugZap,
   BarChart3,
   Send,
+  PackageCheck,
   Loader2,
 } from "lucide-react";
 
@@ -37,6 +38,7 @@ const items: NavItem[] = [
   { href: "/suppliers", label: "Suppliers", icon: Building2 },
   { href: "/suppliers/outreach", label: "Draft RFQs", icon: Send, ownerOnly: true },
   { href: "/approvals", label: "Approvals", icon: BadgeCheck, ownerOnly: true },
+  { href: "/orders", label: "Sales orders", icon: PackageCheck, ownerOnly: true },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/usage", label: "Usage & cost", icon: BarChart3, ownerOnly: true },
   { href: "/reports", label: "Reports", icon: BarChart3, ownerOnly: true },

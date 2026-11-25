@@ -85,7 +85,9 @@ export default async function ApprovalsPage({
                           ? "Supplier option"
                           : approval.type === "CUSTOMER_QUOTATION"
                             ? "Customer quotation"
-                            : "Supplier message"}
+                            : approval.type === "SUPPLIER_PO"
+                              ? "Supplier purchase order"
+                              : "Supplier message"}
                       </Badge>
                     </Td>
                     <Td>
@@ -138,7 +140,9 @@ export default async function ApprovalsPage({
                       ? "Supplier option"
                       : approval.type === "CUSTOMER_QUOTATION"
                         ? "Customer quotation"
-                        : "Supplier message"}{" "}
+                        : approval.type === "SUPPLIER_PO"
+                          ? "Supplier purchase order"
+                          : "Supplier message"}{" "}
                     · {approval.enquiry?.publicRef ?? "—"}
                   </p>
                   <p className="text-[11px] text-muted">

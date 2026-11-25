@@ -64,6 +64,15 @@ function ocrEnabled(): boolean {
   return env.OCR_PROVIDER !== "none";
 }
 
+/**
+ * A dedicated vision model is preferred, but the configured primary model may
+ * also accept images. Keep PDF rendering aligned with the model-selection rule
+ * used by the enquiry and supplier extraction callers.
+ */
+function visionModelAvailable(): boolean {
+  return env.AI_PROVIDER !== "none" && Boolean(env.AI_API_KEY) && Boolean(env.AI_VISION_MODEL.trim() || env.AI_MODEL.trim());
+}
+
 function ocrOptions(): { langPath?: string } {
   return env.OCR_LANG_PATH ? { langPath: env.OCR_LANG_PATH } : {};
 }
@@ -267,7 +276,7 @@ export async function extractPdf(buffer: Buffer): Promise<DocumentText> {
               // The digital pages remain usable; this page is reported below.
             }
           }
-        } else if (env.AI_VISION_MODEL.trim()) {
+        } else if (visionModelAvailable()) {
           for (const lowPage of lowTextPages.slice(0, MAX_VISION_IMAGES)) {
             try {
               const png = tasks.drawPageAsPNG(document, lowPage.page - 1, 200);
@@ -310,7 +319,7 @@ export async function extractPdf(buffer: Buffer): Promise<DocumentText> {
         // If a vision model is configured, send the rendered pages to it rather
         // than rejecting a valid scan because local OCR is off.
         const visionImages: string[] = [];
-        if (env.AI_VISION_MODEL.trim()) {
+        if (visionModelAvailable()) {
           const limit = Math.min(pageCount, MAX_VISION_IMAGES);
           for (let index = 0; index < limit; index += 1) {
             try {

@@ -616,6 +616,8 @@ export type SupplierAttachmentDocument = {
   status: DocumentText["status"];
   note: string | null;
   pageCount: number | null;
+  /** Actual rendered pages/photos; transient and never persisted as data URLs. */
+  images?: string[];
 };
 
 export type SupplierAttachmentEvidence = {
@@ -695,6 +697,7 @@ async function readSupplierAttachments(
       status: entry.analysis.status,
       note: entry.analysis.note,
       pageCount: entry.analysis.pageCount,
+      images: entry.analysis.images,
     }));
     const failures = [
       ...result.summary.failures.map((failure) => `${failure.filename}: ${failure.reason}`),
@@ -1282,12 +1285,13 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
   // enhancement, never a prerequisite: a provider failure leaves the
   // deterministic terms intact and the reply reviewable.
   const aiDocuments = attachmentReading.documents
-    .filter((document) => document.text.trim().length > 0)
+    .filter((document) => document.text.trim().length > 0 || (document.images?.length ?? 0) > 0)
     .map((document) => ({
       filename: document.filename,
       text: document.text,
       pageCount: document.pageCount,
       status: document.status,
+      images: document.images,
     }));
   let aiOutcome: SupplierExtractionOutcome = {
     status: "FAILED",
@@ -1639,24 +1643,28 @@ export async function enrichSupplierReplyAi(replyId: string): Promise<{
   });
   if (!reply) throw new Error("Supplier reply not found.");
 
-  const documents: Array<{ filename: string; text: string; pageCount: number | null; status: string }> = [];
+  const documents: Array<{ filename: string; text: string; pageCount: number | null; status: string; images?: string[] }> = [];
   for (const attachment of reply.attachments) {
     let text = attachment.textExtract ?? "";
     let pageCount = attachment.pageCount;
     let status = attachment.extractionStatus;
-    if (!text.trim() && attachment.storagePath) {
+    let images: string[] | undefined;
+    if (attachment.storagePath) {
       try {
+        // Re-read on an explicit owner retry to regenerate transient vision
+        // payloads. Image data URLs are intentionally not stored in the DB.
         const buffer = await readAttachment(attachment.storagePath);
         const doc = await extractDocument(buffer, attachment.filename);
-        text = doc.text;
-        pageCount = doc.pageCount;
+        text = doc.text.trim() ? doc.text : text;
+        pageCount = doc.pageCount ?? pageCount;
         status = doc.status;
+        images = doc.images;
         await db.attachment.update({
           where: { id: attachment.id },
           data: {
-            textExtract: doc.text.slice(0, 80_000),
-            pageCount: doc.pageCount,
-            extractionStatus: doc.status,
+            ...(doc.text.trim() ? { textExtract: doc.text.slice(0, 80_000) } : {}),
+            pageCount,
+            extractionStatus: status,
             extractionNote: doc.note,
           },
         });
@@ -1664,8 +1672,8 @@ export async function enrichSupplierReplyAi(replyId: string): Promise<{
         // Keep the original attachment record; a failed re-read is reviewable.
       }
     }
-    if (text.trim()) {
-      documents.push({ filename: attachment.filename, text, pageCount, status });
+    if (text.trim() || (images?.length ?? 0) > 0) {
+      documents.push({ filename: attachment.filename, text, pageCount, status, images });
     }
   }
 

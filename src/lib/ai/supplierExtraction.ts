@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { env } from "../env";
 import { completeJson, aiStatus, DATA_ONLY_RULE, type AIUsageSnapshot } from "./provider";
 
 /**
@@ -126,6 +127,8 @@ export type SupplierAiDocument = {
   text: string;
   pageCount?: number | null;
   status?: string | null;
+  /** Rendered/scanned pages or original photographs as bounded data URLs. */
+  images?: string[];
 };
 
 export type SupplierAiInput = {
@@ -147,6 +150,23 @@ export type SupplierExtractionOutcome =
 
 const MAX_DOCUMENT_CHARS = 8_000;
 const MAX_TOTAL_DOCUMENT_CHARS = 40_000;
+const MAX_SUPPLIER_VISION_IMAGES = 6;
+
+/** Keeps visual payloads bounded and avoids sending the same page twice. */
+export function collectSupplierVisionImages(documents: SupplierAiDocument[]): string[] {
+  const seen = new Set<string>();
+  const images: string[] = [];
+  for (const document of documents) {
+    for (const image of document.images ?? []) {
+      if (!image.startsWith("data:image/")) continue;
+      if (seen.has(image)) continue;
+      seen.add(image);
+      images.push(image);
+      if (images.length >= MAX_SUPPLIER_VISION_IMAGES) return images;
+    }
+  }
+  return images;
+}
 
 function asNull(value: string | null | undefined): string | null {
   const trimmed = (value ?? "").trim();
@@ -203,10 +223,13 @@ function documentsBlock(documents: SupplierAiDocument[]): string {
     const limit = Math.min(MAX_DOCUMENT_CHARS, budget);
     const text = document.text.slice(0, limit);
     budget -= text.length;
+    const visualNote = document.images?.length
+      ? `\n[${document.images.length} visual page/image(s) from this attachment are supplied separately to the vision model.]`
+      : "";
     parts.push(
       `<document filename="${document.filename.replace(/"/g, "'")}" pages="${
         document.pageCount ?? "unknown"
-      }" status="${document.status ?? "unknown"}">\n${text}\n</document>`,
+      }" status="${document.status ?? "unknown"}">\n${text}${visualNote}\n</document>`,
     );
   }
   return parts.join("\n\n");
@@ -230,7 +253,8 @@ export async function extractSupplierQuotation(input: SupplierAiInput): Promise<
           .join("\n")
       : "<rfq_item_list empty=\"true\" />";
 
-  const result = await completeJson(
+  const visionImages = collectSupplierVisionImages(input.documents);
+  const request = (includeVision: boolean) => completeJson(
     {
       system:
         "You read supplier replies for an industrial building-materials trading company in the UAE. " +
@@ -245,6 +269,7 @@ export async function extractSupplierQuotation(input: SupplierAiInput): Promise<
         "Preserve alternative or equivalent products as separate quoted_items; never merge them into the requested item. " +
         "Preserve technical differences from the RFQ instead of normalizing them away. " +
         "Read Arabic, English and mixed Arabic/English documents, tables, multiple worksheets and scanned text. " +
+        "When visual pages are supplied, inspect the actual image for table layout, handwritten annotations, stamps, dimensions and prices; do not rely only on OCR text. " +
         "For every quoted item include evidence: source filename (or 'email body'), page/worksheet/row/cell locator when known, a short verbatim quote, and the reading method. " +
         "matched_rfq_item_ref may only use one of the refs supplied in <rfq_item_list>; otherwise null. " +
         "Never decide which RFQ the email belongs to; the application does that deterministically. " +
@@ -269,10 +294,27 @@ export async function extractSupplierQuotation(input: SupplierAiInput): Promise<
         '"clarifications_required":[],"extraction_confidence":null,"notes":null}',
       maxTokens: 4_000,
       temperature: 0,
+      model: includeVision && visionImages.length > 0
+        ? (env.AI_VISION_MODEL.trim() || env.AI_MODEL)
+        : undefined,
+      images: includeVision && visionImages.length > 0 ? visionImages : undefined,
       jobType: "supplier.reply.extraction",
     },
     SupplierQuotationExtractionSchema,
   );
+
+  let result = await request(visionImages.length > 0);
+  // A provider may be configured for text-only completion. If it explicitly
+  // rejects multimodal input, retry once with the already-extracted text; do
+  // not repeat on budget blocks, rate limits or transient server failures.
+  if (
+    !result.ok &&
+    visionImages.length > 0 &&
+    !result.budgetBlocked &&
+    /returned 400|image|vision|multimodal|unsupported|not support/i.test(result.error)
+  ) {
+    result = await request(false);
+  }
 
   if (!result.ok) {
     if (result.notConfigured) return { status: "NOT_CONFIGURED", error: result.error };

@@ -22,7 +22,7 @@ export default async function LoginPage({
       <div className="w-full max-w-sm">
         <div className="mb-8">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
-            {organization?.name ?? "ZeeshStudios"}
+            {organization?.name ?? "MFBMT"}
           </p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink">Procurement Intelligence</h1>
           <p className="mt-2 text-sm text-muted">
