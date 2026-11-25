@@ -152,6 +152,126 @@ type FetchFailure = { ok: false; text: ""; status: "ROBOTS_DISALLOWED" | "FAILED
  * addresses. Redirects are followed manually, so an unvalidated Location header
  * is never followed by the HTTP client itself.
  */
+export type PublicResource =
+  | {
+      ok: true;
+      status: "OK";
+      finalUrl: string;
+      contentType: string;
+      body: Buffer;
+      text: string;
+      links: string[];
+      truncated: boolean;
+    }
+  | FetchFailure;
+
+/**
+ * Fetches a public HTML page or a public document (PDF/XLSX/image/text) for
+ * supplier research. The same SSRF, DNS, redirect, robots, timeout and
+ * content-type rules as fetchPublicPage apply. The caller decides whether a
+ * document type is supported.
+ */
+export async function fetchPublicResource(
+  raw: string,
+  options: { maxBytes?: number; timeoutMs?: number } = {},
+): Promise<PublicResource> {
+  const maxBytes = Math.max(10_000, Math.min(options.maxBytes ?? 750_000, 2_000_000));
+  const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? env.SEARCH_REQUEST_TIMEOUT_MS, 60_000));
+  let current = raw;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    if (!isSafePublicUrl(current)) return { ok: false, text: "", status: "FAILED", note: "URL is not allowed." };
+    const url = new URL(current);
+    if (!(await hostResolvesPublic(url.hostname))) {
+      return { ok: false, text: "", status: "FAILED", note: "The address resolves to a non-public network." };
+    }
+    if (!(await robotsAllows(current))) {
+      return { ok: false, text: "", status: "ROBOTS_DISALLOWED", note: "The site's robots.txt disallows automated reading." };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(current, {
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "text/html,application/xhtml+xml,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/jpeg,image/png,image/webp",
+        },
+        signal: controller.signal,
+        redirect: "manual",
+        cache: "no-store",
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) return { ok: false, text: "", status: "FAILED", note: `HTTP ${response.status} without a location.` };
+        const next = new URL(location, current).toString();
+        if (!isSafePublicUrl(next)) {
+          return { ok: false, text: "", status: "FAILED", note: "A redirect pointed to a disallowed address." };
+        }
+        current = next;
+        continue;
+      }
+      if (!response.ok) return { ok: false, text: "", status: "FAILED", note: `HTTP ${response.status}` };
+      const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+      const allowed =
+        contentType.includes("text/html") ||
+        contentType.includes("application/xhtml+xml") ||
+        contentType.includes("text/plain") ||
+        contentType.includes("application/pdf") ||
+        contentType.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") ||
+        contentType.includes("application/vnd.ms-excel") ||
+        contentType.includes("text/csv") ||
+        contentType.includes("image/jpeg") ||
+        contentType.includes("image/png") ||
+        contentType.includes("image/webp");
+      if (!allowed) {
+        return { ok: false, text: "", status: "FAILED", note: `Content type is not supported: ${contentType.slice(0, 80)}` };
+      }
+
+      const reader = response.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+      let truncated = false;
+      if (reader) {
+        while (received < maxBytes) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.length;
+            if (received >= maxBytes) truncated = true;
+          }
+        }
+        await reader.cancel().catch(() => undefined);
+      }
+      const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+      const htmlLike = contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
+      const links = htmlLike
+        ? [...body.toString("utf8").matchAll(/<a\b[^>]*href=["']([^"']+)["']/gi)].map((match) => match[1]).slice(0, 150)
+        : [];
+      return {
+        ok: true,
+        status: "OK",
+        finalUrl: current,
+        contentType,
+        body,
+        text: htmlLike ? htmlToText(body.toString("utf8")).slice(0, 120_000) : body.toString("utf8"),
+        links,
+        truncated,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        text: "",
+        status: "FAILED",
+        note: error instanceof Error ? error.message.slice(0, 120) : "Fetch failed",
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { ok: false, text: "", status: "FAILED", note: "Too many redirects." };
+}
+
 export async function fetchPublicPage(raw: string): Promise<
   | { ok: true; text: string; status: "OK"; finalUrl: string; links: string[] }
   | FetchFailure

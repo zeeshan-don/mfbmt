@@ -12,7 +12,11 @@ import {
   linkSupplierReplySupplierAction,
   markSupplierReplyItemIrrelevantAction,
   reprocessSupplierReplyAction,
+  reprocessSupplierReplyDocumentsAction,
+  markSupplierDocumentPageUnreadableAction,
 } from "@/app/actions/supplierReplies";
+import { DocumentReviewCard } from "@/components/document-review";
+import type { DocumentPackageSummary } from "@/lib/intake/documentIntelligence";
 
 export const dynamic = "force-dynamic";
 
@@ -95,6 +99,7 @@ type Correlation = {
   possible?: Array<{ quoteId: string; confidence: number; method: string }>;
   attachmentFailures?: string[];
   documentExtraction?: Array<{ filename: string; status: string; note?: string | null; sourceRefs?: string[] }>;
+  documentPackage?: DocumentPackageSummary | null;
   offerIds?: string[];
   aiExtraction?: {
     status?: string | null;
@@ -161,6 +166,7 @@ export default async function SupplierRepliesPage({
     include: {
       supplier: { select: { name: true, email: true } },
       supplierQuote: { select: { id: true } },
+      attachments: true,
     },
   });
 
@@ -304,6 +310,16 @@ export default async function SupplierRepliesPage({
                   <p className="whitespace-pre-wrap break-words text-xs text-soft">
                     {truncate(reply.bodySummary ?? "", 600)}
                   </p>
+
+                  <DocumentReviewCard
+                    attachments={reply.attachments}
+                    summary={correlation.documentPackage ?? null}
+                    action={reprocessSupplierReplyDocumentsAction}
+                    pageFlagAction={markSupplierDocumentPageUnreadableAction}
+                    idField="replyId"
+                    idValue={reply.id}
+                    title="Supplier documents"
+                  />
 
                   <div className="rounded-control border border-line bg-elevated/40 px-2 py-1.5">
                     <p className="text-[11px] text-soft">

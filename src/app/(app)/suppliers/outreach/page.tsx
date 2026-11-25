@@ -2,6 +2,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
 import { formatDateTime, formatMoney, truncate } from "@/lib/format";
+import { parseJson } from "@/lib/json";
 import { supplierDailyUsage } from "@/lib/suppliers/sendGuard";
 import { Badge, Button, Card, CardHeader, EmptyState, Notice, PageHeader } from "@/components/ui";
 import { approveSupplierDraftsAction } from "@/app/actions/supplierOutreach";
@@ -60,14 +61,20 @@ export default async function SupplierOutreachPage({
           <form action={approveSupplierDraftsAction} className="divide-y divide-line">
             {drafts.map((draft) => {
               const blocked = draft.supplier.doNotContact || draft.supplier.status === "BLOCKED";
+              const quality = parseJson<{ findings?: Array<{ severity: string; message: string }> }>(
+                draft.draftQualityJson ?? "{}",
+                {},
+              );
+              const qualityErrors = (quality.findings ?? []).filter((finding) => finding.severity === "error");
+              const disabled = blocked || qualityErrors.length > 0;
               return (
                 <label key={draft.id} className="flex cursor-pointer gap-3 px-4 py-3 hover:bg-elevated/50">
                   <input
                     type="checkbox"
                     name="quoteIds"
                     value={draft.id}
-                    disabled={blocked}
-                    defaultChecked={!blocked}
+                    disabled={disabled}
+                    defaultChecked={!disabled}
                     className="mt-1 h-4 w-4 shrink-0"
                   />
                   <span className="min-w-0 flex-1">
@@ -91,7 +98,18 @@ export default async function SupplierOutreachPage({
                         {draft.items[0].unitPrice != null ? ` · ${formatMoney(draft.items[0].unitPrice, draft.items[0].currency ?? "AED")}` : ""}
                       </span>
                     ) : null}
+                    {qualityErrors.length > 0 ? (
+                      <span className="mt-1 block text-[11px] text-danger">
+                        Quality check: {qualityErrors.map((finding) => finding.message).join(" ")}
+                      </span>
+                    ) : null}
                     {draft.lastError ? <span className="mt-1 block text-[11px] text-danger">{draft.lastError}</span> : null}
+                    <Link
+                      href={`/suppliers/outreach/${draft.id}`}
+                      className="mt-1 inline-block text-[11px] text-accent hover:underline"
+                    >
+                      Inspect and edit this message
+                    </Link>
                     {blocked ? (
                       <span className="mt-1 block text-[11px] text-warn">
                         This supplier is excluded from contact. Clear the block on the supplier record only if that is intended.

@@ -4,6 +4,7 @@ import { claimJob, completeJob, failJob, heartbeatJob, releaseExpiredJobs, LEASE
 import { processInboundMessage, extractEnquiryById, checkEnquiryInventory } from "./enquiry";
 import { ensureSourcingApproval } from "./approvals";
 import { runSourcingForItem } from "../sourcing/engine";
+import { resumeDeepResearchRun, runDeepResearchForItem } from "../sourcing/research/engine";
 import { sendSupplierQuoteRequest, sendSupplierReminder } from "./supplierQuotes";
 import { JOB_TYPES } from "../constants";
 import { runWithTenant } from "../tenant";
@@ -38,6 +39,43 @@ export async function processJob(jobId: string, workerId: string): Promise<{ ok:
         }`,
       };
     }
+    case JOB_TYPES.REPROCESS_DOCUMENTS: {
+      if (payload.enquiryId) {
+        const result = await extractEnquiryById(payload.enquiryId, { forceDocumentProcessing: true });
+        return {
+          ok: true,
+          message: `Documents re-read; ${result.items} product line${result.items === 1 ? "" : "s"} retained`,
+        };
+      }
+      if (payload.supplierReplyId) {
+        const reply = await db.supplierEmailReply.findUnique({
+          where: { id: payload.supplierReplyId },
+          include: { attachments: true },
+        });
+        if (!reply) throw new Error("Supplier reply not found");
+        const { processDocumentPackage } = await import("../intake/documentPackage");
+        await processDocumentPackage({
+          key: `supplier-reply:${reply.id}`,
+          supplierReplyId: reply.id,
+          force: true,
+          attachments: reply.attachments.map((attachment) => ({
+            id: attachment.id,
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            storagePath: attachment.storagePath,
+            sha256: attachment.sha256,
+            sizeBytes: attachment.sizeBytes,
+          })),
+        });
+        const { enrichSupplierReplyAi } = await import("./supplierReply");
+        const ai = await enrichSupplierReplyAi(reply.id);
+        return {
+          ok: true,
+          message: `Supplier documents re-read; AI pass ${ai.status.toLowerCase()}`,
+        };
+      }
+      throw new Error("Missing enquiryId or supplierReplyId");
+    }
     case JOB_TYPES.CHECK_INVENTORY: {
       if (!payload.enquiryId) throw new Error("Missing enquiryId");
       const count = await checkEnquiryInventory(payload.enquiryId);
@@ -50,6 +88,26 @@ export async function processJob(jobId: string, workerId: string): Promise<{ ok:
         await ensureSourcingApproval(payload.enquiryItemId);
       }
       return { ok: result.status !== "FAILED", message: result.message };
+    }
+    case JOB_TYPES.RUN_DEEP_RESEARCH: {
+      const result = payload.runId
+        ? await resumeDeepResearchRun(payload.runId, {})
+        : payload.enquiryItemId
+          ? await runDeepResearchForItem(payload.enquiryItemId, {
+              maxRounds: payload.maxRounds ? Number(payload.maxRounds) : undefined,
+              maxQueries: payload.maxQueries ? Number(payload.maxQueries) : undefined,
+              maxUrls: payload.maxUrls ? Number(payload.maxUrls) : undefined,
+              maxPagesPerDomain: payload.maxPagesPerDomain ? Number(payload.maxPagesPerDomain) : undefined,
+              maxConcurrentPages: payload.maxConcurrentPages ? Number(payload.maxConcurrentPages) : undefined,
+              budgetAed: payload.budgetAed ? Number(payload.budgetAed) : undefined,
+            })
+          : (() => {
+              throw new Error("Missing enquiryItemId");
+            })();
+      return {
+        ok: result.status !== "FAILED",
+        message: `${result.message} Queries: ${result.queries}; pages: ${result.pages}.`,
+      };
     }
     case JOB_TYPES.SEND_SUPPLIER_RFQ: {
       if (!payload.supplierQuoteId) throw new Error("Missing supplierQuoteId");

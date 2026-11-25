@@ -14,6 +14,7 @@ import {
 import { formatDate, formatDateTime, formatMoney, formatQty, timeAgo, truncate } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, Notice, PageHeader, inputClass, statusTone, textareaClass } from "@/components/ui";
 import { approveOfferAction, createSupplierQuoteAction, recordManualOfferAction, requestMoreQuotesAction } from "@/app/actions/sourcing";
+import { DeepResearchPanel } from "./research-panel";
 import { priceMemoryForDescription } from "@/lib/pricing/memory";
 import { rankSuppliersForRequest } from "@/lib/suppliers/ranking";
 import { CheckCircle2, ExternalLink, Info } from "lucide-react";
@@ -44,7 +45,16 @@ export default async function SourcingDetailPage({
   searchParams,
 }: {
   params: Promise<{ itemId: string }>;
-  searchParams: Promise<{ error?: string; saved?: string; approved?: string; queued?: string; requested?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    saved?: string;
+    approved?: string;
+    queued?: string;
+    requested?: string;
+    deepQueued?: string;
+    deepCancelled?: string;
+    deepResumed?: string;
+  }>;
 }) {
   const user = await requirePermission("sourcing.view");
   const canViewCosts = canSeeSupplierCosts(user);
@@ -95,10 +105,21 @@ export default async function SourcingDetailPage({
     session?.sourcesJson ?? "[]",
     [],
   );
-  const summary = parseJson<{ suppliers?: number; results?: number; offers?: number; exactMatches?: number; rankableOffers?: number }>(
-    session?.summaryJson ?? "{}",
-    {},
-  );
+  const summary = parseJson<{
+    suppliers?: number;
+    supplierCandidates?: number;
+    suppliersWithEvidence?: number;
+    existingSupplierRecords?: number;
+    results?: number;
+    uniqueResults?: number;
+    offers?: number;
+    exactMatches?: number;
+    compatibleMatches?: number;
+    possibleMatches?: number;
+    noMatchResults?: number;
+    unverifiedResults?: number;
+    rankableOffers?: number;
+  }>(session?.summaryJson ?? "{}", {});
 
   const isOwner = user.role === "OWNER";
 
@@ -134,6 +155,11 @@ export default async function SourcingDetailPage({
       {flags.approved ? <Notice tone="ok">Supplier approved for this product. This is approval to use the option — no purchase order has been placed.</Notice> : null}
       {flags.queued ? <Notice tone="info">Another supplier search has been queued.</Notice> : null}
       {flags.requested ? <Notice tone="info">Supplier quotation request prepared. It will be sent once approved.</Notice> : null}
+      {flags.deepQueued ? <Notice tone="info">Deep research has been queued. It will search, read supplier pages and save evidence as it goes.</Notice> : null}
+      {flags.deepResumed ? <Notice tone="info">Deep research will resume from the saved work; completed searches and pages are not repeated.</Notice> : null}
+      {flags.deepCancelled ? <Notice tone="info">Research cancelled. Any evidence already found has been kept.</Notice> : null}
+
+      <DeepResearchPanel itemId={item.id} isOwner={user.role === "OWNER"} />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Card className="px-4 py-3">
@@ -228,13 +254,13 @@ export default async function SourcingDetailPage({
 
       <Card>
         <CardHeader
-          title="Supplier comparison"
-          description="Compared by total estimated landed cost, not the advertised unit price."
+          title="Quick Search — supplier comparison"
+          description="Quick Search compares listings by total estimated landed cost, not the advertised unit price. Use Deep Research above when you need specification evidence from supplier pages and catalogues."
           action={
             isOwner ? (
               <form action={requestMoreQuotesAction}>
                 <input type="hidden" name="itemId" value={item.id} />
-                <Button size="sm">Search again</Button>
+                <Button size="sm">Run Quick Search</Button>
               </form>
             ) : undefined
           }
@@ -459,12 +485,34 @@ export default async function SourcingDetailPage({
           ) : (
             <div className="space-y-3 px-4 py-3">
               <p className="text-xs text-soft">
-                {summary.suppliers ?? 0} supplier{(summary.suppliers ?? 0) === 1 ? "" : "s"} found across{" "}
-                {coverage.filter((entry) => entry.status === "OK").length} connected source
-                {coverage.filter((entry) => entry.status === "OK").length === 1 ? "" : "s"} ·{" "}
-                {summary.results ?? 0} result{(summary.results ?? 0) === 1 ? "" : "s"} · {summary.exactMatches ?? 0} exact match
-                {(summary.exactMatches ?? 0) === 1 ? "" : "es"}
+                {summary.suppliersWithEvidence ?? summary.suppliers ?? 0} supplier candidate
+                {(summary.suppliersWithEvidence ?? summary.suppliers ?? 0) === 1 ? "" : "s"} with relevant product evidence ·{" "}
+                {summary.supplierCandidates ?? 0} unique supplier site
+                {(summary.supplierCandidates ?? 0) === 1 ? "" : "s"} seen · {summary.results ?? 0} listing
+                {(summary.results ?? 0) === 1 ? "" : "s"} checked
               </p>
+              <p className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted">
+                <span>{summary.exactMatches ?? 0} exact</span>
+                <span>{summary.compatibleMatches ?? 0} compatible</span>
+                <span>{summary.possibleMatches ?? 0} possible</span>
+                <span>{summary.noMatchResults ?? 0} incompatible</span>
+                <span>{summary.unverifiedResults ?? 0} unverified</span>
+                {summary.existingSupplierRecords != null ? (
+                  <span>{summary.existingSupplierRecords} listing(s) from your records</span>
+                ) : null}
+              </p>
+              {(summary.suppliersWithEvidence ?? 0) === 0 && (summary.results ?? 0) > 0 ? (
+                <p className="rounded-control border border-warn/30 bg-warn/5 px-3 py-2 text-[11px] text-soft">
+                  The listings were checked but none contained enough verified evidence to call it a matching supplier
+                  product. They are shown as possible leads only; confirm the specification with the supplier.
+                </p>
+              ) : null}
+              {(summary.existingSupplierRecords ?? 0) === 0 && coverage.some((entry) => entry.adapter === "INTERNAL_SUPPLIERS") ? (
+                <p className="text-[11px] text-muted">
+                  Your supplier records returned no matching products. That means no matching supplier product is recorded
+                  in your directory — not that no supplier exists. Add supplier products or rely on public search.
+                </p>
+              ) : null}
               <ul className="space-y-2">
                 {coverage.map((entry) => (
                   <li key={entry.adapter} className="flex items-start justify-between gap-3 rounded-card border border-line px-3 py-2">
@@ -479,9 +527,13 @@ export default async function SourcingDetailPage({
                     <Badge tone={statusTone(entry.status)}>
                       {entry.status === "OK"
                         ? "Searched"
-                        : entry.status === "NOT_CONFIGURED"
-                          ? "Not connected"
-                          : entry.status.toLowerCase()}
+                        : entry.status === "PARTIAL"
+                          ? "Partly searched"
+                          : entry.status === "NOT_CONFIGURED"
+                            ? "Not connected"
+                            : entry.status === "SKIPPED"
+                              ? "Not run"
+                              : entry.status.toLowerCase()}
                     </Badge>
                   </li>
                 ))}

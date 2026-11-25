@@ -3,13 +3,12 @@ import { writeAudit } from "../audit";
 import { sha256 } from "../crypto";
 import { parseJson, stringifyJson } from "../json";
 import { classifyMessage } from "../ai/classify";
-import { extractEnquiry, type SourceDocument } from "../ai/extract";
-import { extractDocument } from "../intake/documents";
+import { extractEnquiry, EXTRACTION_PROMPT_VERSION, type SourceDocument } from "../ai/extract";
+import { itemDedupeKey } from "../ai/segmentation";
+import { processDocumentPackage } from "../intake/documentPackage";
 import {
   assertAllowedUpload,
   saveAttachmentForOrganization,
-  readAttachment,
-  sniffType,
   storageReadiness,
 } from "../storage";
 import { requireTenantId } from "../tenant";
@@ -230,7 +229,7 @@ export async function ingestInboundMessage(input: IngestInput): Promise<IngestRe
   }
   for (const file of input.attachments ?? []) {
     if (!readiness.ok) break;
-    const check = assertAllowedUpload(file.buffer, file.filename);
+    const check = assertAllowedUpload(file.buffer, file.filename, { allowUnsupported: true });
     if (!check.ok) {
       warnings.push(`${file.filename}: ${check.error}`);
       continue;
@@ -300,7 +299,7 @@ async function resolvePendingMedia(message: {
     const filename =
       ref.filename ??
       `whatsapp-${ref.id}.${ref.mimeType.includes("pdf") ? "pdf" : (ref.mimeType.split("/")[1] ?? "bin").split(";")[0]}`;
-    const check = assertAllowedUpload(result.buffer, filename);
+    const check = assertAllowedUpload(result.buffer, filename, { allowUnsupported: true });
     if (!check.ok) {
       failures.push(`${filename}: ${check.error}`);
       continue;
@@ -525,7 +524,10 @@ export async function processInboundMessage(messageId: string): Promise<{ outcom
 }
 
 /** Reads attachments, extracts line items, checks stock and queues sourcing. */
-export async function extractEnquiryById(enquiryId: string): Promise<{ items: number; requiresReview: boolean }> {
+export async function extractEnquiryById(
+  enquiryId: string,
+  options: { forceDocumentProcessing?: boolean } = {},
+): Promise<{ items: number; requiresReview: boolean }> {
   const enquiry = await db.enquiry.findUnique({
     where: { id: enquiryId },
     include: { attachments: true, items: true },
@@ -534,71 +536,78 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
 
   await db.enquiry.update({ where: { id: enquiry.id }, data: { status: "EXTRACTING" } });
 
+  const sourceMessage = await db.message.findUnique({ where: { enquiryId: enquiry.id } });
+  const previouslyRead = new Set(
+    enquiry.attachments.filter((attachment) => Boolean(attachment.textExtract)).map((attachment) => attachment.id),
+  );
   const documents: SourceDocument[] = [];
   const newlyExtractedDocs: SourceDocument[] = [];
-  for (const attachment of enquiry.attachments) {
-    if (!attachment.textExtract) {
-      try {
-        const buffer = await readAttachment(attachment.storagePath);
-        const doc = await extractDocument(buffer, attachment.filename);
-        await db.attachment.update({
-          where: { id: attachment.id },
-          data: {
-            textExtract: doc.text.slice(0, 80_000),
-            pageCount: doc.pageCount,
-            extractionStatus: doc.status,
-            extractionNote: doc.note,
-            detectedMime: sniffType(buffer).mime,
-          },
-        });
-        if (doc.text || doc.unreadable || (doc.images?.length ?? 0) > 0) {
-          const sourceDoc = {
-            filename: attachment.filename,
-            kind: attachment.mimeType.includes("pdf")
+
+  if (enquiry.attachments.length > 0) {
+    try {
+      const packageResult = await processDocumentPackage({
+        key: `enquiry:${enquiry.id}`,
+        enquiryId: enquiry.id,
+        messageId: sourceMessage?.id ?? null,
+        force: options.forceDocumentProcessing,
+        attachments: enquiry.attachments.map((attachment) => ({
+          id: attachment.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          storagePath: attachment.storagePath,
+          sha256: attachment.sha256,
+          sizeBytes: attachment.sizeBytes,
+        })),
+      });
+      for (const entry of packageResult.documents) {
+        const analysis = entry.analysis;
+        if (!analysis.text && !analysis.unreadable && !(analysis.images?.length ?? 0)) continue;
+        const sourceDoc: SourceDocument = {
+          filename: entry.filename,
+          kind:
+            analysis.format === "PDF"
               ? "pdf"
-              : attachment.mimeType.includes("image")
+              : ["JPEG", "PNG", "WEBP", "HEIC", "TIFF", "BMP", "GIF"].includes(analysis.format)
                 ? "image"
-                : attachment.mimeType.includes("sheet") || attachment.mimeType.includes("excel") || attachment.mimeType.includes("csv")
+                : ["XLSX", "CSV", "TSV"].includes(analysis.format)
                   ? "excel"
                   : "text",
-            text: doc.text,
-            pageCount: doc.pageCount,
-            unreadable: doc.unreadable,
-            images: doc.images,
-          } as SourceDocument;
-          documents.push(sourceDoc);
-          newlyExtractedDocs.push(sourceDoc);
-        }
-      } catch (error) {
-        await db.attachment.update({
-          where: { id: attachment.id },
-          data: {
-            extractionStatus: "FAILED",
-            extractionNote: error instanceof Error ? error.message.slice(0, 300) : "Could not read the file.",
-          },
-        });
+          text: analysis.text,
+          pageCount: analysis.pageCount,
+          pages: analysis.pages,
+          unreadable: analysis.unreadable,
+          images: analysis.images,
+        };
+        documents.push(sourceDoc);
+        if (!previouslyRead.has(entry.attachmentId)) newlyExtractedDocs.push(sourceDoc);
       }
-    } else {
-      documents.push({
-        filename: attachment.filename,
-        kind: attachment.mimeType.includes("pdf")
-          ? "pdf"
-          : attachment.mimeType.includes("image")
-            ? "image"
-            : attachment.mimeType.includes("sheet") || attachment.mimeType.includes("excel") || attachment.mimeType.includes("csv")
-              ? "excel"
-              : "text",
-        text: attachment.textExtract,
-        pageCount: attachment.pageCount,
-        unreadable: attachment.extractionStatus === "NEEDS_REVIEW",
+    } catch (error) {
+      // The message and original files must survive a package-level failure.
+      // Existing extraction rows remain usable, and the owner can retry.
+      console.error("[enquiry] document package processing failed", {
+        enquiryId: enquiry.id,
+        error: error instanceof Error ? error.message.slice(0, 200) : "unknown",
       });
+      await writeAudit({
+        action: "documents.package_failed",
+        entityType: "Enquiry",
+        entityId: enquiry.id,
+        actorLabel: "system",
+        meta: { attachments: enquiry.attachments.length },
+      }).catch(() => undefined);
     }
   }
 
-  // Only a failed read holds the request back. A file that was read with a
-  // caveat (OCR used, layout guessed) is not a failed extraction.
+  // Failed, partial and password-protected files all need a human look. A
+  // successful OCR read is still a caveat, but it does not erase the lines.
   const unreadableFiles = await db.attachment.count({
-    where: { enquiryId: enquiry.id, extractionStatus: "FAILED" },
+    where: {
+      enquiryId: enquiry.id,
+      OR: [
+        { extractionStatus: "FAILED" },
+        { processingStatus: { in: ["FAILED", "PARTIAL", "NEEDS_REVIEW", "PASSWORD_PROTECTED"] } },
+      ],
+    },
   });
 
   if (enquiry.items.length > 0 && newlyExtractedDocs.length === 0) {
@@ -625,11 +634,13 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
     return { items: refreshed.length, requiresReview: needsReview };
   }
 
-  const sourceMessage = await db.message.findUnique({ where: { enquiryId: enquiry.id } });
   const organization = await getCurrentOrganization();
   const industrialSpecs = organization?.procurementProfile === "INDUSTRIAL";
   const limits = await getOrgLimits();
-  const extractionText = enquiry.items.length > 0 ? "" : enquiry.rawText;
+  // The body is never dropped when an attachment exists: it may carry urgency,
+  // a requested delivery window, certifications, shipping instructions or even
+  // genuine product lines that are absent from the attachment.
+  const extractionText = enquiry.rawText;
   const extractionDocuments = enquiry.items.length > 0 ? newlyExtractedDocs : documents;
   let extraction = await extractEnquiry(
     {
@@ -664,8 +675,39 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
       }
     }
   }
-  let lineNo = 1;
+  if (enquiry.attachments.length > 0) {
+    // Record which semantic prompt produced the product lines, so a later model
+    // or prompt upgrade can identify attachments that need a controlled re-run.
+    await db.attachment.updateMany({
+      where: { enquiryId: enquiry.id },
+      data: { promptVersion: `${EXTRACTION_PROMPT_VERSION}:${env.AI_MODEL}` },
+    });
+  }
+
+  // A later attachment may repeat the original request. Keep the existing
+  // lines and add only genuinely new requests.
+  const existingKeys = new Set(
+    enquiry.items.map((item) =>
+      itemDedupeKey({
+        description: item.description,
+        quantity: item.quantity,
+        unit: item.unit,
+        size: item.size,
+        material: item.material,
+        grade: item.grade,
+        pressureRating: item.pressureRating,
+        schedule: item.schedule,
+        standard: item.standard,
+      }),
+    ),
+  );
+  let lineNo = await db.enquiryItem.count({ where: { enquiryId: enquiry.id } }).then((count) => count + 1);
+  let addedItems = 0;
   for (const item of extraction.items) {
+    const key = itemDedupeKey(item);
+    if (existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    addedItems += 1;
     const created = await db.enquiryItem.create({
       data: {
         enquiryId: enquiry.id,
@@ -702,12 +744,30 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
     });
     await applyInventoryCheck(created.id);
   }
+  await writeAudit({
+    action: "enquiry.items_extracted",
+    entityType: "Enquiry",
+    entityId: enquiry.id,
+    actorLabel: extraction.source === "ai" ? "ai" : "rule-parser",
+    meta: {
+      candidates: extraction.items.length,
+      added: addedItems,
+      duplicatesSkipped: extraction.items.length - addedItems,
+      source: extraction.source,
+    },
+  });
 
   const items = await db.enquiryItem.findMany({ where: { enquiryId: enquiry.id } });
   // Incomplete attributes stay on their line (they already carry a clarification
   // question and are never sourced). Flagging the whole request for them made
   // every ordinary quotation look broken.
   const requiresReview = items.length === 0 || unreadableFiles > 0 || extraction.source === "rule";
+
+  const context = extraction.extraction.customerContext;
+  const requestedDeliveryDate =
+    extraction.extraction.deliveryDate && /^\d{4}-\d{2}-\d{2}/.test(extraction.extraction.deliveryDate)
+      ? new Date(extraction.extraction.deliveryDate)
+      : null;
 
   await db.enquiry.update({
     where: { id: enquiry.id },
@@ -716,6 +776,11 @@ export async function extractEnquiryById(enquiryId: string): Promise<{ items: nu
       requiresReview,
       extractionConfidence: extraction.extraction.classificationConfidence,
       extractedJson: stringifyJson(extraction.extraction),
+      deliveryLocation: context?.deliveryLocation ?? extraction.extraction.deliveryLocation ?? undefined,
+      deliveryDate: requestedDeliveryDate ?? undefined,
+      urgency: context?.urgency ?? null,
+      requestedDeliveryTimeframe: context?.requestedDeliveryTimeframe ?? null,
+      customerInstructionsJson: stringifyJson(context?.instructions ?? []),
       reviewReason: requiresReview
         ? unreadableFiles > 0
           ? "Some attachments need a quick check. Please compare the products with the original document."

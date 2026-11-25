@@ -96,7 +96,14 @@ export default async function SettingsPage({
     db.enquiry.count({ where: { channel: "EMAIL" } }),
     db.supplierEmailReply.count(),
     db.message.count({ where: { channel: "EMAIL", processingStatus: "IGNORED" } }),
-    db.attachment.count({ where: { extractionStatus: { in: ["FAILED", "NEEDS_REVIEW"] } } }),
+    db.attachment.count({
+      where: {
+        OR: [
+          { extractionStatus: { in: ["FAILED", "NEEDS_REVIEW"] } },
+          { processingStatus: { in: ["FAILED", "PARTIAL", "NEEDS_REVIEW", "PASSWORD_PROTECTED"] } },
+        ],
+      },
+    }),
   ]);
 
   const rows: IntegrationRow[] = [

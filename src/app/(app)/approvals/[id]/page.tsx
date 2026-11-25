@@ -91,6 +91,14 @@ export default async function ApprovalDetailPage({
     approval.type === "SUPPLIER_QUOTE_SEND"
       ? await db.supplierQuote.findUnique({ where: { id: approval.entityId }, include: { supplier: true, items: true } })
       : null;
+  const quoteQuality = quoteRequest
+    ? parseJson<{ findings?: Array<{ severity: string; message: string }> }>(
+        quoteRequest.draftQualityJson ?? "{}",
+        {},
+      )
+    : {};
+  const quoteQualityErrors = (quoteQuality.findings ?? []).filter((finding) => finding.severity === "error");
+  const quoteQualityWarnings = (quoteQuality.findings ?? []).filter((finding) => finding.severity === "warning");
 
   const currency = offers[0]?.snapshot.targetCurrency ?? quotation?.currency ?? "AED";
   const top = offers.find((offer) => offer.snapshot.evaluation?.rank === 1);
@@ -305,6 +313,24 @@ export default async function ApprovalDetailPage({
         <Card>
           <CardHeader title="Message to supplier" description={`To ${quoteRequest.supplier.name}`} />
           <div className="space-y-3 px-4 py-3">
+            {quoteQualityErrors.length > 0 ? (
+              <Notice tone="danger" title="This draft cannot be sent yet">
+                <p className="mb-1">The quality check blocked sending because of these problems:</p>
+                <ul className="list-disc space-y-1 pl-4">
+                  {quoteQualityErrors.map((finding) => (
+                    <li key={finding.message}>{finding.message}</li>
+                  ))}
+                </ul>
+              </Notice>
+            ) : quoteQualityWarnings.length > 0 ? (
+              <Notice tone="warn" title="Review these draft notes">
+                <ul className="list-disc space-y-1 pl-4">
+                  {quoteQualityWarnings.map((finding) => (
+                    <li key={finding.message}>{finding.message}</li>
+                  ))}
+                </ul>
+              </Notice>
+            ) : null}
             <div className="rounded-card border border-line bg-bg p-3 text-[13px]">
               <p className="font-medium text-ink">Subject: {quoteRequest.subject}</p>
               <p className="mt-2 whitespace-pre-wrap text-soft">{quoteRequest.messageBody}</p>

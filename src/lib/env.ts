@@ -98,6 +98,17 @@ const schema = z.object({
   SEARCH_REQUEST_TIMEOUT_MS: z.coerce.number().default(15000),
   SEARCH_MAX_QUERIES: z.coerce.number().default(4),
   SEARCH_PAGE_FETCH_LIMIT: z.coerce.number().default(5),
+  /** Deep research is bounded by default; each value is clamped by lib/sourcing/research/limits. */
+  DEEP_RESEARCH_MAX_ROUNDS: z.coerce.number().default(3),
+  DEEP_RESEARCH_MAX_QUERIES: z.coerce.number().default(20),
+  DEEP_RESEARCH_MAX_URLS: z.coerce.number().default(20),
+  DEEP_RESEARCH_MAX_PAGES_PER_DOMAIN: z.coerce.number().default(5),
+  DEEP_RESEARCH_MAX_CONCURRENT_PAGES: z.coerce.number().default(3),
+  DEEP_RESEARCH_MAX_FOLLOWUP_AI_PASSES: z.coerce.number().default(1),
+  DEEP_RESEARCH_MAX_AI_CALLS: z.coerce.number().default(12),
+  DEEP_RESEARCH_BUDGET_AED: z.coerce.number().default(0),
+  DEEP_RESEARCH_MAX_PAGE_BYTES: z.coerce.number().default(750_000),
+  DEEP_RESEARCH_REQUEST_TIMEOUT_MS: z.coerce.number().default(12_000),
   SUPPLIER_DAILY_SEND_LIMIT: z.coerce.number().default(20),
   SUPPLIER_REMINDER_DAYS: z.coerce.number().default(3),
   SUPPLIER_REMINDER_MAX: z.coerce.number().default(1),
@@ -107,6 +118,8 @@ const schema = z.object({
   /** Directory containing pre-baked Tesseract language files (Docker worker). */
   OCR_LANG_PATH: z.string().default(""),
   OCR_PDF_MAX_PAGES: z.coerce.number().default(10),
+  /** A hung parser is reported instead of holding a worker open indefinitely. */
+  DOCUMENT_PARSER_TIMEOUT_MS: z.coerce.number().default(30_000),
 
   EXCHANGE_RATE_PROVIDER: z.string().default("none"),
   EXCHANGE_RATE_API_KEY: z.string().default(""),

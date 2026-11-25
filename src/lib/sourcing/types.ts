@@ -1,6 +1,6 @@
 /** Contract shared by every supplier discovery adapter. */
 
-export type AdapterStatus = "OK" | "FAILED" | "SKIPPED" | "RATE_LIMITED" | "NOT_CONFIGURED";
+export type AdapterStatus = "OK" | "PARTIAL" | "FAILED" | "SKIPPED" | "RATE_LIMITED" | "NOT_CONFIGURED";
 
 export type QueryRun = {
   query: string;

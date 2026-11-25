@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { env, MAX_UPLOAD_MB } from "./env";
 import {
+  detectDocumentFormat,
+  supportedFormatList,
+  type DocumentFormatId,
+} from "./intake/formats";
+import {
   buildTenantAttachmentKey,
   configuredRemoteDriver,
   storageConfigProblems,
@@ -85,53 +90,60 @@ export const ALLOWED_TYPES = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "excel",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "archive",
   "application/zip": "archive",
   "application/vnd.ms-excel": "excel",
   "text/csv": "csv",
+  "text/tab-separated-values": "csv",
   "text/plain": "text",
+  "text/html": "text",
+  "application/rtf": "text",
+  "message/rfc822": "text",
   "image/jpeg": "image",
   "image/png": "image",
   "image/webp": "image",
   "image/heic": "image",
   "image/heif": "image",
+  "image/tiff": "image",
+  "image/bmp": "image",
+  "image/gif": "image",
 } as const;
 
 export type FileFamily = "pdf" | "excel" | "csv" | "text" | "image" | "docx" | "archive" | "other";
 
+const FAMILY_BY_FORMAT: Partial<Record<DocumentFormatId, FileFamily>> = {
+  PDF: "pdf",
+  DOCX: "docx",
+  XLSX: "excel",
+  CSV: "csv",
+  TSV: "csv",
+  TXT: "text",
+  RTF: "text",
+  HTML: "text",
+  EML: "text",
+  PPTX: "archive",
+  JPEG: "image",
+  PNG: "image",
+  WEBP: "image",
+  HEIC: "image",
+  TIFF: "image",
+  BMP: "image",
+  GIF: "image",
+  ZIP: "archive",
+  DOC: "other",
+  XLS: "other",
+  PPT: "other",
+  MSG: "other",
+  UNKNOWN: "other",
+};
+
 /** Content-based detection — never trust the extension or the browser MIME alone. */
 export function sniffType(buffer: Buffer): { mime: string; family: FileFamily } {
-  const head = buffer.subarray(0, 512);
-  if (head.subarray(0, 5).toString("latin1") === "%PDF-") return { mime: "application/pdf", family: "pdf" };
-  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return { mime: "image/jpeg", family: "image" };
-  if (head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
-    return { mime: "image/png", family: "image" };
-  }
-  if (head.subarray(0, 4).toString("latin1") === "RIFF" && head.subarray(8, 12).toString("latin1") === "WEBP") {
-    return { mime: "image/webp", family: "image" };
-  }
-  if (head.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
-    const text = buffer.subarray(0, Math.min(buffer.length, 8000)).toString("latin1");
-    if (text.includes("word/document.xml")) {
-      return { mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", family: "docx" };
-    }
-    if (text.includes("xl/worksheets") || text.includes("[Content_Types].xml")) {
-      return { mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", family: "excel" };
-    }
-    return { mime: "application/zip", family: "archive" };
-  }
-  if (head.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))) {
-    return { mime: "application/vnd.ms-excel", family: "excel" };
-  }
-  const brand = head.subarray(4, 12).toString("latin1");
-  if (brand.includes("ftyphei") || brand.includes("ftypmif1") || brand.includes("ftypmsf1")) {
-    return { mime: "image/heic", family: "image" };
-  }
-  const text = head.toString("utf8");
-  if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text)) {
-    const isCsv = text.includes(",") && /\r?\n/.test(text);
-    return { mime: isCsv ? "text/csv" : "text/plain", family: isCsv ? "csv" : "text" };
-  }
-  return { mime: "application/octet-stream", family: "other" };
+  const detection = detectDocumentFormat(buffer, "");
+  return {
+    mime: detection.mime,
+    family: FAMILY_BY_FORMAT[detection.format] ?? "other",
+  };
 }
 
 export function sanitizeFilename(name: string): string {
@@ -169,21 +181,32 @@ export function keyBelongsToOrganization(key: string, organizationId: string): {
 export function assertAllowedUpload(
   buffer: Buffer,
   declaredName: string,
-): { ok: true; mime: string; family: FileFamily; filename: string } | { ok: false; error: string } {
+  options: { allowUnsupported?: boolean } = {},
+): { ok: true; mime: string; family: FileFamily; filename: string; detection?: ReturnType<typeof detectDocumentFormat> } | { ok: false; error: string } {
   const maxBytes = MAX_UPLOAD_MB * 1024 * 1024;
   if (buffer.length === 0) return { ok: false, error: "The file is empty." };
   if (buffer.length > maxBytes) {
     return { ok: false, error: `The file is larger than ${MAX_UPLOAD_MB} MB.` };
   }
+  const detection = detectDocumentFormat(buffer, declaredName);
   const sniffed = sniffType(buffer);
   const allowedFamilies: FileFamily[] = ["pdf", "excel", "csv", "text", "image", "docx", "archive"];
-  if (!allowedFamilies.includes(sniffed.family)) {
+  if (!allowedFamilies.includes(sniffed.family) && !options.allowUnsupported) {
     return {
       ok: false,
-      error: "This file type is not supported. Use PDF, XLSX, CSV, text or an image.",
+      error: `This file type is not supported. Supported: ${supportedFormatList()}.`,
     };
   }
-  return { ok: true, mime: sniffed.mime, family: sniffed.family, filename: sanitizeFilename(declaredName) };
+  if (detection.encrypted && !options.allowUnsupported) {
+    return { ok: false, error: "This file is password-protected. Provide an unlocked copy." };
+  }
+  return {
+    ok: true,
+    mime: sniffed.mime,
+    family: sniffed.family,
+    filename: sanitizeFilename(declaredName),
+    detection,
+  };
 }
 
 type S3Module = typeof import("@aws-sdk/client-s3");

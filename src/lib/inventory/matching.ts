@@ -419,7 +419,19 @@ export function matchProduct(
     reasons.push("Some requested specifications are missing from this product.");
     return { status: "INSUFFICIENT", score, reasons, mismatches, missing, usedEquivalence };
   }
-  if (checks.filter((c) => c.requested).length > 0 && matched === 0) {
+  if (checks.filter((c) => c.requested).length === 0) {
+    // A shared product name is not proof of an exact product. Without at least
+    // one comparable technical attribute the result stays unverified.
+    return {
+      status: "INSUFFICIENT",
+      score,
+      reasons,
+      mismatches,
+      missing: missing.length > 0 ? missing : ["Technical specification"],
+      usedEquivalence,
+    };
+  }
+  if (matched === 0) {
     return { status: "INSUFFICIENT", score, reasons, mismatches, missing, usedEquivalence };
   }
   if (similarity < 0.34) {

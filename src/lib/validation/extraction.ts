@@ -23,6 +23,32 @@ export type ClassificationResult = z.infer<typeof ClassificationSchema>;
 
 const numericOrNull = z.number().finite().positive().nullable();
 
+/**
+ * Note: zod's `.optional()` is used instead of a default object so rule-based
+ * extraction (which runs without AI) can still return a compact result. The
+ * pipeline fills a deterministic context for it.
+ */
+export const CustomerContextSchema = z.object({
+  greeting: z.string().max(200).nullable().optional(),
+  urgency: z.string().max(120).nullable().optional(),
+  requestedDeliveryTimeframe: z.string().max(160).nullable().optional(),
+  deliveryLocation: z.string().max(200).nullable().optional(),
+  instructions: z.array(z.string().max(400)).default([]),
+  commercialRequirements: z.array(z.string().max(400)).default([]),
+  certifications: z.array(z.string().max(200)).default([]),
+  notes: z.array(z.string().max(400)).default([]),
+});
+export type CustomerContext = z.infer<typeof CustomerContextSchema>;
+
+/** Where a single extracted value came from. */
+export const ExtractedEvidenceSchema = z.object({
+  field: z.string().max(40),
+  value: z.string().max(300),
+  sourceRef: z.string().max(160),
+  quote: z.string().max(300).optional(),
+});
+export type ExtractedEvidence = z.infer<typeof ExtractedEvidenceSchema>;
+
 export const ExtractedItemSchema = z.object({
   description: z.string().min(1).max(500),
   quantity: numericOrNull,
@@ -41,6 +67,8 @@ export const ExtractedItemSchema = z.object({
   /** Versioned OGS industrial specification. Only present for industrial categories. */
   industrialSpec: IndustrialSpecSchema.optional().nullable(),
   sourceRef: z.string().max(120).nullable().optional(),
+  /** Per-field provenance: where description/quantity/material/grade came from. */
+  evidence: z.array(ExtractedEvidenceSchema).max(30).optional(),
   missingFields: z.array(z.string()).default([]),
   confidence: z.record(z.number().min(0).max(1)).default({}),
 });
@@ -57,6 +85,8 @@ export const ExtractionSchema = z.object({
   deliveryLocation: z.string().max(200).nullable().optional(),
   deliveryDate: z.string().max(40).nullable().optional(),
   currency: z.string().length(3).nullable().optional(),
+  /** Greeting, urgency, requested delivery window and instructions, kept apart from products. */
+  customerContext: CustomerContextSchema.optional(),
   items: z.array(ExtractedItemSchema).default([]),
   notes: z.string().max(1000).nullable().optional(),
   unreadableParts: z.array(z.string()).default([]),

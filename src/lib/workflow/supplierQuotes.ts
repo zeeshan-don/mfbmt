@@ -7,16 +7,29 @@ import { outboundOperationKey, sendOutboundOnce } from "../outbound/messages";
 import { sendWhatsAppText } from "../intake/whatsapp";
 import { activeEmailProvider, sendEmail } from "../email/send";
 import { getWhatsAppCredentials } from "../integrations/whatsapp";
-import { buildSpecSummary } from "../catalog/normalize";
 import { parseFastenerSpec, parseFastenerSpecJson } from "../fasteners/spec";
 import { industrialSpecFromFields, parseIndustrialSpecJson } from "../catalog/industrialSpec";
 import { getCurrentOrganization } from "../organization";
 import { supplierSendGuard } from "../suppliers/sendGuard";
+import {
+  composeSupplierRfq,
+  mergeRfqFindings,
+  reviewSupplierRfqWithAi,
+  supplierRfqProblems,
+  validateSupplierRfqDraft,
+  type SupplierRfqFinding,
+  type SupplierRfqItem,
+} from "../outbound/supplierRfq";
 
 function quoteLink(token: string): string {
   return `${env.APP_URL.replace(/\/$/, "")}/supplier-response/${token}`;
 }
 
+/**
+ * Backwards-compatible helper. New code composes through composeSupplierRfq so
+ * internal fields and specification strings are never concatenated into a
+ * supplier-facing message.
+ */
 export function draftSupplierMessage(input: {
   supplierName: string;
   companyName: string;
@@ -25,29 +38,52 @@ export function draftSupplierMessage(input: {
   link: string;
   correlationToken?: string | null;
 }): { subject: string; body: string } {
-  const reference = input.correlationToken ? ` [RFQ-${input.correlationToken}]` : "";
-  const subject = `Quotation request ${input.enquiryRef} — ${input.companyName}${reference}`;
-  const lines = input.items.map(
-    (item, index) =>
-      `${index + 1}. ${item.description} — ${item.quantity} ${item.unit}${
-        item.specs && item.specs !== item.description ? ` (${item.specs})` : ""
-      }`,
-  );
-  const body = [
-    `Dear ${input.supplierName},`,
-    "",
-    "Please quote your best price for the following items:",
-    "",
-    ...lines,
-    "",
-    "Kindly confirm unit price, minimum order quantity, availability, lead time and quote validity.",
-    ...(input.correlationToken ? [`Reference: RFQ-${input.correlationToken}`] : []),
-    `You can submit your quotation securely here: ${input.link}`,
-    "",
-    "Thank you,",
-    `Procurement — ${input.companyName}`,
-  ].join("\n");
-  return { subject, body };
+  const draft = composeSupplierRfq({
+    supplierName: input.supplierName,
+    companyName: input.companyName,
+    enquiryRef: input.enquiryRef,
+    items: input.items.map((item) => ({
+      description: item.description,
+      quantity: item.quantity,
+      unit: item.unit,
+    })),
+    link: input.link,
+    correlationToken: input.correlationToken ?? null,
+  });
+  return { subject: draft.subject, body: draft.body };
+}
+
+function rfqItemFor(item: {
+  description: string;
+  size: string | null;
+  material: string | null;
+  grade: string | null;
+  pressureRating: string | null;
+  schedule: string | null;
+  standard: string | null;
+  brand: string | null;
+  quantity: number;
+  unit: string;
+  missingFields: string;
+}): SupplierRfqItem {
+  return {
+    description: item.description,
+    quantity: item.quantity,
+    unit: item.unit,
+    size: item.size,
+    material: item.material,
+    grade: item.grade,
+    pressureRating: item.pressureRating,
+    schedule: item.schedule,
+    standard: item.standard,
+    brand: item.brand,
+    missingFields: parseJson<string[]>(item.missingFields, []),
+    sourceRef: null,
+  };
+}
+
+function qualityProblems(findings: SupplierRfqFinding[]): string[] {
+  return supplierRfqProblems(findings);
 }
 
 /**
@@ -90,6 +126,50 @@ export async function createSupplierQuoteRequest(input: {
   // the provider does not preserve thread headers. It is not a secret and grants
   // no access by itself.
   const correlationToken = crypto.randomBytes(8).toString("hex").toUpperCase();
+  const organization = await getCurrentOrganization();
+  const rfqItem = rfqItemFor({
+    description: item.description,
+    size: item.size,
+    material: item.material,
+    grade: item.grade,
+    pressureRating: item.pressureRating,
+    schedule: item.schedule,
+    standard: item.standard,
+    brand: item.brand,
+    quantity: item.quantityToSource || item.quantity,
+    unit: item.unit,
+    missingFields: item.missingFields,
+  });
+
+  const composed = composeSupplierRfq({
+    supplierName: supplier.name,
+    companyName: organization?.name ?? "Procurement",
+    enquiryRef: item.enquiry.publicRef,
+    items: [rfqItem],
+    link: quoteLink(token),
+    correlationToken,
+    requiredDelivery: item.enquiry.requestedDeliveryTimeframe ?? null,
+  });
+  // Deterministic validation always runs. The semantic review runs for an
+  // owner-requested RFQ, where a paid model call is justified; drafts for
+  // discovered prospects are still validated deterministically and cannot be
+  // sent until the owner approves them.
+  const semanticFindings = input.draft
+    ? []
+    : await reviewSupplierRfqWithAi({
+        subject: composed.subject,
+        body: composed.body,
+        items: [rfqItem],
+      }).catch(() => []);
+  const findings = mergeRfqFindings(composed.findings, semanticFindings);
+  const blocking = qualityProblems(findings);
+  if (!input.draft && blocking.length > 0) {
+    return {
+      ok: false,
+      error: `The supplier message was not prepared because it failed quality checks: ${blocking.join(" ")}`,
+    };
+  }
+
   const quote = await db.supplierQuote.create({
     data: {
       supplierId: supplier.id,
@@ -98,65 +178,42 @@ export async function createSupplierQuoteRequest(input: {
       correlationToken,
       status: input.draft ? "DRAFT" : "AWAITING_APPROVAL",
       expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      subject: composed.subject,
+      messageBody: composed.body,
+      draftQualityJson: stringifyJson({
+        ok: blocking.length === 0,
+        checkedAt: new Date().toISOString(),
+        findings,
+      }),
       items: {
         create: [
           {
-            description: item.description,
+            description: composed.items[0]?.description ?? item.description,
             quantity: item.quantityToSource || item.quantity,
             unit: item.unit,
-            notes: buildSpecSummary({
-              description: item.description,
-              size: item.size,
-              material: item.material,
-              grade: item.grade,
-              pressureRating: item.pressureRating,
-              schedule: item.schedule,
-              standard: item.standard,
-            }),
+            notes: composed.items[0]?.specification ?? null,
           },
         ],
       },
     },
   });
 
-  const organization = await getCurrentOrganization();
-  const message = draftSupplierMessage({
-    supplierName: supplier.name,
-    companyName: organization?.name ?? "Procurement",
-    enquiryRef: item.enquiry.publicRef,
-    items: [
-      {
-        description: item.description,
-        quantity: item.quantityToSource || item.quantity,
-        unit: item.unit,
-        specs: buildSpecSummary({
-          description: item.description,
-          size: item.size,
-          material: item.material,
-          grade: item.grade,
-          pressureRating: item.pressureRating,
-          schedule: item.schedule,
-          standard: item.standard,
-        }),
-      },
-    ],
-    link: quoteLink(token),
-    correlationToken,
-  });
-
-  await db.supplierQuote.update({
-    where: { id: quote.id },
-    data: { subject: message.subject, messageBody: message.body },
-  });
+  const message = { subject: composed.subject, body: composed.body };
 
   if (input.draft) {
     await writeAudit({
       actorId: input.userId === "system" ? null : input.userId,
       actorLabel: input.actorLabel,
-      action: "supplier_quote.drafted",
+      action: findings.some((finding) => finding.severity === "error")
+        ? "supplier_quote.drafted_with_quality_issues"
+        : "supplier_quote.drafted",
       entityType: "SupplierQuote",
       entityId: quote.id,
-      meta: { supplier: supplier.name, enquiryItemId: item.id },
+      meta: {
+        supplier: supplier.name,
+        enquiryItemId: item.id,
+        qualityFindings: findings.filter((finding) => finding.severity === "error").length,
+      },
     });
     return { ok: true, quoteId: quote.id, link: quoteLink(token) };
   }
@@ -219,6 +276,39 @@ export async function sendSupplierQuoteRequest(supplierQuoteId: string): Promise
   });
   if (!approval) return { ok: false, detail: "This request has not been approved for sending." };
   if (quote.status === "RESPONDED") return { ok: true, detail: "The supplier already responded." };
+
+  // Final gate before any provider call. This also protects drafts created
+  // before the composer was fixed: contaminated or internally-worded messages
+  // are blocked instead of being sent just because an approval exists.
+  const finalCheck = validateSupplierRfqDraft({
+    subject: quote.subject ?? "",
+    body: quote.messageBody ?? "",
+    items: quote.items.map((line) => ({
+      description: line.description,
+      quantity: line.quantity,
+      unit: line.unit,
+      missingFields: [],
+      sourceRef: null,
+    })),
+  });
+  const finalProblems = qualityProblems(finalCheck);
+  if (finalProblems.length > 0) {
+    await db.supplierQuote.update({
+      where: { id: quote.id },
+      data: { lastError: `Quality check blocked sending: ${finalProblems.join(" ")}`.slice(0, 600) },
+    });
+    await writeAudit({
+      action: "supplier_quote.quality_blocked",
+      entityType: "SupplierQuote",
+      entityId: quote.id,
+      actorLabel: "quality-validator",
+      meta: { findings: finalCheck.filter((finding) => finding.severity === "error") },
+    });
+    return {
+      ok: false,
+      detail: `The supplier message failed its final quality check and was not sent: ${finalProblems.join(" ")}`,
+    };
+  }
 
   const guard = await supplierSendGuard(quote.supplierId);
   if (!guard.ok) return { ok: false, detail: guard.error ?? "Sending is blocked for this supplier." };

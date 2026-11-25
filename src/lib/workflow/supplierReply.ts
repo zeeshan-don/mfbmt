@@ -8,10 +8,10 @@ import {
   assertAllowedUpload,
   readAttachment,
   saveAttachmentForOrganization,
-  sniffType,
   storageReadiness,
 } from "../storage";
 import { extractDocument, type DocumentText } from "../intake/documents";
+import { processDocumentPackage, type DocumentPackageSummary } from "../intake/documentPackage";
 import { requireTenantId } from "../tenant";
 import { recomputeOffersForItem } from "../costing/evaluate";
 import { ensureSourcingApproval } from "./approvals";
@@ -672,57 +672,56 @@ function sourceRefsFromText(text: string): string[] {
  * on the Attachment row, and never lets one unreadable file hide the rest.
  */
 async function readSupplierAttachments(
-  saved: Array<{ id: string; filename: string; storagePath: string }>,
-): Promise<{ documents: SupplierAttachmentDocument[]; failures: string[] }> {
-  const documents: SupplierAttachmentDocument[] = [];
-  const failures: string[] = [];
-
-  for (const file of saved) {
-    try {
-      const buffer = await readAttachment(file.storagePath);
-      const doc = await extractDocument(buffer, file.filename);
-      await db.attachment.update({
-        where: { id: file.id },
-        data: {
-          textExtract: doc.text.slice(0, 80_000),
-          pageCount: doc.pageCount,
-          extractionStatus: doc.status,
-          extractionNote: doc.note,
-          detectedMime: sniffType(buffer).mime,
-        },
-      });
-      if (doc.unreadable) failures.push(`${file.filename}: ${doc.note ?? "could not be read"}`);
-      documents.push({
-        attachmentId: file.id,
+  replyId: string,
+  saved: Array<{ id: string; filename: string; mimeType: string; storagePath: string; sha256: string }>,
+): Promise<{ documents: SupplierAttachmentDocument[]; failures: string[]; packageSummary: DocumentPackageSummary | null }> {
+  if (saved.length === 0) return { documents: [], failures: [], packageSummary: null };
+  try {
+    const result = await processDocumentPackage({
+      key: `supplier-reply:${replyId}`,
+      supplierReplyId: replyId,
+      attachments: saved.map((file) => ({
+        id: file.id,
         filename: file.filename,
-        text: doc.text,
-        status: doc.status,
-        note: doc.note,
-        pageCount: doc.pageCount,
-      });
-    } catch (error) {
-      const note = error instanceof Error ? error.message.slice(0, 300) : "Could not read the file.";
-      failures.push(`${file.filename}: ${note}`);
-      try {
-        await db.attachment.update({
-          where: { id: file.id },
-          data: { extractionStatus: "FAILED", extractionNote: note },
-        });
-      } catch {
-        // The failure is already recorded on the reply; never lose the email for it.
-      }
-      documents.push({
+        mimeType: file.mimeType,
+        storagePath: file.storagePath,
+        sha256: file.sha256,
+      })),
+    });
+    const documents: SupplierAttachmentDocument[] = result.documents.map((entry) => ({
+      attachmentId: entry.attachmentId,
+      filename: entry.filename,
+      text: entry.analysis.text,
+      status: entry.analysis.status,
+      note: entry.analysis.note,
+      pageCount: entry.analysis.pageCount,
+    }));
+    const failures = [
+      ...result.summary.failures.map((failure) => `${failure.filename}: ${failure.reason}`),
+      ...result.summary.unsupported.map((failure) => `${failure.filename}: ${failure.reason}`),
+      ...result.summary.partial.map((failure) => `${failure.filename}: ${failure.reason}`),
+    ];
+    return { documents, failures, packageSummary: result.summary };
+  } catch (error) {
+    // Keep the stored email and files even when package bookkeeping fails. The
+    // attachment rows still exist and can be retried.
+    console.error("[supplier-reply] document package processing failed", {
+      replyId,
+      error: error instanceof Error ? error.message.slice(0, 200) : "unknown",
+    });
+    return {
+      documents: saved.map((file) => ({
         attachmentId: file.id,
         filename: file.filename,
         text: "",
-        status: "FAILED",
-        note,
+        status: "FAILED" as const,
+        note: "The attached file needs a manual check because automatic reading was unavailable.",
         pageCount: null,
-      });
-    }
+      })),
+      failures: ["Some attachments need a manual check because automatic reading was unavailable."],
+      packageSummary: null,
+    };
   }
-
-  return { documents, failures };
 }
 
 /**
@@ -1130,7 +1129,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
   const validationFailures: string[] = [];
   const organizationId = await requireTenantId();
   const readiness = storageReadiness();
-  const savedAttachments: Array<{ id: string; filename: string; sha256: string; sizeBytes: number; storagePath: string }> = [];
+  const savedAttachments: Array<{ id: string; filename: string; mimeType: string; sha256: string; sizeBytes: number; storagePath: string }> = [];
   const reply = await db.supplierEmailReply.create({
     data: {
       supplierId: supplier?.id ?? null,
@@ -1157,7 +1156,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
       validationFailures.push(readiness.detail);
     } else {
       for (const file of input.attachments ?? []) {
-        const check = assertAllowedUpload(file.buffer, file.filename);
+        const check = assertAllowedUpload(file.buffer, file.filename, { allowUnsupported: true });
         if (!check.ok) {
           validationFailures.push(`${file.filename}: ${check.error}`);
           continue;
@@ -1179,6 +1178,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
           savedAttachments.push({
             id: attachment.id,
             filename: attachment.filename,
+            mimeType: attachment.mimeType,
             sha256: attachment.sha256,
             sizeBytes: attachment.sizeBytes,
             storagePath: stored.storagePath,
@@ -1194,7 +1194,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
 
   // Read the supplier's attachments now. Storing a price-list PDF without
   // reading it is the gap this pass closes.
-  const attachmentReading = await readSupplierAttachments(savedAttachments);
+  const attachmentReading = await readSupplierAttachments(reply.id, savedAttachments);
 
   const unknownToken = extractCorrelationToken(`${input.subject ?? ""}\n${input.body}`);
   const unknownStrongSignals = [
@@ -1395,6 +1395,7 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
         offerIds,
         attachmentFailures,
         documentExtraction: merged.evidence,
+        documentPackage: attachmentReading.packageSummary,
         fieldsFromAttachments: merged.fromAttachments,
       }),
       extractedJson: stringifyJson({

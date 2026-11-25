@@ -19,43 +19,43 @@ datasource db {
 /// A company. This is the tenant boundary: business reads and writes are scoped
 /// to the authenticated user's organization, never to an id from the browser.
 model Organization {
-  id                    String    @id @default(cuid())
-  slug                  String    @unique
-  name                  String // trading / display name
-  legalName             String?
-  taxRegistrationNumber String?
-  country               String    @default("AE")
-  timezone              String    @default("Asia/Dubai")
-  email                 String?
-  phone                 String?
-  whatsappNumber        String?
-  ownerWhatsappNumber   String?
-  whatsappApprovalAlerts Boolean @default(false)
-  messageRetentionDays  Int     @default(0)
-  address               String?
-  website               String?
-  logo                  String? // private storage key or absolute https URL
-  defaultCurrency       String    @default("AED")
-  quotationPrefix       String    @default("QT")
-  quotationValidityDays Int       @default(14)
-  quotationTerms        String?
-  minMarginPct          Float     @default(0)
-  taxEnabled            Boolean   @default(false)
-  taxRatePct            Float     @default(5)
-  taxLabel              String    @default("VAT")
+  id                     String    @id @default(cuid())
+  slug                   String    @unique
+  name                   String // trading / display name
+  legalName              String?
+  taxRegistrationNumber  String?
+  country                String    @default("AE")
+  timezone               String    @default("Asia/Dubai")
+  email                  String?
+  phone                  String?
+  whatsappNumber         String?
+  ownerWhatsappNumber    String?
+  whatsappApprovalAlerts Boolean   @default(false)
+  messageRetentionDays   Int       @default(0)
+  address                String?
+  website                String?
+  logo                   String? // private storage key or absolute https URL
+  defaultCurrency        String    @default("AED")
+  quotationPrefix        String    @default("QT")
+  quotationValidityDays  Int       @default(14)
+  quotationTerms         String?
+  minMarginPct           Float     @default(0)
+  taxEnabled             Boolean   @default(false)
+  taxRatePct             Float     @default(5)
+  taxLabel               String    @default("VAT")
   // Whether supplier tax is included in the landed-cost comparison.
-  taxInLandedCost       Boolean   @default(false)
+  taxInLandedCost        Boolean   @default(false)
   // Explicit procurement policy: does the company hold stock, or source first?
-  inventoryMode         String    @default("STOCK_FIRST") // STOCK_FIRST | SOURCING_FIRST
+  inventoryMode          String    @default("STOCK_FIRST") // STOCK_FIRST | SOURCING_FIRST
   // GENERAL keeps MFBMT's generic category requirements. INDUSTRIAL enables
   // the versioned OGS industrial extraction and matching schemas.
-  procurementProfile    String    @default("GENERAL") // GENERAL | INDUSTRIAL
-  inventoryConfiguredAt DateTime?
+  procurementProfile     String    @default("GENERAL") // GENERAL | INDUSTRIAL
+  inventoryConfiguredAt  DateTime?
   // Set when the owner has finished the first-time setup checklist.
-  onboardingCompletedAt DateTime?
-  status                String    @default("ACTIVE") // ACTIVE | SUSPENDED | ARCHIVED
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  onboardingCompletedAt  DateTime?
+  status                 String    @default("ACTIVE") // ACTIVE | SUSPENDED | ARCHIVED
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   users                  User[]
   sessions               Session[]
@@ -64,6 +64,7 @@ model Organization {
   conversations          Conversation[]
   messages               Message[]
   attachments            Attachment[]
+  documentPackages       DocumentPackage[]
   enquiries              Enquiry[]
   enquiryItems           EnquiryItem[]
   products               Product[]
@@ -77,6 +78,13 @@ model Organization {
   searchSessions         SearchSession[]
   searchQueries          SearchQuery[]
   searchResults          SearchResult[]
+  researchRuns           ResearchRun[]
+  researchQueries        ResearchQuery[]
+  researchSources        ResearchSource[]
+  researchPages          ResearchPage[]
+  researchEvidence       ResearchEvidence[]
+  researchCandidates     ResearchCandidate[]
+  researchEvents         ResearchEvent[]
   supplierOffers         SupplierOffer[]
   supplierQuotes         SupplierQuote[]
   supplierQuoteItems     SupplierQuoteItem[]
@@ -92,7 +100,7 @@ model Organization {
   ownerInvitations       OwnerInvitation[]
   mfaChallenges          MfaChallenge[]
   backgroundJobs         BackgroundJob[]
-  webhookEvents           WebhookEvent[]
+  webhookEvents          WebhookEvent[]
   numberSequences        NumberSequence[]
   auditLogs              AuditLog[]
   notifications          Notification[]
@@ -262,17 +270,17 @@ model Message {
 }
 
 model Attachment {
-  id               String       @id @default(cuid())
-  organizationId   String       @default("__unset__")
-  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id               String              @id @default(cuid())
+  organizationId   String              @default("__unset__")
+  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   messageId        String?
-  message          Message?     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  message          Message?            @relation(fields: [messageId], references: [id], onDelete: Cascade)
   enquiryId        String?
-  enquiry          Enquiry?     @relation(fields: [enquiryId], references: [id])
+  enquiry          Enquiry?            @relation(fields: [enquiryId], references: [id])
   supplierReplyId  String?
   supplierReply    SupplierEmailReply? @relation(fields: [supplierReplyId], references: [id], onDelete: SetNull)
   filename         String // sanitized display name
-  storedName       String       @unique // random name in storage
+  storedName       String              @unique // random name in storage
   mimeType         String
   detectedMime     String?
   sizeBytes        Int
@@ -280,26 +288,67 @@ model Attachment {
   storagePath      String // storage-driver key, never a public URL
   pageCount        Int?
   textExtract      String? // extracted plain text (untrusted content)
-  extractionStatus String       @default("PENDING") // PENDING | TEXT_OK | OCR_USED | NEEDS_REVIEW | FAILED
+  extractionStatus String              @default("PENDING") // PENDING | TEXT_OK | OCR_USED | NEEDS_REVIEW | FAILED
   extractionNote   String?
-  createdAt        DateTime     @default(now())
+  // Unified document-processing state. `extractionStatus` is retained for
+  // existing readers; these fields add format, quality and retry visibility.
+  packageId        String?
+  package          DocumentPackage?    @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  detectedFormat   String?
+  processingStatus String              @default("RECEIVED") // RECEIVED | PROCESSING | COMPLETED | PARTIAL | NEEDS_REVIEW | FAILED | UNSUPPORTED | PASSWORD_PROTECTED
+  processingStage  String?
+  qualityJson      String?
+  tablesJson       String?
+  metadataJson     String?
+  parserVersion    String?
+  promptVersion    String?
+  contentVersion   Int                 @default(1)
+  processedAt      DateTime?
+  failureCode      String?
+  failureMessage   String?
+  createdAt        DateTime            @default(now())
 
   @@unique([messageId, sha256])
   @@index([organizationId, enquiryId])
   @@index([supplierReplyId])
+  @@index([organizationId, packageId])
+  @@index([organizationId, processingStatus])
+}
+
+/// One related set of documents received together (an enquiry, a supplier
+/// reply, or an uploaded bundle). It records the package-level extraction state
+/// and review summary; the individual files remain first-class Attachment rows.
+model DocumentPackage {
+  id              String       @id @default(cuid())
+  organizationId  String       @default("__unset__")
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  key             String
+  enquiryId       String?
+  enquiry         Enquiry?     @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  messageId       String?
+  supplierReplyId String?
+  status          String       @default("RECEIVED")
+  summaryJson     String       @default("{}")
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  attachments     Attachment[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId, enquiryId])
+  @@index([organizationId, supplierReplyId])
 }
 
 /// An inbound supplier email reply, stored before any offer is derived from it.
 /// Idempotent on the provider's external message id so repeated mailbox syncs
 /// never duplicate replies or offers.
 model SupplierEmailReply {
-  id                String        @id @default(cuid())
-  organizationId    String        @default("__unset__")
-  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id                String         @id @default(cuid())
+  organizationId    String         @default("__unset__")
+  organization      Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   supplierQuoteId   String?
   supplierQuote     SupplierQuote? @relation(fields: [supplierQuoteId], references: [id], onDelete: SetNull)
   supplierId        String?
-  supplier          Supplier?     @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplier          Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   externalMessageId String
   provider          String // GMAIL | MICROSOFT365
   providerThreadId  String?
@@ -310,15 +359,15 @@ model SupplierEmailReply {
   fromName          String?
   subject           String?
   bodySummary       String? // retained summary, never a full uncontrolled body dump
-  attachmentsJson   String        @default("[]")
+  attachmentsJson   String         @default("[]")
   extractedJson     String? // deterministic extraction of the supplier's terms
-  extractionStatus  String        @default("PENDING") // PENDING | EXTRACTED | FAILED | NO_TERMS
-  matchingStatus    String        @default("UNMATCHED") // MATCHED | NEEDS_REVIEW | UNMATCHED | DUPLICATE
-  reviewStatus      String        @default("PENDING") // PENDING | REVIEWED | DISMISSED
-  correlationJson   String        @default("{}")
-  receivedAt        DateTime      @default(now())
+  extractionStatus  String         @default("PENDING") // PENDING | EXTRACTED | FAILED | NO_TERMS
+  matchingStatus    String         @default("UNMATCHED") // MATCHED | NEEDS_REVIEW | UNMATCHED | DUPLICATE
+  reviewStatus      String         @default("PENDING") // PENDING | REVIEWED | DISMISSED
+  correlationJson   String         @default("{}")
+  receivedAt        DateTime       @default(now())
   processedAt       DateTime?
-  createdAt         DateTime      @default(now())
+  createdAt         DateTime       @default(now())
   attachments       Attachment[]
 
   @@unique([organizationId, provider, externalMessageId])
@@ -331,57 +380,64 @@ model SupplierEmailReply {
 /// token is shown once by the provisioning tool and is never emailed or logged
 /// by the application. The invitee sets their own password.
 model OwnerInvitation {
-  id              String       @id @default(cuid())
-  organizationId  String       @default("__unset__")
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  email           String
-  name            String
-  role            String       @default("OWNER")
-  tokenHash       String       @unique
-  expiresAt       DateTime
-  usedAt          DateTime?
-  createdByLabel  String       @default("provisioning")
-  createdAt       DateTime     @default(now())
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  name           String
+  role           String       @default("OWNER")
+  tokenHash      String       @unique
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdByLabel String       @default("provisioning")
+  createdAt      DateTime     @default(now())
 
   @@index([organizationId, email])
   @@index([expiresAt])
 }
 
 model Enquiry {
-  id                       String              @id @default(cuid())
-  organizationId           String              @default("__unset__")
-  organization             Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  publicRef                String // ENQ-2026-0001
-  channel                  String // WHATSAPP | EMAIL | MANUAL | DEMO
-  contactId                String?
-  contact                  Contact?            @relation(fields: [contactId], references: [id])
-  conversationId           String?
-  customerId               String?
-  customer                 Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  customerName             String?
-  customerPhone            String?
-  customerEmail            String?
-  rawText                  String
-  extractedJson            String? // original extraction snapshot; owner corrections are stored separately
-  deliveryLocation         String?
-  deliveryDate             DateTime?
-  currency                 String?
-  status                   String              @default("NEW")
+  id                         String              @id @default(cuid())
+  organizationId             String              @default("__unset__")
+  organization               Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  publicRef                  String // ENQ-2026-0001
+  channel                    String // WHATSAPP | EMAIL | MANUAL | DEMO
+  contactId                  String?
+  contact                    Contact?            @relation(fields: [contactId], references: [id])
+  conversationId             String?
+  customerId                 String?
+  customer                   Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerName               String?
+  customerPhone              String?
+  customerEmail              String?
+  rawText                    String
+  extractedJson              String? // original extraction snapshot; owner corrections are stored separately
+  deliveryLocation           String?
+  deliveryDate               DateTime?
+  // Semantic enquiry context, kept separately from product lines. A requested
+  // delivery window is a customer requirement, never a supplier lead time.
+  urgency                    String?
+  requestedDeliveryTimeframe String?
+  customerInstructionsJson   String              @default("[]") // JSON string[]
+  currency                   String?
+  status                     String              @default("NEW")
   // NEW | EXTRACTING | NEEDS_REVIEW | READY | SOURCING | AWAITING_APPROVAL | APPROVED | QUOTED | CLOSED | REJECTED | IGNORED
-  classification           String              @default("RFQ")
-  classificationConfidence Float               @default(0)
-  extractionConfidence     Float?
-  requiresReview           Boolean             @default(false)
-  reviewReason             String?
-  isDemo                   Boolean             @default(false)
-  createdById              String?
-  createdAt                DateTime            @default(now())
-  updatedAt                DateTime            @updatedAt
-  items                    EnquiryItem[]
-  attachments              Attachment[]
-  approvals                Approval[]
-  quotations               CustomerQuotation[]
-  Message                  Message?
+  classification             String              @default("RFQ")
+  classificationConfidence   Float               @default(0)
+  extractionConfidence       Float?
+  requiresReview             Boolean             @default(false)
+  reviewReason               String?
+  isDemo                     Boolean             @default(false)
+  createdById                String?
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
+  items                      EnquiryItem[]
+  attachments                Attachment[]
+  documentPackages           DocumentPackage[]
+  approvals                  Approval[]
+  quotations                 CustomerQuotation[]
+  researchRuns               ResearchRun[]
+  Message                    Message?
 
   @@unique([organizationId, publicRef])
   @@index([organizationId, status])
@@ -446,6 +502,7 @@ model EnquiryItem {
   searchSessions        SearchSession[]
   supplierQuotes        SupplierQuote[]
   quotationItems        CustomerQuotationItem[]
+  researchRuns          ResearchRun[]
 
   @@index([enquiryId])
   @@index([organizationId, sourcingStatus])
@@ -453,32 +510,32 @@ model EnquiryItem {
 }
 
 model Product {
-  id               String                 @id @default(cuid())
-  organizationId   String                 @default("__unset__")
-  organization     Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sku              String
-  name             String
-  category         String
-  brand            String?
-  material         String?
-  grade            String?
-  size             String?
-  pressureRating   String?
-  schedule         String?
-  standard         String?
-  unit             String                 @default("pcs")
-  specs            String                 @default("{}") // JSON free-form extra attributes
-  fastenerSpecJson String? // validated fastener specification (see src/lib/fasteners/spec.ts)
+  id                 String                 @id @default(cuid())
+  organizationId     String                 @default("__unset__")
+  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sku                String
+  name               String
+  category           String
+  brand              String?
+  material           String?
+  grade              String?
+  size               String?
+  pressureRating     String?
+  schedule           String?
+  standard           String?
+  unit               String                 @default("pcs")
+  specs              String                 @default("{}") // JSON free-form extra attributes
+  fastenerSpecJson   String? // validated fastener specification (see src/lib/fasteners/spec.ts)
   industrialSpecJson String? // validated OGS industrial specification (versioned JSON)
-  notes            String?
-  isDemo           Boolean                @default(false)
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
-  specifications   ProductSpecification[]
-  packaging        ProductPackaging[]
-  stocks           InventoryStock[]
-  movements        InventoryMovement[]
-  supplierProducts SupplierProduct[]
+  notes              String?
+  isDemo             Boolean                @default(false)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  specifications     ProductSpecification[]
+  packaging          ProductPackaging[]
+  stocks             InventoryStock[]
+  movements          InventoryMovement[]
+  supplierProducts   SupplierProduct[]
 
   @@unique([organizationId, sku])
   @@index([organizationId, category])
@@ -547,47 +604,257 @@ model InventoryMovement {
   @@index([organizationId])
 }
 
-model Supplier {
-  id             String            @id @default(cuid())
-  organizationId String            @default("__unset__")
-  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  name           String
-  website        String?
-  /// Normalized website host, used to deduplicate discovered prospects.
+model ResearchRun {
+  id                 String              @id @default(cuid())
+  organizationId     String              @default("__unset__")
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  enquiryId          String
+  enquiry            Enquiry             @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  enquiryItemId      String?
+  enquiryItem        EnquiryItem?        @relation(fields: [enquiryItemId], references: [id], onDelete: Cascade)
+  /// Set while the run is active, cleared on every terminal state. The unique
+  /// key prevents two workers from starting the same item concurrently.
+  activeKey          String?             @unique
+  mode               String              @default("DEEP")
+  status             String              @default("QUEUED")
+  // QUEUED | PLANNING | SEARCHING | INVESTIGATING | ANALYZING | FOLLOW_UP | COMPLETED | PARTIAL | FAILED | CANCELLED
+  stage              String              @default("QUEUED")
+  iteration          Int                 @default(0)
+  planJson           String              @default("{}")
+  limitsJson         String              @default("{}")
+  summaryJson        String              @default("{}")
+  reportJson         String              @default("{}")
+  coverageJson       String              @default("[]")
+  budgetAed          Float?
+  estimatedCostUsd   Float               @default(0)
+  searchRequests     Int                 @default(0)
+  pageFetches        Int                 @default(0)
+  documentsProcessed Int                 @default(0)
+  aiCalls            Int                 @default(0)
+  inputTokens        Int                 @default(0)
+  outputTokens       Int                 @default(0)
+  error              String?
+  startedAt          DateTime            @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  queries            ResearchQuery[]
+  sources            ResearchSource[]
+  pages              ResearchPage[]
+  evidence           ResearchEvidence[]
+  candidates         ResearchCandidate[]
+  events             ResearchEvent[]
+
+  @@index([organizationId, status])
+  @@index([enquiryId])
+  @@index([enquiryItemId])
+  @@index([organizationId, createdAt])
+}
+
+model ResearchQuery {
+  id               String       @id @default(cuid())
+  organizationId   String       @default("__unset__")
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runId            String
+  run              ResearchRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  iteration        Int          @default(1)
+  round            Int          @default(1)
+  query            String
+  productTarget    String?
+  objective        String?
+  location         String?
+  requiredEvidence String?
+  category         String?
+  reason           String?
+  provider         String       @default("")
+  status           String       @default("QUEUED") // QUEUED | OK | FAILED | SKIPPED | RATE_LIMITED | NOT_CONFIGURED
+  resultCount      Int          @default(0)
+  error            String?
+  createdAt        DateTime     @default(now())
+
+  @@unique([runId, query, provider])
+  @@index([runId, iteration])
+  @@index([organizationId])
+}
+
+model ResearchSource {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runId          String
+  run            ResearchRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  provider       String
+  queryId        String?
+  sourceUrl      String?
   domain         String?
-  country        String?
-  city           String?
-  address        String?
-  paymentTerms   String?
-  currencies     String           @default("[]")
+  title          String
+  snippet        String?
+  supplierName   String?
+  sourceType     String       @default("SEARCH_RESULT")
+  evidenceJson   String       @default("{}")
+  retrievedAt    DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+
+  @@index([runId, domain])
+  @@index([organizationId])
+}
+
+model ResearchPage {
+  id               String             @id @default(cuid())
+  organizationId   String             @default("__unset__")
+  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runId            String
+  run              ResearchRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  candidateKey     String?
+  url              String
+  finalUrl         String?
+  domain           String?
+  title            String?
+  pageType         String             @default("OTHER")
+  status           String             @default("QUEUED") // QUEUED | FETCHED | FAILED | SKIPPED | ROBOTS_DISALLOWED | REJECTED
+  httpStatus       Int?
+  contentType      String?
+  contentHash      String?
+  excerpt          String?
+  text             String?
+  linksJson        String             @default("[]")
+  documentLocation String?
+  pageCount        Int?
+  fetchedAt        DateTime?
+  createdAt        DateTime           @default(now())
+  evidence         ResearchEvidence[]
+
+  @@unique([runId, url])
+  @@index([runId, candidateKey])
+  @@index([organizationId])
+}
+
+model ResearchEvidence {
+  id                 String             @id @default(cuid())
+  organizationId     String             @default("__unset__")
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runId              String
+  run                ResearchRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  candidateId        String?
+  candidate          ResearchCandidate? @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  pageId             String?
+  page               ResearchPage?      @relation(fields: [pageId], references: [id], onDelete: SetNull)
+  field              String
+  claim              String
+  value              String?
+  sourceUrl          String
+  pageTitle          String?
+  sourceType         String             @default("PAGE")
+  excerpt            String?
+  documentLocation   String?
+  pageNumber         Int?
+  sheetName          String?
+  rowNumber          Int?
+  retrievedAt        DateTime           @default(now())
+  extractionMethod   String             @default("DETERMINISTIC")
+  verificationStatus String             @default("SUPPORTED")
+  createdAt          DateTime           @default(now())
+
+  @@index([runId, candidateId])
+  @@index([organizationId])
+}
+
+model ResearchCandidate {
+  id                    String             @id @default(cuid())
+  organizationId        String             @default("__unset__")
+  organization          Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runId                 String
+  run                   ResearchRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  candidateKey          String
+  canonicalName         String
+  domain                String?
+  website               String?
+  description           String?
+  classification        String? // MANUFACTURER | DISTRIBUTOR | STOCKIST | TRADER | UNKNOWN
+  country               String?
+  city                  String?
+  contactJson           String             @default("{}")
+  productCategoriesJson String             @default("[]")
+  capabilitiesJson      String             @default("[]")
+  certificationsJson    String             @default("[]")
+  aliasesJson           String             @default("[]")
+  branchesJson          String             @default("[]")
+  matchStatus           String             @default("UNVERIFIED") // EXACT | COMPATIBLE | POSSIBLE | UNVERIFIED | NO_MATCH
+  matchJson             String             @default("{}")
+  confidence            Float              @default(0)
+  evidenceCount         Int                @default(0)
+  pageCount             Int                @default(0)
+  supplierId            String?
+  supplier              Supplier?          @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  status                String             @default("NEW") // NEW | APPROVED | IRRELEVANT
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  evidence              ResearchEvidence[]
+
+  @@unique([runId, candidateKey])
+  @@index([runId, matchStatus])
+  @@index([organizationId])
+}
+
+model ResearchEvent {
+  id             String       @id @default(cuid())
+  organizationId String       @default("__unset__")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runId          String
+  run            ResearchRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  iteration      Int          @default(0)
+  stage          String
+  level          String       @default("INFO")
+  message        String
+  metaJson       String       @default("{}")
+  createdAt      DateTime     @default(now())
+
+  @@index([runId, createdAt])
+  @@index([organizationId])
+}
+
+model Supplier {
+  id                  String               @id @default(cuid())
+  organizationId      String               @default("__unset__")
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name                String
+  website             String?
+  /// Normalized website host, used to deduplicate discovered prospects.
+  domain              String?
+  country             String?
+  city                String?
+  address             String?
+  paymentTerms        String?
+  currencies          String               @default("[]")
   typicalLeadTimeDays Int?
-  lastQuotedAt   DateTime?
-  doNotContact   Boolean          @default(false)
-  discoveredFromUrl String?
-  discoveredAt   DateTime?
-  bouncedAt      DateTime?
-  bounceReason   String?
-  contactPerson  String?
-  email          String?
-  phone          String?
-  whatsapp       String?
-  categories     String            @default("[]") // JSON string[]
-  brands         String            @default("[]") // JSON string[]
-  status         String            @default("ACTIVE") // ACTIVE | PAUSED | BLOCKED | UNVERIFIED
-  identityStatus String            @default("UNVERIFIED") // UNVERIFIED | DOMAIN_OBSERVED | CONTACT_CONFIRMED | VERIFIED
-  notes          String?
-  lastVerifiedAt DateTime?
-  isDemo         Boolean           @default(false)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  contacts       SupplierContact[]
-  products       SupplierProduct[]
-  offers         SupplierOffer[]
-  quotes         SupplierQuote[]
+  lastQuotedAt        DateTime?
+  doNotContact        Boolean              @default(false)
+  discoveredFromUrl   String?
+  discoveredAt        DateTime?
+  bouncedAt           DateTime?
+  bounceReason        String?
+  contactPerson       String?
+  email               String?
+  phone               String?
+  whatsapp            String?
+  categories          String               @default("[]") // JSON string[]
+  brands              String               @default("[]") // JSON string[]
+  status              String               @default("ACTIVE") // ACTIVE | PAUSED | BLOCKED | UNVERIFIED
+  identityStatus      String               @default("UNVERIFIED") // UNVERIFIED | DOMAIN_OBSERVED | CONTACT_CONFIRMED | VERIFIED
+  notes               String?
+  lastVerifiedAt      DateTime?
+  isDemo              Boolean              @default(false)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  contacts            SupplierContact[]
+  products            SupplierProduct[]
+  offers              SupplierOffer[]
+  quotes              SupplierQuote[]
+  researchCandidates  ResearchCandidate[]
+  emailReplies        SupplierEmailReply[]
 
   @@index([organizationId, name])
   @@index([organizationId, domain])
-  emailReplies   SupplierEmailReply[]
 }
 
 model SupplierContact {
@@ -747,36 +1014,38 @@ model SupplierOffer {
 }
 
 model SupplierQuote {
-  id             String              @id @default(cuid())
-  organizationId String              @default("__unset__")
-  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  supplierId     String
-  supplier       Supplier            @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  enquiryItemId  String?
-  enquiryItem    EnquiryItem?        @relation(fields: [enquiryItemId], references: [id])
-  token          String              @unique
-  status         String              @default("REQUESTED") // DRAFT | REQUESTED | AWAITING_APPROVAL | SENT | RESPONDED | DECLINED | EXPIRED
-  reminderSentAt DateTime?
-  reminderCount  Int                 @default(0)
-  bounceAt        DateTime?
-  bounceReason    String?
+  id                String               @id @default(cuid())
+  organizationId    String               @default("__unset__")
+  organization      Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplierId        String
+  supplier          Supplier             @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  enquiryItemId     String?
+  enquiryItem       EnquiryItem?         @relation(fields: [enquiryItemId], references: [id])
+  token             String               @unique
+  status            String               @default("REQUESTED") // DRAFT | REQUESTED | AWAITING_APPROVAL | SENT | RESPONDED | DECLINED | EXPIRED
+  reminderSentAt    DateTime?
+  reminderCount     Int                  @default(0)
+  bounceAt          DateTime?
+  bounceReason      String?
   /// Opaque reference embedded in the outgoing RFQ subject, used to correlate replies.
-  correlationToken String?           @unique
+  correlationToken  String?              @unique
   /// Provider thread/message ids captured from the send response when available.
-  providerThreadId String?
+  providerThreadId  String?
   providerMessageId String?
-  channel        String? // email | whatsapp | manual
-  sentTo         String?
-  lastError      String?
-  subject        String?
-  messageBody    String?
-  sentAt         DateTime?
-  respondedAt    DateTime?
-  expiresAt      DateTime
-  responseNote   String?
-  createdAt      DateTime            @default(now())
-  items          SupplierQuoteItem[]
-  emailReplies   SupplierEmailReply[]
+  channel           String? // email | whatsapp | manual
+  sentTo            String?
+  lastError         String?
+  subject           String?
+  messageBody       String?
+  /// Deterministic + AI quality findings for the supplier-facing draft (JSON).
+  draftQualityJson  String?
+  sentAt            DateTime?
+  respondedAt       DateTime?
+  expiresAt         DateTime
+  responseNote      String?
+  createdAt         DateTime             @default(now())
+  items             SupplierQuoteItem[]
+  emailReplies      SupplierEmailReply[]
 
   @@index([supplierId])
   @@index([organizationId])
@@ -835,18 +1104,18 @@ model Approval {
 /// Customer master. Enquiries and quotations link here so quote history survives
 /// changes to the original phone number or contact name.
 model Customer {
-  id             String            @id @default(cuid())
-  organizationId String            @default("__unset__")
-  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id             String              @id @default(cuid())
+  organizationId String              @default("__unset__")
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   name           String
   email          String?
   phone          String?
   taxNumber      String?
   country        String?
-  tier           String            @default("STANDARD") // STANDARD | SILVER | GOLD | STRATEGIC
+  tier           String              @default("STANDARD") // STANDARD | SILVER | GOLD | STRATEGIC
   notes          String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
   contacts       CustomerContact[]
   enquiries      Enquiry[]
   quotations     CustomerQuotation[]
@@ -1121,10 +1390,10 @@ model Notification {
   title          String
   body           String?
   link           String?
-  isRead         Boolean   @default(false)
-  channelsJson   String   @default("{}")
-  deliveryStatus String   @default("IN_APP") // IN_APP | WHATSAPP_SENT | WHATSAPP_FAILED | WHATSAPP_OUTSIDE_WINDOW
-  createdAt      DateTime  @default(now())
+  isRead         Boolean      @default(false)
+  channelsJson   String       @default("{}")
+  deliveryStatus String       @default("IN_APP") // IN_APP | WHATSAPP_SENT | WHATSAPP_FAILED | WHATSAPP_OUTSIDE_WINDOW
+  createdAt      DateTime     @default(now())
 
   @@index([isRead])
   @@index([organizationId, createdAt])
@@ -1132,19 +1401,19 @@ model Notification {
 
 /// Provider-reported token usage. Cost is deterministic (configured rates), not AI-estimated.
 model AiUsage {
-  id               String   @id @default(cuid())
-  organizationId   String   @default("__unset__")
+  id               String       @id @default(cuid())
+  organizationId   String       @default("__unset__")
   organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   jobType          String
   provider         String
   model            String
-  inputTokens      Int      @default(0)
-  outputTokens     Int      @default(0)
+  inputTokens      Int          @default(0)
+  outputTokens     Int          @default(0)
   estimatedCostUsd Float?
   enquiryId        String?
-  success          Boolean  @default(true)
+  success          Boolean      @default(true)
   error            String?
-  createdAt        DateTime @default(now())
+  createdAt        DateTime     @default(now())
 
   @@index([organizationId, createdAt])
   @@index([organizationId, jobType])
@@ -1211,25 +1480,25 @@ model ProductPackaging {
 /// not a purchase commitment: approval does not create an order. Allocations
 /// are stored per location so aggregated stock can be released exactly once.
 model StockReservation {
-  id               String             @id @default(cuid())
-  organizationId   String             @default("__unset__")
-  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  quotationId      String?
-  quotation        CustomerQuotation? @relation(fields: [quotationId], references: [id], onDelete: SetNull)
-  quotationItemId  String?
-  enquiryItemId    String?
-  productId        String
-  quantity         Float
-  allocationsJson  String             @default("[]")
-  status           String             @default("ACTIVE") // ACTIVE | RELEASED | EXPIRED | COMMITTED
-  idempotencyKey   String
-  expiresAt        DateTime
-  releasedAt       DateTime?
-  releaseReason    String?
-  overrideReason   String?
-  createdById      String?
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  id              String             @id @default(cuid())
+  organizationId  String             @default("__unset__")
+  organization    Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  quotationId     String?
+  quotation       CustomerQuotation? @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  quotationItemId String?
+  enquiryItemId   String?
+  productId       String
+  quantity        Float
+  allocationsJson String             @default("[]")
+  status          String             @default("ACTIVE") // ACTIVE | RELEASED | EXPIRED | COMMITTED
+  idempotencyKey  String
+  expiresAt       DateTime
+  releasedAt      DateTime?
+  releaseReason   String?
+  overrideReason  String?
+  createdById     String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   @@unique([organizationId, idempotencyKey])
   @@index([organizationId, status, expiresAt])
@@ -1241,8 +1510,8 @@ model StockReservation {
 /// provider call, so two workers can never both transmit the same message.
 /// SENDING with an expired lease becomes UNKNOWN and is never retried blindly.
 model OutboundMessage {
-  id                String   @id @default(cuid())
-  organizationId    String   @default("__unset__")
+  id                String       @id @default(cuid())
+  organizationId    String       @default("__unset__")
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   operationKey      String
   kind              String // SUPPLIER_RFQ | SUPPLIER_REMINDER | CUSTOMER_QUOTATION | NOTIFICATION
@@ -1250,9 +1519,9 @@ model OutboundMessage {
   recipient         String
   subject           String?
   body              String
-  status            String   @default("PENDING") // PENDING | SENDING | SENT | FAILED_SAFE | UNKNOWN | CANCELLED
-  attempts          Int      @default(0)
-  maxAttempts       Int      @default(4)
+  status            String       @default("PENDING") // PENDING | SENDING | SENT | FAILED_SAFE | UNKNOWN | CANCELLED
+  attempts          Int          @default(0)
+  maxAttempts       Int          @default(4)
   claimToken        String?
   claimedAt         DateTime?
   leaseExpiresAt    DateTime?
@@ -1264,9 +1533,9 @@ model OutboundMessage {
   reconciledAt      DateTime?
   relatedType       String?
   relatedId         String?
-  metadataJson      String   @default("{}")
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  metadataJson      String       @default("{}")
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
 
   @@unique([organizationId, operationKey])
   @@index([organizationId, status])

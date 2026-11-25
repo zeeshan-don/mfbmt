@@ -24,6 +24,12 @@ import { extractPublicContacts } from "./contacts";
 import { upsertProspectsAndDraftRfqs } from "../suppliers/prospects";
 import { compareSourcedSuppliers } from "./aiCompare";
 import { writeAudit } from "../audit";
+import { getCurrentOrganization } from "../organization";
+import {
+  normalizedSourceUrl,
+  summarizeMatches,
+  supplierIdentity,
+} from "./classification";
 
 const PAGE_FETCH_LIMIT = 5;
 
@@ -162,9 +168,27 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
   await db.enquiryItem.update({ where: { id: item.id }, data: { sourcingStatus: "SEARCHING" } });
 
   const limits = await getOrgLimits();
+  const organization = await getCurrentOrganization();
+  const location =
+    organization?.country === "AE" ? "UAE" : (organization?.country ?? null);
   // The query cap is a per-organization commercial control, not an arbitrary
-  // hidden constant. Cached results still satisfy repeated searches.
-  const queries = buildSearchQueries(item).slice(0, limits.maxSearchQueriesPerItem);
+  // hidden constant. Cached results still satisfy repeated searches. Every
+  // query keeps the product's critical technical attributes.
+  const queries = buildSearchQueries(
+    {
+      description: item.description,
+      size: item.size,
+      material: item.material,
+      grade: item.grade,
+      pressureRating: item.pressureRating,
+      schedule: item.schedule,
+      standard: item.standard,
+      brand: item.brand,
+      category: item.category,
+      location,
+    },
+    limits.maxSearchQueriesPerItem,
+  );
   const context: AdapterContext = {
     request: {
       description: item.description,
@@ -190,8 +214,12 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
       coverage.push({ adapter: adapter.key, label: adapter.label, status: "NOT_CONFIGURED", queries: queries.length, results: 0, note: "Web search is disabled in this organization's limits." });
       continue;
     }
+    // The supplier directory is live business data: a cached result could point
+    // at a deleted supplier or hide a newly recorded product. Only public
+    // provider responses are cached.
+    const cacheEnabled = adapter.key !== "INTERNAL_SUPPLIERS";
     const cacheKey = searchCacheKey(adapter.key, queries, context.request as unknown as Record<string, unknown>);
-    const cached = await readSearchCache(cacheKey);
+    const cached = cacheEnabled ? await readSearchCache(cacheKey) : null;
     if (cached) {
       candidates.push(...cached);
       coverage.push({ adapter: adapter.key, label: adapter.label, status: "OK", queries: queries.length, results: cached.length, note: "Served from the organization search cache." });
@@ -235,12 +263,13 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
         adapter: adapter.key,
         label: adapter.label,
         status: result.status,
-        queries: result.queries.length,
+        // Count attempts, not the skipped fallback rows kept for diagnostics.
+        queries: result.queries.filter((query) => query.status === "OK" || query.status === "FAILED").length,
         results: result.candidates.length,
         note: result.note,
       });
       candidates.push(...result.candidates);
-      if (result.status === "OK") {
+      if (cacheEnabled && result.status === "OK") {
         await writeSearchCache(cacheKey, result.candidates, limits.searchCacheTtlDays);
       }
     } catch (error) {
@@ -287,12 +316,16 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
     }).catch(() => undefined);
   }
 
+  // Two providers or two listings can describe the same page. Collapse the
+  // same URL, and keep genuinely different product listings distinct.
   const seen = new Set<string>();
   const uniqueCandidates = candidates.filter((candidate) => {
+    const source = normalizedSourceUrl(candidate.sourceUrl) || supplierIdentity(candidate);
     const key = [
-      candidate.supplierName.toLowerCase(),
-      candidate.title.toLowerCase().slice(0, 120),
+      source,
+      candidate.title.toLowerCase().trim().slice(0, 120),
       candidate.unitPrice ?? "",
+      candidate.supplierId ?? "",
     ].join("|");
     if (seen.has(key)) return false;
     seen.add(key);
@@ -318,15 +351,53 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
     industrialSpec: parseIndustrialSpecJson(item.industrialSpecJson),
   };
 
-  let offerCount = 0;
-  let exactCount = 0;
-  const supplierNames = new Set<string>();
-
+  // Cached or stale results can reference a supplier that has since been
+  // deleted (or belongs to another tenant). Keep the listing, but drop the
+  // invalid foreign key instead of failing the whole sourcing run.
+  const candidateSupplierIds = [
+    ...new Set(uniqueCandidates.map((candidate) => candidate.supplierId).filter((id): id is string => Boolean(id))),
+  ];
+  const existingSupplierIds = new Set(
+    candidateSupplierIds.length > 0
+      ? (
+          await db.supplier.findMany({
+            where: { id: { in: candidateSupplierIds } },
+            select: { id: true },
+          })
+        ).map((supplier) => supplier.id)
+      : [],
+  );
   for (const candidate of uniqueCandidates) {
+    if (candidate.supplierId && !existingSupplierIds.has(candidate.supplierId)) {
+      candidate.supplierId = null;
+    }
+  }
+
+  // Matching is computed once, then reused for persistence, counts and the
+  // dashboard. A supplier is only counted when the result has some product
+  // evidence; unrelated web pages are listings, not suppliers.
+  const evaluated = uniqueCandidates.map((candidate) => {
     const specs = candidateSpecs(candidate, item.category);
     const match = matchProduct(requestSpec, specs, { strictStandard: Boolean(item.standard), equivalences });
-    supplierNames.add(candidate.supplierName);
+    return { candidate, specs, match };
+  });
 
+  const matchCounts = summarizeMatches(evaluated.map((entry) => entry.match.status));
+  const allSupplierKeys = new Set(evaluated.map((entry) => supplierIdentity(entry.candidate)));
+  const relevant = evaluated.filter((entry) => entry.match.status !== "NO_MATCH");
+  const evidenceSupplierKeys = new Set(relevant.map((entry) => supplierIdentity(entry.candidate)));
+  const exactSupplierKeys = new Set(
+    evaluated
+      .filter((entry) => entry.match.status === "EXACT" || entry.match.status === "EQUIVALENT")
+      .map((entry) => supplierIdentity(entry.candidate)),
+  );
+  const internalResultCount = uniqueCandidates.filter(
+    (candidate) => candidate.adapter === "INTERNAL_SUPPLIERS",
+  ).length;
+
+  let offerCount = 0;
+
+  for (const { candidate, specs, match } of evaluated) {
     const result = await db.searchResult.create({
       data: {
         sessionId: session.id,
@@ -354,7 +425,6 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
 
     if (match.status === "NO_MATCH") continue;
 
-    if (match.status === "EXACT" || match.status === "EQUIVALENT") exactCount += 1;
     const status =
       match.status === "EXACT" || match.status === "EQUIVALENT"
         ? "VERIFIED"
@@ -403,7 +473,12 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
   }
 
   try {
-    await upsertProspectsAndDraftRfqs(item, uniqueCandidates);
+    // Draft RFQs only go to suppliers whose listing provides relevant product
+    // evidence; an unrelated web result is not a discovered supplier.
+    await upsertProspectsAndDraftRfqs(
+      item,
+      relevant.map((entry) => entry.candidate),
+    );
   } catch (error) {
     // Prospect discovery is additive; an error here must not hide the offers
     // and coverage that were already produced by this sourcing run.
@@ -412,20 +487,37 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
 
   const evaluation = await recomputeOffersForItem(item.id);
 
-  const okAdapters = coverage.filter((c) => c.status === "OK").length;
+  const okAdapters = coverage.filter((c) => c.status === "OK" || c.status === "PARTIAL").length;
   const failedAdapters = coverage.filter((c) => c.status === "FAILED").length;
+  const partialAdapters = coverage.filter((c) => c.status === "PARTIAL").length;
   const sessionStatus =
     okAdapters === 0 && failedAdapters > 0
       ? "FAILED"
-      : failedAdapters > 0 || coverage.some((c) => c.status === "NOT_CONFIGURED")
+      : failedAdapters > 0 ||
+          partialAdapters > 0 ||
+          coverage.some((c) => c.status === "NOT_CONFIGURED") ||
+          okAdapters === 0
         ? "PARTIAL"
         : "COMPLETED";
 
   const summary = {
+    // Raw listings checked and distinct supplier candidates. `suppliers` keeps
+    // its historical key but now counts only suppliers with relevant product
+    // evidence, so the dashboard cannot imply that unrelated pages are suppliers.
+    rawResults: candidates.length,
+    uniqueResults: uniqueCandidates.length,
     results: uniqueCandidates.length,
     offers: offerCount,
-    exactMatches: exactCount,
-    suppliers: supplierNames.size,
+    suppliers: evidenceSupplierKeys.size,
+    supplierCandidates: allSupplierKeys.size,
+    suppliersWithEvidence: evidenceSupplierKeys.size,
+    suppliersWithExactOrEquivalent: exactSupplierKeys.size,
+    existingSupplierRecords: internalResultCount,
+    exactMatches: matchCounts.exact,
+    compatibleMatches: matchCounts.compatible,
+    possibleMatches: matchCounts.possible,
+    noMatchResults: matchCounts.none,
+    unverifiedResults: matchCounts.unverified,
     rankableOffers: evaluation.ranked.filter((entry) => entry.evaluation.rankable).length,
     quantityNeeded: item.quantityToSource,
     currency: evaluation.targetCurrency,
@@ -448,18 +540,19 @@ export async function runSourcingForItem(enquiryItemId: string): Promise<Sourcin
     },
   });
 
+  const connectedSources = coverage.filter((c) => c.status === "OK" || c.status === "PARTIAL").length;
   return {
     sessionId: session.id,
     status: sessionStatus,
     coverage,
     results: uniqueCandidates.length,
     offers: offerCount,
-    suppliers: supplierNames.size,
+    suppliers: evidenceSupplierKeys.size,
     message:
-      offerCount === 0
-        ? "No verifiable supplier offer was found for this item."
-        : `${supplierNames.size} supplier${supplierNames.size === 1 ? "" : "s"} found across ${
-            coverage.filter((c) => c.status === "OK").length
-          } connected source${coverage.filter((c) => c.status === "OK").length === 1 ? "" : "s"}.`,
+      uniqueCandidates.length === 0
+        ? "The search ran but returned no supplier listing to check. This does not prove that no supplier exists."
+        : offerCount === 0
+          ? `${uniqueCandidates.length} listing${uniqueCandidates.length === 1 ? "" : "s"} checked across ${connectedSources} source${connectedSources === 1 ? "" : "s"}; none provides verifiable evidence for this specification.`
+          : `${evidenceSupplierKeys.size} supplier candidate${evidenceSupplierKeys.size === 1 ? "" : "s"} with relevant product evidence across ${connectedSources} source${connectedSources === 1 ? "" : "s"}.`,
   };
 }

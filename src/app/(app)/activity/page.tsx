@@ -15,6 +15,7 @@ const JOB_LABELS: Record<string, string> = {
   EXTRACT_ENQUIRY: "Reading the requested products",
   CHECK_INVENTORY: "Checking stock",
   RUN_SOURCING: "Searching suppliers",
+  RUN_DEEP_RESEARCH: "Researching suppliers in depth",
   SEND_SUPPLIER_RFQ: "Sending a supplier request",
   BUILD_QUOTATION: "Preparing a quotation",
 };

@@ -3,6 +3,10 @@
 import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { authorizeOwner } from "@/lib/auth";
+import { enqueueJob } from "@/lib/workflow/jobs";
+import { JOB_TYPES } from "@/lib/constants";
+import { writeAudit } from "@/lib/audit";
+import { markAttachmentPageUnreadable } from "@/lib/intake/documentReview";
 import {
   assignSupplierReplyToQuote,
   confirmSupplierReplyExtraction,
@@ -12,6 +16,20 @@ import {
   setSupplierReplyReviewStatus,
   updateSupplierReplyExtractionFields,
 } from "@/lib/workflow/supplierReply";
+
+export async function markSupplierDocumentPageUnreadableAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const attachmentId = String(formData.get("attachmentId") ?? "");
+  const page = Number(formData.get("page") ?? 0);
+  try {
+    await markAttachmentPageUnreadable({ attachmentId, page, actorId: user.id, actorLabel: user.name });
+  } catch (error) {
+    redirect(`/suppliers/replies?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not mark the page")}`);
+  }
+  revalidateOrgPath(user.organizationId, "/suppliers/replies");
+  redirect("/suppliers/replies?saved=1");
+}
 
 export async function assignSupplierReplyAction(formData: FormData) {
   const user = await authorizeOwner();
@@ -126,6 +144,29 @@ export async function reprocessSupplierReplyAction(formData: FormData) {
       )}`,
     );
   }
+  revalidateOrgPath(user.organizationId, "/suppliers/replies");
+  redirect("/suppliers/replies?saved=1");
+}
+
+export async function reprocessSupplierReplyDocumentsAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const replyId = String(formData.get("replyId") ?? "");
+  if (!replyId) redirect("/suppliers/replies?error=Missing+supplier+reply");
+  const mode = String(formData.get("mode") ?? "retry") === "vision" ? "vision" : "retry";
+  await enqueueJob({
+    type: JOB_TYPES.REPROCESS_DOCUMENTS,
+    payload: { supplierReplyId: replyId, mode },
+    idempotencyKey: `reprocess-supplier-documents:${replyId}:${Date.now()}`,
+  });
+  await writeAudit({
+    actorId: user.id,
+    actorLabel: user.name,
+    action: "supplier_reply.documents_reprocess_requested",
+    entityType: "SupplierEmailReply",
+    entityId: replyId,
+    meta: { mode },
+  });
   revalidateOrgPath(user.organizationId, "/suppliers/replies");
   redirect("/suppliers/replies?saved=1");
 }

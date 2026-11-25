@@ -13,7 +13,7 @@ export const marketplaceAdapter: SearchAdapter = {
   label: "B2B marketplace",
   available: () => false,
   unavailableReason: () =>
-    "No marketplace API access is configured. Marketplaces typically require an approved developer account and API credentials; scraping is not used.",
+    "No B2B marketplace API is connected. An approved marketplace developer account, its API base URL and an API key are required; marketplace scraping is not used, so this source stays off until those credentials are supplied.",
   async search(queries): Promise<AdapterResult> {
     return {
       adapter: marketplaceAdapter.key,

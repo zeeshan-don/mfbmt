@@ -9,6 +9,73 @@ import { env } from "@/lib/env";
 import { stringifyJson } from "@/lib/json";
 import { sendSupplierQuoteRequest } from "@/lib/workflow/supplierQuotes";
 import { supplierSendGuard } from "@/lib/suppliers/sendGuard";
+import { validateSupplierRfqDraft } from "@/lib/outbound/supplierRfq";
+
+/**
+ * Owner edit of a supplier-facing draft. The original customer request is
+ * untouched; only the outbound subject/body are edited, and the quality report
+ * is recomputed so a saved edit cannot silently bypass validation.
+ */
+export async function updateSupplierDraftAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+
+  const quoteId = String(formData.get("quoteId") ?? "");
+  const subject = String(formData.get("subject") ?? "").trim().slice(0, 180);
+  const body = String(formData.get("body") ?? "").trim().slice(0, 12_000);
+  if (!quoteId || !subject || !body) {
+    redirect(`/suppliers/outreach/${quoteId}?error=Subject+and+message+are+required`);
+  }
+
+  const quote = await db.supplierQuote.findFirst({
+    where: { id: quoteId, status: "DRAFT" },
+    include: { items: true },
+  });
+  if (!quote) {
+    redirect("/suppliers/outreach?error=That+draft+is+no+longer+waiting+for+review");
+  }
+
+  const findings = validateSupplierRfqDraft({
+    subject,
+    body,
+    items: quote.items.map((line) => ({
+      description: line.description,
+      quantity: line.quantity,
+      unit: line.unit,
+      missingFields: [],
+    })),
+  });
+  const blocking = findings.filter((finding) => finding.severity === "error");
+
+  await db.supplierQuote.update({
+    where: { id: quote.id },
+    data: {
+      subject,
+      messageBody: body,
+      draftQualityJson: stringifyJson({
+        ok: blocking.length === 0,
+        checkedAt: new Date().toISOString(),
+        findings,
+        editedByOwner: true,
+      }),
+      lastError:
+        blocking.length > 0
+          ? `Quality check: ${blocking.map((finding) => finding.message).join(" ").slice(0, 560)}`
+          : null,
+    },
+  });
+  await writeAudit({
+    actorId: user.id,
+    actorLabel: user.name,
+    action: "supplier_quote.draft_edited",
+    entityType: "SupplierQuote",
+    entityId: quote.id,
+    meta: { blocking: blocking.length, findings: findings.length },
+  });
+  revalidateOrgPath(user.organizationId, "/suppliers/outreach");
+  revalidateOrgPath(user.organizationId, `/suppliers/outreach/${quote.id}`);
+  redirect(`/suppliers/outreach/${quote.id}?saved=1`);
+}
 
 /**
  * Batch approval is still an explicit owner decision for each supplier message.

@@ -11,6 +11,7 @@ import { enqueueJob } from "@/lib/workflow/jobs";
 import { JOB_TYPES } from "@/lib/constants";
 import { extractEnquiryById } from "@/lib/workflow/enquiry";
 import { createQuotationDraft } from "@/lib/workflow/quotations";
+import { markAttachmentPageUnreadable } from "@/lib/intake/documentReview";
 
 function str(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
@@ -139,7 +140,45 @@ export async function retryExtractionAction(formData: FormData) {
     where: { id: enquiryId },
     data: { status: "EXTRACTING", requiresReview: false, reviewReason: null },
   });
-  await extractEnquiryById(enquiryId);
+  await extractEnquiryById(enquiryId, { forceDocumentProcessing: true });
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
+  redirect(`/enquiries/${enquiryId}?saved=1`);
+}
+
+export async function reprocessEnquiryDocumentsAction(formData: FormData) {
+  const user = await authorize("enquiries.review");
+  if (!user) redirect("/login");
+  const enquiryId = String(formData.get("enquiryId") ?? "");
+  if (!enquiryId) redirect("/enquiries?error=Missing+request");
+  const mode = String(formData.get("mode") ?? "retry") === "vision" ? "vision" : "retry";
+  await enqueueJob({
+    type: JOB_TYPES.REPROCESS_DOCUMENTS,
+    payload: { enquiryId, mode },
+    idempotencyKey: `reprocess-documents:${enquiryId}:${Date.now()}`,
+  });
+  await writeAudit({
+    actorId: user.id,
+    actorLabel: user.name,
+    action: "documents.reprocess_requested",
+    entityType: "Enquiry",
+    entityId: enquiryId,
+    meta: { mode },
+  });
+  revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
+  redirect(`/enquiries/${enquiryId}?saved=1`);
+}
+
+export async function markDocumentPageUnreadableAction(formData: FormData) {
+  const user = await authorize("enquiries.review");
+  if (!user) redirect("/login");
+  const enquiryId = String(formData.get("enquiryId") ?? "");
+  const attachmentId = String(formData.get("attachmentId") ?? "");
+  const page = Number(formData.get("page") ?? 0);
+  try {
+    await markAttachmentPageUnreadable({ attachmentId, page, actorId: user.id, actorLabel: user.name });
+  } catch (error) {
+    redirect(`/enquiries/${enquiryId}?error=${encodeURIComponent(error instanceof Error ? error.message : "Could not mark the page")}`);
+  }
   revalidateOrgPath(user.organizationId, `/enquiries/${enquiryId}`);
   redirect(`/enquiries/${enquiryId}?saved=1`);
 }

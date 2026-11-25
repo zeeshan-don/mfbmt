@@ -96,6 +96,30 @@ function isFallbackError(error: unknown): boolean {
 
 type Provider = { name: string; search: (query: string) => Promise<SearchHit[]> };
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Bounded retry for transient provider failures. Auth/quota/rate-limit errors
+ * are not retried here; they fall through to the next provider instead.
+ */
+async function searchWithRetry(provider: Provider, query: string): Promise<SearchHit[]> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await provider.search(query);
+    } catch (error) {
+      lastError = error;
+      const status = (error as { status?: number })?.status;
+      const transient = status == null || status >= 500;
+      if (!transient || attempt > 0) throw error;
+      await delay(150);
+    }
+  }
+  throw lastError;
+}
+
 /**
  * Build the provider chain in priority order: Tavily → Serper → Brave.
  * Only providers with configured API keys are included.
@@ -105,6 +129,11 @@ type Provider = { name: string; search: (query: string) => Promise<SearchHit[]> 
  */
 function getProviderChain(): Provider[] {
   const explicit = env.WEB_SEARCH_PROVIDER.toLowerCase();
+
+  // "none" is a real off switch. API keys may still be present in the
+  // environment (for example a shared staging secret); they must not cause a
+  // search when the organization/provider setting is disabled.
+  if (explicit === "none") return [];
 
   // If explicitly set to a single provider with no backup keys, use only that
   if (explicit === "tavily" && env.TAVILY_API_KEY && !env.SERPER_API_KEY && !env.BRAVE_SEARCH_API_KEY) {
@@ -143,13 +172,14 @@ export const webSearchAdapter: SearchAdapter = {
     const chain = getProviderChain();
     if (chain.length === 0) {
       if (env.WEB_SEARCH_PROVIDER === "none") {
-        return "No web search provider is connected. Add TAVILY_API_KEY or SERPER_API_KEY to enable public supplier search.";
+        return "Public web search is turned off (WEB_SEARCH_PROVIDER=none). Set it to auto or a provider to enable it.";
       }
       return `The ${env.WEB_SEARCH_PROVIDER} API key is missing. Add it or set WEB_SEARCH_PROVIDER=none to disable.`;
     }
     return "";
   },
   async search(queries: string[], context: AdapterContext): Promise<AdapterResult> {
+    void context;
     const chain = getProviderChain();
     if (chain.length === 0) {
       return {
@@ -164,27 +194,28 @@ export const webSearchAdapter: SearchAdapter = {
 
     const candidates: SourcingCandidate[] = [];
     const runs: QueryRun[] = [];
-    const seen = new Set<string>();
-    let usedProvider = chain[0].name;
-    let fallbackNote: string | undefined;
-    let allFailed = true;
+    const seenUrls = new Set<string>();
+    const triedProviders: string[] = [];
+    const usedProviders: string[] = [];
+    const fallbackNotes: string[] = [];
+    let successfulQueries = 0;
+    let failedQueries = 0;
 
     for (const provider of chain) {
-      let providerFailed = false;
-      let providerHasSuccess = false;
+      triedProviders.push(provider.name);
       const providerRuns: QueryRun[] = [];
       const providerCandidates: SourcingCandidate[] = [];
       const providerSeen = new Set<string>();
 
-      for (const query of queries) {
+      for (let index = 0; index < queries.length; index += 1) {
+        const query = queries[index];
         try {
-          const hits = await provider.search(query);
+          const hits = await searchWithRetry(provider, query);
+          successfulQueries += 1;
           providerRuns.push({ query, status: "OK", resultCount: hits.length });
-          providerHasSuccess = true;
           for (const hit of hits) {
-            if (seen.has(hit.url) || providerSeen.has(hit.url)) continue;
+            if (providerSeen.has(hit.url)) continue;
             providerSeen.add(hit.url);
-            seen.add(hit.url);
             const text = `${hit.title} ${hit.snippet}`;
             const price = extractPriceFromText(text);
             const specs = extractSpecsFromText(text);
@@ -205,6 +236,7 @@ export const webSearchAdapter: SearchAdapter = {
             });
           }
         } catch (error) {
+          failedQueries += 1;
           const status = (error as { status?: number })?.status;
           providerRuns.push({
             query,
@@ -212,59 +244,67 @@ export const webSearchAdapter: SearchAdapter = {
             resultCount: 0,
             error: error instanceof Error ? error.message.slice(0, 160) : "Search failed",
           });
-
           if (isFallbackError(error)) {
-            providerFailed = true;
-            fallbackNote = `${provider.name} failed (${status ?? "network error"}). Fell back to next provider.`;
-            break; // Stop this provider, try next
+            fallbackNotes.push(
+              `${provider.name} failed (${status ?? "network/timeout"}); next configured source was tried.`,
+            );
+            // Every query still has an explicit status. The unattempted ones
+            // are recorded as skipped rather than silently missing.
+            for (const remaining of queries.slice(index + 1)) {
+              providerRuns.push({
+                query: remaining,
+                status: "SKIPPED",
+                resultCount: 0,
+                error: "Provider unavailable; next source used.",
+              });
+            }
+            break;
           }
-          // Non-fallback error: continue with remaining queries
         }
       }
 
-      if (providerFailed) {
-        // Don't keep partial results from a failed provider — try next
-        continue;
-      }
-
-      // Provider succeeded (at least partially)
-      allFailed = false;
-      usedProvider = provider.name;
       runs.push(...providerRuns);
-      candidates.push(...providerCandidates);
 
-      // If this provider returned results, stop (don't try fallbacks)
-      if (providerCandidates.length > 0 || providerHasSuccess) {
+      if (providerCandidates.length > 0) {
+        // Keep what this provider actually returned, even if it failed part-way.
+        for (const candidate of providerCandidates) {
+          if (candidate.sourceUrl && seenUrls.has(candidate.sourceUrl)) continue;
+          if (candidate.sourceUrl) seenUrls.add(candidate.sourceUrl);
+          candidates.push(candidate);
+        }
+        usedProviders.push(provider.name);
         break;
       }
-      // If provider succeeded but returned 0 results, try next provider
-      // (maybe another search engine has different coverage)
+      // A successful response with zero usable results must not stop the
+      // fallback chain: another provider may have different coverage.
+      if (chain.indexOf(provider) < chain.length - 1) {
+        fallbackNotes.push(`${provider.name} returned no usable results; next configured source was tried.`);
+      }
     }
 
-    // Enrich web candidates with page evidence
-    // (moved outside the provider loop — only enrich if we have candidates)
-    void context;
+    const status =
+      successfulQueries > 0 && failedQueries > 0
+        ? "PARTIAL"
+        : successfulQueries > 0
+          ? "OK"
+          : failedQueries > 0
+            ? "FAILED"
+            : "SKIPPED";
 
-    const failures = runs.filter((run) => run.status === "FAILED").length;
-    const note = fallbackNote
-      ? `${fallbackNote} Results from ${usedProvider}.`
-      : failures > 0
-        ? `${failures} of ${runs.length} searches failed.`
-        : undefined;
-
-    // Enrich with page evidence for web candidates
-    // (reuse existing enrichWithPageEvidence logic from engine.ts)
-    // Note: enrichment happens in engine.ts after adapter.search() returns
+    const note =
+      candidates.length === 0 && successfulQueries > 0
+        ? `Searches ran on ${[...new Set(triedProviders)].join(", ")} but returned no usable supplier results. ${fallbackNotes.join(" ")}`.trim()
+        : fallbackNotes.length > 0
+          ? fallbackNotes.join(" ")
+          : undefined;
 
     return {
       adapter: webSearchAdapter.key,
       label: webSearchAdapter.label,
-      status: allFailed ? "FAILED" : failures === runs.length && runs.length > 0 ? "FAILED" : "OK",
+      status,
       queries: runs,
       candidates,
-      note: candidates.length === 0 && !allFailed
-        ? `No results from ${usedProvider}. ${fallbackNote ?? ""}`.trim()
-        : note,
+      note,
     };
   },
 };

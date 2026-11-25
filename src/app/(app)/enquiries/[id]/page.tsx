@@ -21,11 +21,15 @@ import {
   recheckStockAction,
   runSourcingAction,
   retryExtractionAction,
+  reprocessEnquiryDocumentsAction,
+  markDocumentPageUnreadableAction,
   markAsRfqAction,
   closeEnquiryAction,
   buildQuotationAction,
 } from "@/app/actions/enquiries";
 import { FileText, Image as ImageIcon, MessageSquare, Paperclip, Search } from "lucide-react";
+import { DocumentReviewCard } from "@/components/document-review";
+import type { DocumentPackageSummary } from "@/lib/intake/documentIntelligence";
 
 export const dynamic = "force-dynamic";
 
@@ -63,10 +67,20 @@ export default async function EnquiryDetailPage({
     where: { enquiryId: enquiry.id },
     orderBy: { receivedAt: "asc" },
   });
+  const documentPackage = enquiry.attachments.length
+    ? await db.documentPackage.findFirst({
+        where: { enquiryId: enquiry.id },
+        orderBy: { createdAt: "desc" },
+      })
+    : null;
+  const documentSummary = documentPackage
+    ? parseJson<DocumentPackageSummary | null>(documentPackage.summaryJson, null)
+    : null;
 
   const supplierNames = await db.supplier.findMany({ select: { id: true, name: true } });
   const supplierById = new Map(supplierNames.map((supplier) => [supplier.id, supplier.name]));
 
+  const customerInstructions = parseJson<string[]>(enquiry.customerInstructionsJson ?? "[]", []);
   const approvedCount = enquiry.items.filter((item) => item.approvedOfferId).length;
   const allCovered = enquiry.items.length > 0 && enquiry.items.every((item) => item.quantityToSource === 0 || item.approvedOfferId);
   const canBuildQuotation = user.role === "OWNER" && approvedCount > 0;
@@ -552,6 +566,15 @@ export default async function EnquiryDetailPage({
         </div>
 
         <div className="space-y-4">
+          <DocumentReviewCard
+            attachments={enquiry.attachments}
+            summary={documentSummary}
+            productCount={enquiry.items.length}
+            action={reprocessEnquiryDocumentsAction}
+            pageFlagAction={markDocumentPageUnreadableAction}
+            idField="enquiryId"
+            idValue={enquiry.id}
+          />
           <Card>
             <CardHeader title="Original request" description="Exactly what the customer sent." />
             <div className="space-y-3 px-4 py-3">
@@ -642,6 +665,30 @@ export default async function EnquiryDetailPage({
                 <dt className="text-muted">Needed by</dt>
                 <dd className="text-right text-ink">{enquiry.deliveryDate ? formatDateTime(enquiry.deliveryDate) : "Not stated"}</dd>
               </div>
+              {enquiry.requestedDeliveryTimeframe ? (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted">Requested window</dt>
+                  <dd className="text-right text-ink">{enquiry.requestedDeliveryTimeframe}</dd>
+                </div>
+              ) : null}
+              {enquiry.urgency ? (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted">Urgency</dt>
+                  <dd className="text-right text-ink">{enquiry.urgency}</dd>
+                </div>
+              ) : null}
+              {customerInstructions.length > 0 ? (
+                <div>
+                  <dt className="text-muted">Customer instructions</dt>
+                  <dd className="mt-1 text-ink">
+                    <ul className="list-disc space-y-1 pl-4">
+                      {customerInstructions.map((instruction) => (
+                        <li key={instruction}>{instruction}</li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           </Card>
 
