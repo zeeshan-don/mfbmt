@@ -204,6 +204,7 @@ export async function createProcurementAction(formData: FormData) {
     ],
     internalNotes: text(formData, "internalNotes") || null,
     supplierNotes: text(formData, "supplierNotes") || null,
+    idempotencyKey: text(formData, "operationKey") || null,
     userId: user.id,
     actorLabel: user.name,
   });
@@ -328,6 +329,7 @@ export async function recordReceiptAction(formData: FormData) {
     deliveryNoteRef: text(formData, "deliveryNoteRef") || null,
     inspectionResult: text(formData, "inspectionResult") || null,
     notes: text(formData, "notes") || null,
+    idempotencyKey: text(formData, "operationKey") || null,
     userId: user.id,
     actorLabel: user.name,
   });
@@ -364,6 +366,7 @@ export async function recordDeliveryAction(formData: FormData) {
     trackingRef: text(formData, "trackingRef") || null,
     deliveryAddress: text(formData, "deliveryAddress") || null,
     notes: text(formData, "notes") || null,
+    idempotencyKey: text(formData, "operationKey") || null,
     userId: user.id,
     actorLabel: user.name,
   });
@@ -406,6 +409,7 @@ export async function issueInvoiceAction(formData: FormData) {
     invoiceDate: text(formData, "invoiceDate") || null,
     dueDate: text(formData, "dueDate") || null,
     notes: text(formData, "notes") || null,
+    idempotencyKey: text(formData, "operationKey") || null,
     userId: user.id,
     actorLabel: user.name,
   });
@@ -434,6 +438,7 @@ export async function recordPaymentAction(formData: FormData) {
     reference: text(formData, "reference") || null,
     proofPath: text(formData, "proofPath") || null,
     notes: text(formData, "notes") || null,
+    idempotencyKey: text(formData, "operationKey") || null,
     userId: user.id,
     actorLabel: user.name,
   });
@@ -473,6 +478,7 @@ export async function recordSupplierBillAction(formData: FormData) {
     dueDate: text(formData, "dueDate") || null,
     paymentTerms: text(formData, "paymentTerms") || null,
     notes: text(formData, "notes") || null,
+    idempotencyKey: text(formData, "operationKey") || null,
     userId: user.id,
     actorLabel: user.name,
   });
@@ -490,6 +496,7 @@ export async function recordSupplierPaymentAction(formData: FormData) {
     paidAt: text(formData, "paidAt") || null,
     method: text(formData, "method") || null,
     reference: text(formData, "reference") || null,
+    idempotencyKey: text(formData, "operationKey") || null,
     userId: user.id,
     actorLabel: user.name,
   });

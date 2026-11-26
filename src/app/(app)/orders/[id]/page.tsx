@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
@@ -433,6 +434,7 @@ export default async function SalesOrderPage({
 
                   {canReceive ? (
                     <form action={recordReceiptAction} className="space-y-2 rounded-card border border-line p-3">
+                      <input type="hidden" name="operationKey" value={randomUUID()} />
                       <p className="text-[12px] font-medium text-ink">Record goods receipt</p>
                       <input type="hidden" name="purchaseOrderId" value={po.id} />
                       <input type="hidden" name="salesOrderId" value={order.id} />
@@ -502,6 +504,7 @@ export default async function SalesOrderPage({
 
                   {canBill ? (
                     <form action={recordSupplierBillAction} className="flex flex-wrap items-end gap-2 rounded-card border border-line p-3">
+                      <input type="hidden" name="operationKey" value={randomUUID()} />
                       <input type="hidden" name="purchaseOrderId" value={po.id} />
                       <input type="hidden" name="supplierId" value={po.supplierId} />
                       <input type="hidden" name="salesOrderId" value={order.id} />
@@ -549,6 +552,7 @@ export default async function SalesOrderPage({
                               </div>
                               {balance.gt(0) ? (
                                 <form action={recordSupplierPaymentAction} className="flex items-end gap-2">
+                                  <input type="hidden" name="operationKey" value={randomUUID()} />
                                   <input type="hidden" name="supplierBillId" value={bill.id} />
                                   <input type="hidden" name="salesOrderId" value={order.id} />
                                   <input name="amount" className={inputClass} placeholder="amount" />
@@ -581,6 +585,7 @@ export default async function SalesOrderPage({
               .filter((line) => line.remainingToOrder > 0.0001)
               .map((line) => (
                 <form key={line.salesOrderLineId} action={createProcurementAction} className="rounded-card border border-line p-3">
+                  <input type="hidden" name="operationKey" value={randomUUID()} />
                   <input type="hidden" name="salesOrderId" value={order.id} />
                   <input type="hidden" name="salesOrderLineId" value={line.salesOrderLineId} />
                   <p className="text-[12px] font-medium text-ink">
@@ -673,6 +678,7 @@ export default async function SalesOrderPage({
 
         {availability.some((line) => line.available > 0.0001) && !closed ? (
           <form action={recordDeliveryAction} className="space-y-2 border-t border-line px-4 py-4">
+            <input type="hidden" name="operationKey" value={randomUUID()} />
             <input type="hidden" name="salesOrderId" value={order.id} />
             <p className="text-[12px] font-medium text-ink">Record a dispatch</p>
             <div className="grid gap-2 sm:grid-cols-3">
@@ -769,6 +775,7 @@ export default async function SalesOrderPage({
 
         {metrics.lines.some((line) => line.remainingToInvoice.gt(0)) && !closed ? (
           <form action={issueInvoiceAction} className="space-y-2 border-t border-line px-4 py-4">
+            <input type="hidden" name="operationKey" value={randomUUID()} />
             <input type="hidden" name="salesOrderId" value={order.id} />
             <p className="text-[12px] font-medium text-ink">Issue an invoice from delivered quantity</p>
             <div className="grid gap-2 sm:grid-cols-3">
@@ -821,6 +828,7 @@ export default async function SalesOrderPage({
 
         {invoices.some((invoice) => money(dec(invoice.total).minus(dec(invoice.amountPaid))).gt(0)) ? (
           <form action={recordPaymentAction} className="flex flex-wrap items-end gap-2 border-t border-line px-4 py-4">
+            <input type="hidden" name="operationKey" value={randomUUID()} />
             <input type="hidden" name="salesOrderId" value={order.id} />
             <p className="w-full text-[12px] font-medium text-ink">Record a customer receipt</p>
             <label className="block">

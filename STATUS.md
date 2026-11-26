@@ -15,7 +15,7 @@ Implemented and locally verified:
 - Quotation payment/delivery terms are structured fields; generic `terms` boilerplate is never used as a comparison baseline. Legacy quotations report `NOT_COMPARABLE` instead of a false mismatch. Delivery location is separate from Incoterms.
 - Closure supplier obligations are grouped by currency and never added across currencies.
 
-Verification: `npx prisma validate` PASS, `npx tsc --noEmit` PASS, `npm test` PASS (68 files / 514 tests), `npm run lint` PASS (0 errors, 23 existing warnings), `npm run build` PASS. Concurrency tests run against the isolated local PostgreSQL `mfbmt_test`.
+Verification: `npx prisma validate` PASS, `npx tsc --noEmit` PASS, `npm test` PASS (68 files / 515 tests), `npm run lint` PASS (0 errors, 23 existing warnings), `npm run build` PASS. Concurrency tests run against the isolated local PostgreSQL `mfbmt_test`.
 
 Still not implemented in this pass: supplier-invoice document extraction and line-level three-way matching; customer-invoice/delivery-note PDF generation and guarded email sending; supplier bill line model; per-action idempotency keys in the forms. These remain explicit limitations and must not be described as live.
 

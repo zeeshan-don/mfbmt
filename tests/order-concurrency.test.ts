@@ -230,4 +230,47 @@ describe("order mutation concurrency", () => {
     expect(invoices).toHaveLength(1);
     expect(invoices[0].lines.reduce((total, line) => total + Number(line.quantity), 0)).toBe(10);
   });
+
+  it("allows a new invoice action for a later delivery with the same quantity", async () => {
+    const fixture = await seedOrder({ quantity: 20, stockQuantity: 20 });
+    const location = await db.inventoryLocation.create({ data: { code: `CONC-ILOC-${fixture.suffix}`, name: "Main" } });
+    await db.inventoryStock.create({
+      data: { productId: fixture.product!.id, locationId: location.id, quantityOnHand: 20, quantityReserved: 20 },
+    });
+
+    const deliver = async (key: string) => {
+      const result = await recordDelivery({
+        salesOrderId: fixture.order.id,
+        lines: [{ salesOrderLineId: fixture.order.lines[0].id, quantity: 10 }],
+        idempotencyKey: `later-delivery-${fixture.suffix}-${key}`,
+        userId: fixture.owner.id,
+        actorLabel: fixture.owner.name,
+      });
+      if (!result.ok) throw new Error(result.error);
+      await db.delivery.update({ where: { id: result.deliveryId }, data: { status: "DELIVERED", deliveredAt: new Date() } });
+    };
+
+    await deliver("a");
+    const first = await issueCustomerInvoice({
+      salesOrderId: fixture.order.id,
+      lines: [{ salesOrderLineId: fixture.order.lines[0].id, quantity: 10 }],
+      idempotencyKey: `later-invoice-${fixture.suffix}-a`,
+      userId: fixture.owner.id,
+      actorLabel: fixture.owner.name,
+    });
+    expect(first.ok).toBe(true);
+
+    await deliver("b");
+    const second = await issueCustomerInvoice({
+      salesOrderId: fixture.order.id,
+      lines: [{ salesOrderLineId: fixture.order.lines[0].id, quantity: 10 }],
+      idempotencyKey: `later-invoice-${fixture.suffix}-b`,
+      userId: fixture.owner.id,
+      actorLabel: fixture.owner.name,
+    });
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.duplicate).toBe(false);
+    const invoices = await db.customerInvoice.findMany({ where: { salesOrderId: fixture.order.id } });
+    expect(invoices).toHaveLength(2);
+  });
 });
