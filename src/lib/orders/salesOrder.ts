@@ -560,7 +560,11 @@ export async function createSalesOrderFromAcceptance(
 
   const comparison = compareAcceptanceToQuotation(quotation, input);
   const revised = decision === "APPROVE_REVISED";
-  const blocking = revised ? [] : comparison.blocking;
+  // Accepting the original offer means the customer's changed values are
+  // recorded and rejected: the order is built from the quotation snapshot. It
+  // never silently adopts a changed price, quantity, tax or delivery term.
+  const acceptOriginal = decision === "ACCEPT_ORIGINAL";
+  const blocking = revised || acceptOriginal ? [] : comparison.blocking;
   const hasPartialAcceptance = comparison.warnings.some((item) => item.code === "MISSING_LINE");
 
   if (blocking.length > 0) {
@@ -571,7 +575,7 @@ export async function createSalesOrderFromAcceptance(
       discrepancies: blocking,
     };
   }
-  if (!decision && hasPartialAcceptance) {
+  if (decision !== "APPROVE_REVISED" && hasPartialAcceptance) {
     return {
       ok: false,
       code: "DISCREPANCY",

@@ -1,5 +1,7 @@
 # MFBMT owner-workflow implementation audit
 
+> **Status update (26 November 2026).** The gaps in the table below were implemented in `d79d84a` (sales orders, supplier POs, acknowledgements, receipts, deliveries, invoices, payments, closure and the owner board). The two inbound links that remained manual — a customer's purchase-order reply and a supplier's reply to a sent PO — are now implemented and documented in [`ORDER_REPLY_CORRELATION.md`](./ORDER_REPLY_CORRELATION.md). Treat this document as the historical audit that motivated the work, not as the current capability list.
+
 Audit basis: the uploaded repository snapshot `d2c0a28b3e2c5ac88fca72834aef755421e14488` plus the focused supplier-reply vision correction in this working copy.
 
 This document distinguishes implemented capabilities from work that is still required. A successful test suite or build is not evidence that external providers or a live deployment work.

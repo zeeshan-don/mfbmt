@@ -15,6 +15,7 @@ import { sendEmail } from "../email/send";
 import { sendWhatsAppDocument, sendWhatsAppText } from "../intake/whatsapp";
 import { env, isDemoMode } from "../env";
 import { outboundOperationKey, sendOutboundOnce } from "../outbound/messages";
+import { correlationReference, correlationTokenFor } from "../orders/tokens";
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
@@ -657,6 +658,19 @@ export async function sendApprovedQuotation(input: {
 
   if (!pdfPath) return fail("The quotation PDF is missing.");
 
+  // A stable opaque reference travels in the subject so a customer's reply or
+  // purchase order can be attached to this exact quotation version. It is not
+  // a secret and it is never used to authorise a commercial change.
+  const correlationToken = quotation.correlationToken ?? correlationTokenFor("QTN", quotation.id);
+  if (!quotation.correlationToken) {
+    await db.customerQuotation.update({
+      where: { id: quotation.id },
+      data: { correlationToken },
+    });
+  }
+  const reference = correlationReference("QTN", correlationToken);
+  const subject = `Quotation ${quotation.quoteNumber} [${reference}]`;
+
   const to = (
     input.channel === "EMAIL"
       ? input.to ?? quotation.customerEmail ?? ""
@@ -678,6 +692,7 @@ export async function sendApprovedQuotation(input: {
     "",
     `Please find our quotation ${quotation.quoteNumber} attached.`,
     `Total: ${money(quotation.total, quotation.currency)}`,
+    `Reference: ${reference}`,
     "",
     "Thank you,",
   ].join("\n");
@@ -694,7 +709,7 @@ export async function sendApprovedQuotation(input: {
       kind: "CUSTOMER_QUOTATION",
       channel: input.channel,
       recipient: to,
-      subject: `Quotation ${quotation.quoteNumber}`,
+      subject,
       body,
       relatedType: "CustomerQuotation",
       relatedId: quotation.id,
@@ -713,7 +728,7 @@ export async function sendApprovedQuotation(input: {
       if (input.channel === "EMAIL") {
         const sent = await sendEmail({
           to,
-          subject: `Quotation ${quotation.quoteNumber}`,
+          subject,
           text: body,
           attachments: [{ filename: `${quotation.quoteNumber}.pdf`, content: pdf, contentType: "application/pdf" }],
         });
@@ -786,6 +801,9 @@ export async function sendApprovedQuotation(input: {
       sentAt: quotation.sentAt ?? new Date(),
       sentChannel: wasSimulated ? "DEMO" : input.channel,
       sentTo: to,
+      correlationToken,
+      providerMessageId: result.providerMessageId ?? null,
+      providerThreadId: result.providerThreadId ?? null,
       sendError: wasSimulated ? "Demo simulation — no message was transmitted." : null,
     },
   });

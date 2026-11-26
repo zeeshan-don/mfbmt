@@ -128,6 +128,7 @@ model Organization {
   supplierPayments         SupplierPayment[]
   orderStatusEvents        OrderStatusEvent[]
   orderDiscrepancies       OrderDiscrepancy[]
+  customerAcceptanceReviews CustomerAcceptanceReview[]
 
   @@index([status])
 }
@@ -296,6 +297,8 @@ model Attachment {
   enquiry          Enquiry?            @relation(fields: [enquiryId], references: [id])
   supplierReplyId  String?
   supplierReply    SupplierEmailReply? @relation(fields: [supplierReplyId], references: [id], onDelete: SetNull)
+  acceptanceReviewId String?
+  acceptanceReview   CustomerAcceptanceReview? @relation(fields: [acceptanceReviewId], references: [id], onDelete: SetNull)
   filename         String // sanitized display name
   storedName       String              @unique // random name in storage
   mimeType         String
@@ -328,6 +331,7 @@ model Attachment {
   @@unique([messageId, sha256])
   @@index([organizationId, enquiryId])
   @@index([supplierReplyId])
+  @@index([acceptanceReviewId])
   @@index([organizationId, packageId])
   @@index([organizationId, processingStatus])
 }
@@ -377,6 +381,10 @@ model SupplierEmailReply {
   subject           String?
   bodySummary       String? // retained summary, never a full uncontrolled body dump
   attachmentsJson   String         @default("[]")
+  /// Set when the reply is correlated to an issued supplier purchase order.
+  purchaseOrderId   String?
+  purchaseOrder     PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  acknowledgement   SupplierAcknowledgement?
   extractedJson     String? // deterministic extraction of the supplier's terms
   extractionStatus  String         @default("PENDING") // PENDING | EXTRACTED | FAILED | NO_TERMS
   matchingStatus    String         @default("UNMATCHED") // MATCHED | NEEDS_REVIEW | UNMATCHED | DUPLICATE
@@ -391,6 +399,7 @@ model SupplierEmailReply {
   @@index([organizationId, matchingStatus, receivedAt])
   @@index([supplierQuoteId])
   @@index([supplierId])
+  @@index([purchaseOrderId])
 }
 
 /// One-time, high-entropy owner invitation. Only the SHA-256 hash is stored; the
@@ -1205,6 +1214,11 @@ model CustomerQuotation {
   sentAt                 DateTime?
   sentChannel            String? // EMAIL | WHATSAPP | MANUAL
   sentTo                 String?
+  /// Opaque reference embedded in the outgoing quotation subject so a customer
+  /// reply or purchase order can be correlated to this exact version.
+  correlationToken       String?                 @unique
+  providerThreadId       String?
+  providerMessageId      String?
   sendError              String?
   pdfPath                String?
   pdfGeneratedAt         DateTime?
@@ -1214,6 +1228,7 @@ model CustomerQuotation {
   items                  CustomerQuotationItem[]
   stockReservations      StockReservation[]
   salesOrders            SalesOrder[]
+  acceptanceReviews      CustomerAcceptanceReview[]
 
   @@unique([organizationId, quoteNumber])
   @@unique([enquiryId, version])
@@ -1576,6 +1591,45 @@ model OutboundMessage {
  * idempotency key so retries cannot duplicate commercial commitments.
  */
 
+/// An inbound customer reply or purchase order that appears to accept one exact
+/// quotation version. The extracted document and the deterministic comparison
+/// are kept as evidence; the owner still decides whether an order is created.
+/// Idempotent on the provider message id so a mailbox replay cannot create a
+/// second review or a second commercial commitment.
+model CustomerAcceptanceReview {
+  id                String            @id @default(cuid())
+  organizationId    String            @default("__unset__")
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  quotationId       String
+  quotation         CustomerQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  quotationVersion  Int
+  customerId        String?
+  source            String            @default("EMAIL") // EMAIL | MANUAL_UPLOAD
+  provider          String? // GMAIL | MICROSOFT365
+  externalMessageId String?
+  fromAddress       String?
+  subject           String?
+  bodySummary       String?
+  attachmentsJson   String            @default("[]")
+  extractionJson    String            @default("{}")
+  comparisonJson    String            @default("{}")
+  customerPoNumber  String?
+  status            String            @default("PENDING") // PENDING | CONVERTED | REJECTED | DISMISSED
+  receivedAt        DateTime          @default(now())
+  reviewedById      String?
+  reviewedAt        DateTime?
+  reviewNote        String?
+  salesOrderId      String?
+  salesOrder        SalesOrder?       @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  createdAt         DateTime          @default(now())
+  attachments       Attachment[]
+
+  @@unique([organizationId, externalMessageId])
+  @@index([organizationId, status])
+  @@index([quotationId])
+  @@index([salesOrderId])
+}
+
 model SalesOrder {
   id                     String             @id @default(cuid())
   organizationId         String             @default("__unset__")
@@ -1623,6 +1677,7 @@ model SalesOrder {
   invoices               CustomerInvoice[]
   discrepancies          OrderDiscrepancy[]
   statusEvents           OrderStatusEvent[]
+  acceptanceReviews      CustomerAcceptanceReview[]
 
   @@unique([organizationId, orderNumber])
   @@unique([organizationId, idempotencyKey])
@@ -1695,9 +1750,13 @@ model PurchaseOrder {
   sentChannel          String?
   sentTo               String?
   providerMessageId    String?
-  sentSubject          String?
-  sentDocumentJson     String?
-  lastError            String?
+    sentSubject           String?
+  sentDocumentJson      String?
+  /// Opaque reference embedded in the outgoing PO subject, used to correlate a
+  /// supplier reply with this exact purchase order.
+  correlationToken      String?                   @unique
+  providerThreadId      String?
+  lastError             String?
   createdById          String?
   createdAt            DateTime                  @default(now())
   updatedAt            DateTime                  @updatedAt
@@ -1705,6 +1764,7 @@ model PurchaseOrder {
   acknowledgements     SupplierAcknowledgement[]
   receipts             GoodsReceipt[]
   supplierBills        SupplierBill[]
+  emailReplies         SupplierEmailReply[]
 
   @@unique([organizationId, poNumber])
   @@unique([organizationId, idempotencyKey])
@@ -1750,6 +1810,9 @@ model SupplierAcknowledgement {
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   outcome         String
   reviewStatus    String        @default("PENDING")
+  /// The inbound email this acknowledgement was read from, when automatic.
+  supplierReplyId String?       @unique
+  supplierReply   SupplierEmailReply? @relation(fields: [supplierReplyId], references: [id], onDelete: SetNull)
   promisedDate    DateTime?
   linesJson       String        @default("[]")
   deviationsJson  String        @default("[]")

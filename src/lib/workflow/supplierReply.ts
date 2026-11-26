@@ -19,6 +19,10 @@ import { env } from "../env";
 import { enqueueJob } from "./jobs";
 import { JOB_TYPES } from "../constants";
 import {
+  correlatePurchaseOrderReply,
+  ingestPurchaseOrderAcknowledgement,
+} from "../orders/acknowledgements";
+import {
   detectSupplierIntent,
   detectSupplierIntentByRules,
   extractSupplierQuotation,
@@ -1322,6 +1326,139 @@ export async function ingestSupplierReply(input: SupplierReplyInput): Promise<Su
       })
     : null;
   const finalTerms = aiMerge?.terms ?? terms;
+
+  // ── Purchase-order acknowledgement path ─────────────────────────────────
+  // A reply to an issued purchase order is a commitment response, not an RFQ
+  // quotation. It is attached by thread, message-id header, opaque PO token or
+  // PO number. A known supplier address alone is not enough to auto-attach a
+  // purchase order: that would let an unrelated email change a commitment.
+  const poCandidates = supplier
+    ? await db.purchaseOrder.findMany({
+        where: {
+          supplierId: supplier.id,
+          status: {
+            in: [
+              "SENT",
+              "ACKNOWLEDGEMENT_RECEIVED",
+              "ACKNOWLEDGED",
+              "PARTIALLY_ACKNOWLEDGED",
+              "REVISED",
+              "PARTIALLY_RECEIVED",
+            ],
+          },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 30,
+        select: {
+          id: true,
+          poNumber: true,
+          supplierId: true,
+          status: true,
+          correlationToken: true,
+          providerThreadId: true,
+          providerMessageId: true,
+          sentAt: true,
+          supplier: { select: { email: true } },
+          salesOrder: { select: { id: true } },
+        },
+      })
+    : [];
+  if (poCandidates.length > 0) {
+    const poCorrelation = correlatePurchaseOrderReply(
+      {
+        fromAddress: from,
+        subject: input.subject,
+        bodyText: input.body,
+        providerThreadId: input.providerThreadId,
+        internetMessageId: input.internetMessageId,
+        inReplyTo: input.inReplyTo,
+        references: input.references,
+      },
+      poCandidates.map((po) => ({
+        purchaseOrderId: po.id,
+        poNumber: po.poNumber,
+        supplierId: po.supplierId,
+        supplierEmail: po.supplier.email,
+        sentTo: null,
+        status: po.status,
+        correlationToken: po.correlationToken,
+        providerThreadId: po.providerThreadId,
+        providerMessageId: po.providerMessageId,
+        sentAt: po.sentAt?.getTime() ?? null,
+      })),
+    );
+    if (poCorrelation.status === "MATCHED" && poCorrelation.purchaseOrderId) {
+      const acknowledgement = await ingestPurchaseOrderAcknowledgement({
+        supplierReplyId: reply.id,
+        purchaseOrderId: poCorrelation.purchaseOrderId,
+        body: input.body,
+        receivedAt: input.receivedAt ?? new Date(),
+        quotedItems: aiData?.quoted_items ?? [],
+      });
+      const matchedPo = poCandidates.find((po) => po.id === poCorrelation.purchaseOrderId);
+      await db.supplierEmailReply.update({
+        where: { id: reply.id },
+        data: {
+          matchingStatus: "MATCHED",
+          purchaseOrderId: poCorrelation.purchaseOrderId,
+          attachmentsJson: stringifyJson(savedAttachments),
+          extractedJson: stringifyJson({
+            ...finalTerms,
+            ai: aiData,
+            aiStatus: aiOutcome.status,
+            aiError: aiOutcome.status === "OK" ? null : aiOutcome.error,
+            quotedItems: aiData?.quoted_items ?? [],
+            acknowledgement: acknowledgement.ok ? acknowledgement : null,
+          }),
+          extractionStatus: acknowledgement.ok ? "EXTRACTED" : "FAILED",
+          correlationJson: stringifyJson({
+            ...poCorrelation,
+            acknowledgement,
+            attachmentFailures: attachmentReading.failures,
+          }),
+          processedAt: new Date(),
+        },
+      });
+      await writeAudit({
+        action: "supplier_reply.purchase_order",
+        entityType: "SupplierEmailReply",
+        entityId: reply.id,
+        actorLabel: "system",
+        meta: {
+          purchaseOrderId: poCorrelation.purchaseOrderId,
+          method: poCorrelation.method,
+          acknowledgementId: acknowledgement.ok ? acknowledgement.acknowledgementId : null,
+          outcome: acknowledgement.ok ? acknowledgement.outcome : null,
+          deviations: acknowledgement.ok ? acknowledgement.deviations.length : null,
+        },
+      });
+      if (acknowledgement.ok && matchedPo) {
+        await notifyOwner({
+          type: "SUPPLIER_ACKNOWLEDGEMENT",
+          title:
+            acknowledgement.outcome === "REJECTED"
+              ? "A supplier rejected a purchase order"
+              : acknowledgement.deviations.length > 0
+                ? "A supplier replied with changed purchase-order terms"
+                : "A supplier acknowledged a purchase order",
+          body: `${matchedPo.poNumber} — ${supplier?.name ?? from}: ${acknowledgement.outcome
+            .replaceAll("_", " ")
+            .toLowerCase()} (${acknowledgement.deviations.length} difference(s)). The approved PO is unchanged until you review it.`,
+          link: `/orders/${matchedPo.salesOrder.id}`,
+        });
+      }
+      return {
+        handled: true,
+        replyId: reply.id,
+        status: "MATCHED",
+        quoteId: null,
+        offerId: null,
+        reason: acknowledgement.ok
+          ? "Supplier purchase-order reply recorded for owner review."
+          : acknowledgement.error,
+      };
+    }
+  }
 
   let offerId: string | null = null;
   if (correlation.status === "MATCHED" && matchedQuote) {

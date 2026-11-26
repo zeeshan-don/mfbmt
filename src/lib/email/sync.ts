@@ -11,6 +11,7 @@ import { activeEmailProvider } from "./send";
 import { graphClientState } from "./routing";
 import { requireTenantId } from "../tenant";
 import { ingestSupplierReply } from "../workflow/supplierReply";
+import { ingestCustomerAcceptanceReply } from "../orders/customerAcceptance";
 import { withMutex } from "../concurrency/mutex";
 import { downloadGraphAttachments, graphErrorDetail, graphFetch, graphMailboxProfile } from "./graph";
 import { enqueueJob } from "../workflow/jobs";
@@ -323,6 +324,35 @@ async function gmailMessage(
     return { ok: true, ingested: !supplierReply.duplicate };
   }
 
+  // A customer reply carrying a strong quotation reference is an acceptance,
+  // not a new enquiry. It is stored for owner review; no order is created here.
+  const acceptance = await ingestCustomerAcceptanceReply({
+    provider: "GMAIL",
+    externalMessageId: messageId,
+    providerThreadId: message.threadId ?? null,
+    internetMessageId: messageId,
+    inReplyTo,
+    references,
+    from,
+    fromName: parseEmailDisplayName(rawFrom),
+    subject,
+    body: plainBody,
+    receivedAt,
+    attachments: accepted,
+  });
+  if (acceptance.handled) {
+    if (attachmentFailures.length > 0) {
+      await writeAudit({
+        action: "email.attachment_failed",
+        entityType: "CustomerAcceptanceReview",
+        entityId: acceptance.reviewId,
+        actorLabel: "system",
+        meta: { failures: attachmentFailures },
+      });
+    }
+    return { ok: true, ingested: !acceptance.duplicate };
+  }
+
   const result = await ingestInboundMessage({
     channel: "EMAIL",
     externalMessageId: messageId,
@@ -539,7 +569,7 @@ function graphHeader(message: GraphMessage, name: string): string | null {
 type MessageOutcome = {
   ingested: boolean;
   ignored: boolean;
-  outcome: "ENQUIRY" | "SUPPLIER_REPLY" | "IGNORED" | "DUPLICATE" | "OTHER";
+  outcome: "ENQUIRY" | "SUPPLIER_REPLY" | "CUSTOMER_ACCEPTANCE" | "IGNORED" | "DUPLICATE" | "OTHER";
   attachmentsProcessed: number;
   attachmentsFailed: number;
 };
@@ -596,6 +626,41 @@ async function graphIngest(token: string, message: GraphMessage): Promise<Messag
       ingested: !supplierReply.duplicate,
       ignored: false,
       outcome: supplierReply.duplicate ? "DUPLICATE" : "SUPPLIER_REPLY",
+      attachmentsProcessed: accepted.length,
+      attachmentsFailed: attachmentFailures.length,
+    };
+  }
+
+  // A customer reply carrying a strong quotation reference is an acceptance,
+  // not a new enquiry. It is stored for owner review; no order is created here.
+  const acceptance = await ingestCustomerAcceptanceReply({
+    provider: "MICROSOFT365",
+    externalMessageId: message.internetMessageId ?? `graph-${message.id}`,
+    providerThreadId: message.conversationId ?? null,
+    internetMessageId: message.internetMessageId ?? null,
+    inReplyTo: graphHeader(message, "In-Reply-To"),
+    references: graphHeader(message, "References"),
+    from,
+    fromName: message.from?.emailAddress?.name ?? null,
+    subject: message.subject ?? null,
+    body: bodyTextValue,
+    receivedAt,
+    attachments: accepted,
+  });
+  if (acceptance.handled) {
+    if (attachmentFailures.length > 0) {
+      await writeAudit({
+        action: "email.attachment_failed",
+        entityType: "CustomerAcceptanceReview",
+        entityId: acceptance.reviewId,
+        actorLabel: "system",
+        meta: { failures: attachmentFailures },
+      });
+    }
+    return {
+      ingested: !acceptance.duplicate,
+      ignored: false,
+      outcome: acceptance.duplicate ? "DUPLICATE" : "CUSTOMER_ACCEPTANCE",
       attachmentsProcessed: accepted.length,
       attachmentsFailed: attachmentFailures.length,
     };

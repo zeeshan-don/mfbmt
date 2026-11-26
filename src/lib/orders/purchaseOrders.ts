@@ -10,6 +10,7 @@ import { dec, lineTotals, money, qty, sum, toMoneyString } from "./money";
 import { orderMetrics } from "./metrics";
 import { recordOrderEvent, transitionPurchaseOrder } from "./events";
 import { refreshSalesOrderStatus } from "./state";
+import { correlationReference, correlationTokenFor } from "./tokens";
 
 /**
  * Supplier purchase orders.
@@ -554,6 +555,7 @@ export function purchaseOrderBody(input: {
   taxAmount: number;
   total: number;
   supplierNotes: string | null;
+  reference?: string | null;
 }): string {
   const rows = input.lines.map(
     (line, index) =>
@@ -564,6 +566,7 @@ export function purchaseOrderBody(input: {
     "",
     `Please supply the following against purchase order ${input.poNumber}.`,
     `Reference: ${input.salesOrderNumber}`,
+    input.reference ? `Purchase order reference: ${input.reference}` : "",
     "",
     ...rows,
     "",
@@ -604,6 +607,15 @@ export async function sendSupplierPurchaseOrder(input: {
   const recipient = (input.to?.trim() || po.supplier.email || "").trim();
   if (!recipient) return { ok: false, error: "The supplier has no email address." };
 
+  // A stable opaque reference travels in the subject so the supplier's reply
+  // can be attached to this exact purchase order. It is not authorisation to
+  // change the PO: a changed term still needs the owner's review.
+  const correlationToken = po.correlationToken ?? correlationTokenFor("PO", po.id);
+  if (!po.correlationToken) {
+    await db.purchaseOrder.update({ where: { id: po.id }, data: { correlationToken } });
+  }
+  const reference = correlationReference("PO", correlationToken);
+
   const org = await db.organization.findUnique({ where: { id: po.organizationId } });
   const body = purchaseOrderBody({
     organizationName: org?.name ?? "Procurement",
@@ -626,8 +638,9 @@ export async function sendSupplierPurchaseOrder(input: {
     taxAmount: Number(po.taxAmount),
     total: Number(po.total),
     supplierNotes: po.supplierNotes,
+    reference,
   });
-  const subject = `Purchase order ${po.poNumber} — ${org?.name ?? ""}`.trim();
+  const subject = `Purchase order ${po.poNumber} [${reference}] — ${org?.name ?? ""}`.trim();
   const document = {
     kind: "PURCHASE_ORDER",
     poNumber: po.poNumber,
@@ -707,7 +720,9 @@ export async function sendSupplierPurchaseOrder(input: {
         sentTo: recipient,
         sentSubject: subject,
         sentDocumentJson: stringifyJson(document),
-        providerMessageId: result.messageId ?? null,
+        correlationToken,
+        providerMessageId: result.providerMessageId ?? null,
+        providerThreadId: result.providerThreadId ?? null,
         lastError: simulated ? "Demo simulation — no email was transmitted." : null,
       },
     });
@@ -753,7 +768,9 @@ export type AcknowledgementInput = {
   notes?: string | null;
   evidence?: Record<string, unknown>;
   source?: "EMAIL" | "MANUAL";
-  userId: string;
+  /** Set when the acknowledgement was read from an inbound supplier email. */
+  supplierReplyId?: string | null;
+  userId: string | null;
   actorLabel: string;
 };
 
@@ -768,6 +785,19 @@ export async function recordSupplierAcknowledgement(
   if (!po) return { ok: false, error: "Purchase order not found." };
   if (!["SENT", "ACKNOWLEDGED", "PARTIALLY_ACKNOWLEDGED", "REVISED", "ACKNOWLEDGEMENT_RECEIVED"].includes(po.status)) {
     return { ok: false, error: "A supplier acknowledgement can only be recorded after the purchase order was sent." };
+  }
+  if (input.supplierReplyId) {
+    const existing = await db.supplierAcknowledgement.findFirst({
+      where: { supplierReplyId: input.supplierReplyId },
+      select: { id: true, deviationsJson: true },
+    });
+    if (existing) {
+      return {
+        ok: true,
+        acknowledgementId: existing.id,
+        deviations: parseJson<Array<{ code: string; detail: string }>>(existing.deviationsJson, []),
+      };
+    }
   }
 
   const deviations: Array<{ code: string; detail: string }> = [];
@@ -834,7 +864,8 @@ export async function recordSupplierAcknowledgement(
         notes: input.notes?.trim() || null,
         evidenceJson: stringifyJson(input.evidence ?? {}),
         source: input.source ?? "MANUAL",
-        recordedById: input.userId,
+        supplierReplyId: input.supplierReplyId ?? null,
+        recordedById: input.userId ?? null,
       },
     });
     await transitionPurchaseOrder(tx, {

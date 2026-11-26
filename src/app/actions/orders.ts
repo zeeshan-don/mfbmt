@@ -21,6 +21,11 @@ import {
   reverseCustomerPayment,
 } from "@/lib/orders/payments";
 import { closeSalesOrder, resolveOrderDiscrepancy } from "@/lib/orders/closure";
+import {
+  convertAcceptanceReview,
+  dismissAcceptanceReview,
+  rejectAcceptanceReview,
+} from "@/lib/orders/customerAcceptance";
 
 /**
  * Server actions for the commercial lifecycle.
@@ -108,6 +113,71 @@ export async function createSalesOrderAction(formData: FormData) {
       result.duplicate ? "This acceptance was already converted; the existing sales order is shown." : `Sales order ${result.orderNumber} created.`,
     )}`,
   );
+}
+
+export async function convertAcceptanceReviewAction(formData: FormData) {
+  const user = await requireOwnerOrLogin();
+  const reviewId = text(formData, "reviewId");
+  if (!reviewId) back("/orders", "Choose a customer acceptance to review.");
+  const decisionRaw = text(formData, "decision");
+  const decision =
+    decisionRaw === "APPROVE_REVISED" ? "APPROVE_REVISED" : "ACCEPT_ORIGINAL";
+  const result = await convertAcceptanceReview({
+    reviewId,
+    decision,
+    reason: text(formData, "reason") || null,
+    userId: user.id,
+    actorLabel: user.name,
+  });
+  revalidateOrgPath(user.organizationId, "/orders");
+  revalidateOrgPath(user.organizationId, `/orders/acceptance/${reviewId}`);
+  if (!result.ok) {
+    back(
+      `/orders/acceptance/${reviewId}`,
+      result.error,
+      result.blocking ? { blocking: JSON.stringify(result.blocking) } : undefined,
+    );
+  }
+  revalidateOrgPath(user.organizationId, `/orders/${result.salesOrderId}`);
+  redirect(
+    `/orders/${result.salesOrderId}?saved=${encodeURIComponent(
+      result.duplicate
+        ? "This acceptance was already converted; the existing sales order is shown."
+        : `Sales order ${result.orderNumber} created from the reviewed customer document.`,
+    )}`,
+  );
+}
+
+export async function rejectAcceptanceReviewAction(formData: FormData) {
+  const user = await requireOwnerOrLogin();
+  const reviewId = text(formData, "reviewId");
+  if (!reviewId) back("/orders", "Choose a customer acceptance to review.");
+  const result = await rejectAcceptanceReview({
+    reviewId,
+    reason: text(formData, "reason"),
+    userId: user.id,
+    actorLabel: user.name,
+  });
+  revalidateOrgPath(user.organizationId, "/orders");
+  revalidateOrgPath(user.organizationId, `/orders/acceptance/${reviewId}`);
+  if (!result.ok) back(`/orders/acceptance/${reviewId}`, result.error);
+  redirect(`/orders/acceptance/${reviewId}?saved=${encodeURIComponent("Customer document rejected; no sales order was created.")}`);
+}
+
+export async function dismissAcceptanceReviewAction(formData: FormData) {
+  const user = await requireOwnerOrLogin();
+  const reviewId = text(formData, "reviewId");
+  if (!reviewId) back("/orders", "Choose a customer acceptance to review.");
+  const result = await dismissAcceptanceReview({
+    reviewId,
+    reason: text(formData, "reason") || null,
+    userId: user.id,
+    actorLabel: user.name,
+  });
+  revalidateOrgPath(user.organizationId, "/orders");
+  revalidateOrgPath(user.organizationId, `/orders/acceptance/${reviewId}`);
+  if (!result.ok) back(`/orders/acceptance/${reviewId}`, result.error);
+  redirect(`/orders/acceptance/${reviewId}?saved=${encodeURIComponent("Acceptance review dismissed.")}`);
 }
 
 export async function createProcurementAction(formData: FormData) {

@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { requireOwner } from "@/lib/auth";
 import { parseJson } from "@/lib/json";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { createSalesOrderAction } from "@/app/actions/orders";
 import { Badge, Button, Card, CardHeader, DataTable, EmptyState, Notice, PageHeader, Td, Th, inputClass, statusTone } from "@/components/ui";
 import { ownerOperationsBoard, salesOrderList } from "@/lib/orders/dashboard";
 import { quotationsAwaitingAcceptance } from "@/lib/orders/salesOrder";
+import { pendingAcceptanceReviews, reviewComparison } from "@/lib/orders/customerAcceptance";
 import { SALES_ORDER_STATUS_LABELS } from "@/lib/orders/state";
 import { toMoneyString } from "@/lib/orders/money";
 
@@ -27,10 +28,11 @@ export default async function OrdersPage({
 }) {
   await requireOwner();
   const flags = await searchParams;
-  const [orders, board, quotations] = await Promise.all([
+  const [orders, board, quotations, acceptances] = await Promise.all([
     salesOrderList(),
     ownerOperationsBoard(),
     quotationsAwaitingAcceptance(),
+    pendingAcceptanceReviews(),
   ]);
 
   const discrepancies = flags.discrepancies ? parseJson<DiscrepancyView[]>(flags.discrepancies, []) : [];
@@ -80,6 +82,48 @@ export default async function OrdersPage({
                 </p>
               </li>
             ))}
+          </ul>
+        </Card>
+      ) : null}
+
+      {acceptances.length > 0 ? (
+        <Card>
+          <CardHeader
+            title="Customer replies and purchase orders"
+            description="Read from a correlated quotation thread. A review is not an order: compare the document, then decide."
+          />
+          <ul className="divide-y divide-line">
+            {acceptances.map((review) => {
+              const comparison = reviewComparison(review);
+              return (
+                <li key={review.id}>
+                  <Link
+                    href={`/orders/acceptance/${review.id}`}
+                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 hover:bg-elevated/60"
+                  >
+                    <span className="min-w-0">
+                      <span className="text-sm font-medium text-ink">
+                        {review.quotation.quoteNumber} v{review.quotationVersion}
+                        <span className="ml-2 font-normal text-muted">{review.quotation.customerName}</span>
+                      </span>
+                      <span className="mt-0.5 block truncate text-[12px] text-muted">
+                        {review.subject ?? "No subject"} · received {formatDateTime(review.receivedAt)}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      {comparison.blocking.length > 0 ? (
+                        <Badge tone="danger">{comparison.blocking.length} changed term(s)</Badge>
+                      ) : comparison.isPurchaseOrder ? (
+                        <Badge tone="ok">Matches quotation</Badge>
+                      ) : (
+                        <Badge tone="warn">Needs reading</Badge>
+                      )}
+                      <span className="text-[11px] text-accent">Review →</span>
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
         </Card>
       ) : null}
