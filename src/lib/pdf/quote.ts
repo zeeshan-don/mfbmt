@@ -25,6 +25,9 @@ type Quotation = {
   taxAmount: number;
   total: number;
   terms?: string | null;
+  paymentTerms?: string | null;
+  deliveryTerms?: string | null;
+  deliveryAddress?: string | null;
   notes?: string | null;
   items: Array<{
     description: string;
@@ -37,6 +40,7 @@ type Quotation = {
     certification?: string | null;
     leadTimeDays?: number | null;
     deliveryTerms?: string | null;
+    deliveryLocation?: string | null;
     validityDate?: Date | null;
     technicalNotes?: string | null;
   }>;
@@ -145,7 +149,8 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
           item.countryOfOrigin ? `Origin: ${item.countryOfOrigin}` : null,
           item.certification ? `Certification: ${item.certification}` : null,
           item.leadTimeDays != null ? `Lead time: ${item.leadTimeDays} days` : null,
-          item.deliveryTerms ? `Delivery: ${item.deliveryTerms}` : null,
+          item.deliveryTerms ? `Delivery terms: ${item.deliveryTerms}` : null,
+          item.deliveryLocation ? `Delivery location: ${item.deliveryLocation}` : null,
           item.validityDate ? `Line valid to: ${prettyDate(item.validityDate)}` : null,
           item.technicalNotes ? item.technicalNotes.slice(0, 160) : null,
         ].filter(Boolean).join(" · ");
@@ -186,6 +191,29 @@ export async function generateQuotationPdf(input: { org: Org; quotation: Quotati
       doc.text("Total", totalsX, y, { width: totalsWidth * 0.5 });
       doc.text(fmt(quotation.total, quotation.currency), totalsX, y, { width: totalsWidth, align: "right" });
       y += 28;
+
+      if (quotation.paymentTerms || quotation.deliveryTerms || quotation.deliveryAddress) {
+        if (y > doc.page.height - 180) {
+          doc.addPage();
+          y = doc.page.margins.top;
+        }
+        doc.font("Helvetica-Bold").fontSize(8.5).fillColor(MUTED).text("COMMERCIAL TERMS", doc.page.margins.left, y);
+        y += 12;
+        doc.font("Helvetica").fontSize(8.5).fillColor(INK);
+        if (quotation.paymentTerms) {
+          doc.text(`Payment terms: ${quotation.paymentTerms}`, doc.page.margins.left, y, { width: pageWidth });
+          y = doc.y + 2;
+        }
+        if (quotation.deliveryTerms) {
+          doc.text(`Delivery terms: ${quotation.deliveryTerms}`, doc.page.margins.left, y, { width: pageWidth });
+          y = doc.y + 2;
+        }
+        if (quotation.deliveryAddress) {
+          doc.text(`Delivery address: ${quotation.deliveryAddress}`, doc.page.margins.left, y, { width: pageWidth });
+          y = doc.y + 2;
+        }
+        y += 10;
+      }
 
       if (quotation.notes) {
         doc.font("Helvetica").fontSize(8.5).fillColor(MUTED).text("Notes", doc.page.margins.left, y);

@@ -7,7 +7,8 @@ import { supplierSendGuard } from "../suppliers/sendGuard";
 import { sendEmail } from "../email/send";
 import { outboundOperationKey, sendOutboundOnce } from "../outbound/messages";
 import { dec, lineTotals, money, qty, sum, toMoneyString } from "./money";
-import { orderMetrics } from "./metrics";
+import { coverageForPurchaseOrderLine, orderMetrics } from "./metrics";
+import { lockPurchaseOrder, lockSalesOrder, OrderLockError } from "./locks";
 import { recordOrderEvent, transitionPurchaseOrder } from "./events";
 import { refreshSalesOrderStatus } from "./state";
 import { correlationReference, correlationTokenFor } from "./tokens";
@@ -137,10 +138,26 @@ export async function procurementPlan(salesOrderId: string): Promise<{
   const lines = await Promise.all(
     order.lines.map(async (line) => {
       const poLines = await db.purchaseOrderLine.findMany({
-        where: { salesOrderLineId: line.id, purchaseOrder: { status: { not: "CANCELLED" } } },
-        select: { quantity: true },
+        where: { salesOrderLineId: line.id },
+        select: {
+          quantity: true,
+          acknowledgedQuantity: true,
+          purchaseOrder: { select: { status: true } },
+          receiptLines: { select: { quantityAccepted: true } },
+        },
       });
-      const alreadyOrdered = Number(sum(poLines.map((poLine) => poLine.quantity)).toFixed(4));
+      // Covered = accepted receipts from every historical PO + the still-open
+      // part of live supplier commitments. REJECTED/CANCELLED POs release their
+      // unreceived quantity; an approved partial acknowledgement commits only
+      // the quantity the supplier actually confirmed.
+      const alreadyOrdered = Number(
+        sum(
+          poLines.map((poLine) => {
+            const coverage = coverageForPurchaseOrderLine(poLine);
+            return coverage.accepted.plus(coverage.open);
+          }),
+        ).toFixed(4),
+      );
       const procureQuantity = Number(line.procureQuantity);
       const candidateOffers = offers.filter((offer) => offer.enquiryItemId === line.enquiryItemId);
       const approvedOfferId = line.enquiryItemId ? approvedByItem.get(line.enquiryItemId) ?? line.supplierOfferId : line.supplierOfferId;
@@ -196,6 +213,8 @@ export type PurchaseSelection = {
 export type CreatePurchaseOrdersResult =
   | { ok: true; purchaseOrders: Array<{ id: string; poNumber: string; supplierName: string; duplicate: boolean }> }
   | { ok: false; error: string };
+
+class ProcurementConflictError extends Error {}
 
 /**
  * Creates one owner-approvable PO per supplier from verified supplier offers.
@@ -368,6 +387,50 @@ export async function createSupplierPurchaseOrders(input: {
 
     try {
       const created = await db.$transaction(async (tx) => {
+        // Serialize against every other obligation change for this order. The
+        // procurement plan was calculated before the transaction and may be
+        // stale, so remaining quantities are recomputed from locked rows here.
+        const lockedOrder = await lockSalesOrder(tx, order.id, { allowTerminal: true });
+        if (lockedOrder.status === "CLOSED" || lockedOrder.status === "CANCELLED") {
+          throw new ProcurementConflictError("This sales order is closed; no further purchase orders can be raised.");
+        }
+
+        const requestedByLine = new Map<string, ReturnType<typeof qty>>();
+        for (const draftLine of draft.lines) {
+          requestedByLine.set(
+            draftLine.salesOrderLineId,
+            (requestedByLine.get(draftLine.salesOrderLineId) ?? qty(0)).plus(draftLine.quantity),
+          );
+        }
+        for (const [salesOrderLineId, requested] of requestedByLine) {
+          const salesLine = await tx.salesOrderLine.findUnique({
+            where: { id: salesOrderLineId },
+            select: { description: true, unit: true, procureQuantity: true },
+          });
+          if (!salesLine) throw new ProcurementConflictError("A selected line no longer belongs to this sales order.");
+          const existingLines = await tx.purchaseOrderLine.findMany({
+            where: { salesOrderLineId },
+            select: {
+              quantity: true,
+              acknowledgedQuantity: true,
+              purchaseOrder: { select: { status: true } },
+              receiptLines: { select: { quantityAccepted: true } },
+            },
+          });
+          const covered = sum(
+            existingLines.map((poLine) => {
+              const coverage = coverageForPurchaseOrderLine(poLine);
+              return coverage.accepted.plus(coverage.open);
+            }),
+          );
+          const remaining = qty(salesLine.procureQuantity).minus(qty(covered));
+          if (requested.gt(remaining)) {
+            throw new ProcurementConflictError(
+              `Only ${(remaining.gt(0) ? remaining : qty(0)).toFixed(4)} ${salesLine.unit} of "${salesLine.description}" still needs procurement. Another purchase order was created concurrently; reload the order.`,
+            );
+          }
+        }
+
         const po = await tx.purchaseOrder.create({
           data: {
             poNumber,
@@ -468,6 +531,9 @@ export async function createSupplierPurchaseOrders(input: {
       });
       results.push({ id: created.id, poNumber: created.poNumber, supplierName: draft.supplierName, duplicate: false });
     } catch (error) {
+      if (error instanceof ProcurementConflictError || error instanceof OrderLockError) {
+        return { ok: false, error: error.message };
+      }
       if (typeof error === "object" && error && (error as { code?: string }).code === "P2002") {
         const raced = await db.purchaseOrder.findUnique({
           where: { organizationId_idempotencyKey: { organizationId, idempotencyKey } },
@@ -736,6 +802,46 @@ export async function sendSupplierPurchaseOrder(input: {
       reason: simulated ? "Demo simulation; no message transmitted" : "Approved purchase order emailed to the supplier",
       meta: { recipient, version: po.version },
     });
+
+    // Preserve the exact issued document as version 1. Later approved revisions
+    // add immutable versions; the sent snapshot is never rewritten.
+    const existingVersion = await tx.purchaseOrderVersion.findUnique({
+      where: { purchaseOrderId_version: { purchaseOrderId: po.id, version: po.version } },
+      select: { id: true },
+    });
+    if (!existingVersion) {
+      const issuedAt = new Date();
+      const lines: SnapshotLine[] = po.lines.map((line) => ({
+        id: line.id,
+        lineNo: line.lineNo,
+        description: line.description,
+        specs: line.specs,
+        quantity: line.quantity.toFixed(4),
+        unit: line.unit,
+        unitPrice: line.unitPrice.toFixed(4),
+        taxRatePct: line.taxRatePct.toFixed(4),
+        taxAmount: line.taxAmount.toFixed(4),
+        lineTotal: line.lineTotal.toFixed(4),
+        acknowledgedQuantity: line.acknowledgedQuantity?.toFixed(4) ?? null,
+        leadTimeDays: line.leadTimeDays,
+      }));
+      await tx.purchaseOrderVersion.create({
+        data: {
+          purchaseOrderId: po.id,
+          version: po.version,
+          status: "SENT",
+          reason: simulated ? "Demo simulation; no message transmitted" : "Issued to supplier",
+          source: "SENT",
+          approvedById: input.userId,
+          snapshotJson: buildVersionSnapshot(
+            { ...po, status: "SENT", sentAt: issuedAt, sentTo: recipient, sentChannel: simulated ? "DEMO" : "EMAIL" },
+            lines,
+            { reason: "Issued to supplier", source: "SENT", acknowledgementId: null, approvedById: input.userId },
+          ),
+          changeSummaryJson: "[]",
+        },
+      });
+    }
   });
 
   await writeAudit({
@@ -898,9 +1004,144 @@ export async function recordSupplierAcknowledgement(
   return { ok: true, acknowledgementId: acknowledgement.id, deviations };
 }
 
+type SnapshotLine = {
+  id: string;
+  lineNo: number;
+  description: string;
+  specs: string | null;
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  taxRatePct: string;
+  taxAmount: string;
+  lineTotal: string;
+  acknowledgedQuantity: string | null;
+  leadTimeDays: number | null;
+};
+
+type SnapshotOrder = {
+  id: string;
+  poNumber: string;
+  version: number;
+  status: string;
+  currency: string;
+  subtotal: { toFixed: (digits: number) => string };
+  taxAmount: { toFixed: (digits: number) => string };
+  total: { toFixed: (digits: number) => string };
+  paymentTerms: string | null;
+  deliveryTerms: string | null;
+  deliveryLocation: string | null;
+  expectedDeliveryDate: Date | null;
+  supplierNotes: string | null;
+  internalNotes: string | null;
+  sentAt: Date | null;
+  sentTo: string | null;
+  sentChannel: string | null;
+  providerMessageId: string | null;
+  providerThreadId: string | null;
+  supplier: { id: string; name: string; email?: string | null };
+  salesOrder: { id: string; orderNumber: string };
+};
+
+function snapshotLine(line: SnapshotLine): SnapshotLine {
+  return { ...line };
+}
+
+/** Complete immutable record of one purchase-order version. */
+function buildVersionSnapshot(
+  po: SnapshotOrder,
+  lines: SnapshotLine[],
+  meta: { reason: string | null; source: string; acknowledgementId: string | null; approvedById: string | null },
+) {
+  return stringifyJson({
+    purchaseOrderId: po.id,
+    poNumber: po.poNumber,
+    version: po.version,
+    status: po.status,
+    supplier: { id: po.supplier.id, name: po.supplier.name, email: po.supplier.email ?? null },
+    salesOrder: { id: po.salesOrder.id, orderNumber: po.salesOrder.orderNumber },
+    currency: po.currency,
+    subtotal: po.subtotal.toFixed(4),
+    taxAmount: po.taxAmount.toFixed(4),
+    total: po.total.toFixed(4),
+    paymentTerms: po.paymentTerms,
+    deliveryTerms: po.deliveryTerms,
+    deliveryLocation: po.deliveryLocation,
+    expectedDeliveryDate: po.expectedDeliveryDate?.toISOString() ?? null,
+    supplierNotes: po.supplierNotes,
+    internalNotes: po.internalNotes,
+    reason: meta.reason,
+    source: meta.source,
+    acknowledgementId: meta.acknowledgementId,
+    approvedById: meta.approvedById,
+    sentAt: po.sentAt?.toISOString() ?? null,
+    sentTo: po.sentTo,
+    sentChannel: po.sentChannel,
+    providerMessageId: po.providerMessageId,
+    providerThreadId: po.providerThreadId,
+    capturedAt: new Date().toISOString(),
+    lines: lines.map(snapshotLine),
+  });
+}
+
+function diffLines(before: SnapshotLine[], after: SnapshotLine[]) {
+  return after
+    .map((line) => {
+      const previous = before.find((candidate) => candidate.id === line.id);
+      const changes: Record<string, { before: string | null; after: string | null }> = {};
+      if (!previous) {
+        changes.added = { before: null, after: `${line.quantity} ${line.unit} @ ${line.unitPrice}` };
+      } else {
+        if (previous.quantity !== line.quantity) changes.quantity = { before: previous.quantity, after: line.quantity };
+        if (previous.unitPrice !== line.unitPrice) changes.unitPrice = { before: previous.unitPrice, after: line.unitPrice };
+        if (previous.acknowledgedQuantity !== line.acknowledgedQuantity) {
+          changes.acknowledgedQuantity = { before: previous.acknowledgedQuantity, after: line.acknowledgedQuantity };
+        }
+        if (previous.taxAmount !== line.taxAmount) changes.taxAmount = { before: previous.taxAmount, after: line.taxAmount };
+        if (previous.lineTotal !== line.lineTotal) changes.lineTotal = { before: previous.lineTotal, after: line.lineTotal };
+      }
+      return { lineId: line.id, description: line.description, changes };
+    })
+    .filter((entry) => Object.keys(entry.changes).length > 0);
+}
+
+async function seedCurrentVersionIfMissing(
+  tx: import("@prisma/client").Prisma.TransactionClient,
+  po: SnapshotOrder,
+  lines: SnapshotLine[],
+  reason: string,
+) {
+  const existing = await tx.purchaseOrderVersion.findUnique({
+    where: { purchaseOrderId_version: { purchaseOrderId: po.id, version: po.version } },
+    select: { id: true },
+  });
+  if (existing) return;
+  await tx.purchaseOrderVersion.create({
+    data: {
+      purchaseOrderId: po.id,
+      version: po.version,
+      status: po.status,
+      reason,
+      source: "BASELINE",
+      approvedById: null,
+      snapshotJson: buildVersionSnapshot(po, lines, {
+        reason,
+        source: "BASELINE",
+        acknowledgementId: null,
+        approvedById: null,
+      }),
+      changeSummaryJson: "[]",
+    },
+  });
+}
+
 /**
- * Owner review of a supplier acknowledgement. Revised prices are applied only
- * here, with a new PO version; the previously sent document is retained.
+ * Owner review of a supplier acknowledgement.
+ *
+ * An approval applies only facts the owner explicitly accepted. Revised prices
+ * are applied per line, but the PO subtotal, tax and total are always rebuilt
+ * from ALL lines, so unchanged lines can never disappear from a revision. The
+ * pre-revision document is retained as an immutable `PurchaseOrderVersion`.
  */
 export async function reviewSupplierAcknowledgement(input: {
   acknowledgementId: string;
@@ -908,135 +1149,295 @@ export async function reviewSupplierAcknowledgement(input: {
   note?: string | null;
   userId: string;
   actorLabel: string;
-}): Promise<{ ok: true; purchaseOrderStatus: string } | { ok: false; error: string }> {
-  const acknowledgement = await db.supplierAcknowledgement.findUnique({
+}): Promise<{ ok: true; purchaseOrderStatus: string; version?: number } | { ok: false; error: string }> {
+  const located = await db.supplierAcknowledgement.findUnique({
     where: { id: input.acknowledgementId },
-    include: { purchaseOrder: { include: { lines: true } } },
+    select: { purchaseOrderId: true },
   });
-  if (!acknowledgement) return { ok: false, error: "Supplier acknowledgement not found." };
-  if (acknowledgement.reviewStatus !== "PENDING") return { ok: false, error: "This supplier reply was already reviewed." };
-  const po = acknowledgement.purchaseOrder;
+  if (!located) return { ok: false, error: "Supplier acknowledgement not found." };
+  const orderRow = await db.purchaseOrder.findUnique({
+    where: { id: located.purchaseOrderId },
+    select: { salesOrderId: true },
+  });
+  if (!orderRow) return { ok: false, error: "Supplier acknowledgement not found." };
 
-  if (input.decision === "DISMISS") {
-    const applied = await db.$transaction(async (tx) => {
-      const claimed = await tx.supplierAcknowledgement.updateMany({
-        where: { id: acknowledgement.id, reviewStatus: "PENDING" },
-        data: { reviewStatus: "DISMISSED", reviewedById: input.userId, reviewedAt: new Date(), reviewNote: input.note?.trim() || null },
+  try {
+    const result = await db.$transaction(async (tx) => {
+      await lockSalesOrder(tx, orderRow.salesOrderId);
+      const lock = await lockPurchaseOrder(tx, located.purchaseOrderId);
+      if (!lock) return { ok: false as const, error: "Supplier acknowledgement not found." };
+
+      const acknowledgement = await tx.supplierAcknowledgement.findUnique({
+        where: { id: input.acknowledgementId },
+        include: {
+          purchaseOrder: {
+            include: {
+              lines: { orderBy: { lineNo: "asc" } },
+              supplier: true,
+              salesOrder: { select: { id: true, orderNumber: true } },
+            },
+          },
+        },
       });
-      if (claimed.count === 0) return false;
-      await transitionPurchaseOrder(tx, {
-        purchaseOrderId: po.id,
-        toStatus: "SENT",
-        actorId: input.userId,
-        actorLabel: input.actorLabel,
-        reason: "Supplier reply dismissed by owner",
-      });
-      return true;
-    });
-    if (!applied) return { ok: false, error: "This supplier reply was already reviewed." };
-    await writeAudit({
-      actorId: input.userId,
-      actorLabel: input.actorLabel,
-      action: "purchase_order.acknowledgement_dismissed",
-      entityType: "PurchaseOrder",
-      entityId: po.id,
-      meta: { acknowledgementId: acknowledgement.id, note: input.note ?? null },
-    });
-    return { ok: true, purchaseOrderStatus: "SENT" };
-  }
+      if (!acknowledgement) return { ok: false as const, error: "Supplier acknowledgement not found." };
+      if (acknowledgement.reviewStatus !== "PENDING") {
+        return { ok: false as const, error: "This supplier reply was already reviewed." };
+      }
+      const po = acknowledgement.purchaseOrder;
 
-  if (!input.note?.trim()) {
-    return { ok: false, error: "Record why the supplier's terms are accepted; the reason is part of the purchase record." };
-  }
-
-  const lines = parseJson<Array<{ purchaseOrderLineId: string; revisedUnitPrice: number | null }>>(acknowledgement.linesJson, []);
-  const targetStatus =
-    acknowledgement.outcome === "REJECTED"
-      ? "REJECTED"
-      : acknowledgement.outcome === "REVISED"
-        ? "REVISED"
-        : acknowledgement.outcome === "PARTIALLY_ACKNOWLEDGED"
-          ? "PARTIALLY_ACKNOWLEDGED"
-          : "ACKNOWLEDGED";
-
-  const applied = await db.$transaction(async (tx) => {
-    const claimed = await tx.supplierAcknowledgement.updateMany({
-      where: { id: acknowledgement.id, reviewStatus: "PENDING" },
-      data: { reviewStatus: "APPROVED", reviewedById: input.userId, reviewedAt: new Date(), reviewNote: input.note?.trim() || null },
-    });
-    if (claimed.count === 0) return false;
-
-    if (acknowledgement.outcome === "REVISED") {
-      let subtotal = dec(0);
-      let taxAmount = dec(0);
-      for (const revised of lines) {
-        if (revised.revisedUnitPrice == null) continue;
-        const poLine = po.lines.find((line) => line.id === revised.purchaseOrderLineId);
-        if (!poLine) continue;
-        const totals = lineTotals({
-          quantity: poLine.quantity,
-          unitPrice: revised.revisedUnitPrice,
-          taxRatePct: poLine.taxRatePct,
+      if (input.decision === "DISMISS") {
+        const claimed = await tx.supplierAcknowledgement.updateMany({
+          where: { id: acknowledgement.id, reviewStatus: "PENDING" },
+          data: { reviewStatus: "DISMISSED", reviewedById: input.userId, reviewedAt: new Date(), reviewNote: input.note?.trim() || null },
         });
-        subtotal = subtotal.plus(totals.net);
-        taxAmount = taxAmount.plus(totals.taxAmount);
-        await tx.purchaseOrderLine.update({
-          where: { id: poLine.id },
+        if (claimed.count === 0) return { ok: false as const, error: "This supplier reply was already reviewed." };
+        if (po.status === "ACKNOWLEDGEMENT_RECEIVED") {
+          await transitionPurchaseOrder(tx, {
+            purchaseOrderId: po.id,
+            toStatus: "SENT",
+            actorId: input.userId,
+            actorLabel: input.actorLabel,
+            reason: "Supplier reply dismissed by owner",
+            meta: { acknowledgementId: acknowledgement.id },
+          });
+        }
+        await tx.auditLog.create({
           data: {
-            unitPrice: revised.revisedUnitPrice,
-            taxAmount: totals.taxAmount,
-            lineTotal: totals.net,
+            actorId: input.userId,
+            actorLabel: input.actorLabel,
+            action: "purchase_order.acknowledgement_dismissed",
+            entityType: "PurchaseOrder",
+            entityId: po.id,
+            metaJson: stringifyJson({ acknowledgementId: acknowledgement.id, note: input.note ?? null }),
+          },
+        });
+        return { ok: true as const, purchaseOrderStatus: po.status, version: po.version };
+      }
+
+      if (!input.note?.trim()) {
+        return { ok: false as const, error: "Record why the supplier's terms are accepted; the reason is part of the purchase record." };
+      }
+
+      const acknowledged = parseJson<
+        Array<{ purchaseOrderLineId: string; acknowledgedQuantity?: number | null; revisedUnitPrice?: number | null; promisedDate?: string | null }>
+      >(acknowledgement.linesJson, []);
+      const byLine = new Map<string, { acknowledgedQuantity: number | null; revisedUnitPrice: number | null; promisedDate: string | null }>();
+      for (const line of acknowledged) {
+        if (!po.lines.some((poLine) => poLine.id === line.purchaseOrderLineId)) {
+          return { ok: false as const, error: "An acknowledged line does not belong to this purchase order." };
+        }
+        byLine.set(line.purchaseOrderLineId, {
+          acknowledgedQuantity: line.acknowledgedQuantity == null ? null : Number(line.acknowledgedQuantity),
+          revisedUnitPrice: line.revisedUnitPrice == null ? null : Number(line.revisedUnitPrice),
+          promisedDate: line.promisedDate ?? null,
+        });
+      }
+
+      const isRejected = acknowledgement.outcome === "REJECTED";
+      const isPartial = acknowledgement.outcome === "PARTIALLY_ACKNOWLEDGED";
+      const beforeLines: SnapshotLine[] = po.lines.map((line) => ({
+        id: line.id,
+        lineNo: line.lineNo,
+        description: line.description,
+        specs: line.specs,
+        quantity: line.quantity.toFixed(4),
+        unit: line.unit,
+        unitPrice: line.unitPrice.toFixed(4),
+        taxRatePct: line.taxRatePct.toFixed(4),
+        taxAmount: line.taxAmount.toFixed(4),
+        lineTotal: line.lineTotal.toFixed(4),
+        acknowledgedQuantity: line.acknowledgedQuantity?.toFixed(4) ?? null,
+        leadTimeDays: line.leadTimeDays,
+      }));
+
+      // A price revision may arrive with a partial acknowledgement. Apply the
+      // price only where the supplier quoted one, and preserve every other line.
+      const revisions = new Map<string, ReturnType<typeof money>>();
+      for (const [lineId, fact] of byLine) {
+        if (fact.revisedUnitPrice == null) continue;
+        if (!Number.isFinite(fact.revisedUnitPrice) || fact.revisedUnitPrice <= 0) {
+          return { ok: false as const, error: "A revised unit price must be a positive number." };
+        }
+        revisions.set(lineId, money(fact.revisedUnitPrice));
+      }
+      const hasPriceRevision = revisions.size > 0;
+
+      const ackQuantities = new Map<string, ReturnType<typeof qty>>();
+      for (const poLine of po.lines) {
+        const fact = byLine.get(poLine.id);
+        let confirmed: ReturnType<typeof qty>;
+        if (isRejected) {
+          confirmed = qty(0);
+        } else if (fact && fact.acknowledgedQuantity != null) {
+          confirmed = qty(fact.acknowledgedQuantity);
+        } else if (isPartial) {
+          // The supplier replied but did not confirm this line.
+          confirmed = qty(0);
+        } else {
+          confirmed = qty(poLine.quantity);
+        }
+        if (confirmed.lt(0) || confirmed.gt(qty(poLine.quantity))) {
+          return {
+            ok: false as const,
+            error: `Acknowledged quantity for "${poLine.description}" must be between zero and the ordered quantity.`,
+          };
+        }
+        ackQuantities.set(poLine.id, confirmed);
+      }
+
+      const targetStatus = isRejected
+        ? "REJECTED"
+        : isPartial
+          ? "PARTIALLY_ACKNOWLEDGED"
+          : acknowledgement.outcome === "REVISED" || hasPriceRevision
+            ? "REVISED"
+            : "ACKNOWLEDGED";
+      const nextVersion = po.version + 1;
+      const structuralChange = isRejected || hasPriceRevision || isPartial || acknowledgement.outcome === "REVISED";
+
+      if (!isRejected) {
+        for (const poLine of po.lines) {
+          const unitPrice = revisions.get(poLine.id) ?? money(poLine.unitPrice);
+          const totals = lineTotals({ quantity: poLine.quantity, unitPrice, taxRatePct: poLine.taxRatePct });
+          await tx.purchaseOrderLine.update({
+            where: { id: poLine.id },
+            data: {
+              unitPrice,
+              taxAmount: totals.taxAmount,
+              lineTotal: totals.net,
+              acknowledgedQuantity: ackQuantities.get(poLine.id) ?? qty(0),
+            },
+          });
+        }
+      } else {
+        await tx.purchaseOrderLine.updateMany({
+          where: { purchaseOrderId: po.id },
+          data: { acknowledgedQuantity: 0 },
+        });
+      }
+
+      // Rebuild the complete PO total from every line, never only changed ones.
+      const finalLines = await tx.purchaseOrderLine.findMany({
+        where: { purchaseOrderId: po.id },
+        orderBy: { lineNo: "asc" },
+      });
+      const subtotal = money(sum(finalLines.map((line) => line.lineTotal)));
+      const taxAmount = money(sum(finalLines.map((line) => line.taxAmount)));
+      const total = money(subtotal.plus(taxAmount));
+
+      const afterLines: SnapshotLine[] = finalLines.map((line) => ({
+        id: line.id,
+        lineNo: line.lineNo,
+        description: line.description,
+        specs: line.specs,
+        quantity: line.quantity.toFixed(4),
+        unit: line.unit,
+        unitPrice: line.unitPrice.toFixed(4),
+        taxRatePct: line.taxRatePct.toFixed(4),
+        taxAmount: line.taxAmount.toFixed(4),
+        lineTotal: line.lineTotal.toFixed(4),
+        acknowledgedQuantity: line.acknowledgedQuantity?.toFixed(4) ?? null,
+        leadTimeDays: line.leadTimeDays,
+      }));
+
+      if (structuralChange) {
+        await seedCurrentVersionIfMissing(tx, po, beforeLines, "Snapshot before the approved supplier revision");
+      }
+
+      const claimed = await tx.purchaseOrder.updateMany({
+        where: { id: po.id, status: lock.status },
+        data: {
+          status: targetStatus,
+          subtotal,
+          taxAmount,
+          total,
+          ...(hasPriceRevision || acknowledgement.outcome === "REVISED" ? { version: nextVersion } : {}),
+        },
+      });
+      if (claimed.count === 0) {
+        return { ok: false as const, error: "The purchase order changed while the reply was being approved; reload and review again." };
+      }
+
+      const versionCreated = hasPriceRevision || acknowledgement.outcome === "REVISED";
+      if (versionCreated) {
+        await tx.purchaseOrderVersion.create({
+          data: {
+            purchaseOrderId: po.id,
+            version: nextVersion,
+            status: targetStatus,
+            reason: input.note.trim(),
+            source: "SUPPLIER_ACKNOWLEDGEMENT",
+            acknowledgementId: acknowledgement.id,
+            approvedById: input.userId,
+            snapshotJson: buildVersionSnapshot(
+              { ...po, version: nextVersion, status: targetStatus, subtotal, taxAmount, total },
+              afterLines,
+              {
+                reason: input.note.trim(),
+                source: "SUPPLIER_ACKNOWLEDGEMENT",
+                acknowledgementId: acknowledgement.id,
+                approvedById: input.userId,
+              },
+            ),
+            changeSummaryJson: stringifyJson(diffLines(beforeLines, afterLines)),
           },
         });
       }
-      await tx.purchaseOrder.updateMany({
-        where: { id: po.id, status: "ACKNOWLEDGEMENT_RECEIVED" },
-        data: {
-          subtotal: money(subtotal),
-          taxAmount: money(taxAmount),
-          total: money(subtotal.plus(taxAmount)),
-          version: po.version + 1,
-          status: targetStatus,
-        },
+
+      await tx.supplierAcknowledgement.updateMany({
+        where: { id: acknowledgement.id, reviewStatus: "PENDING" },
+        data: { reviewStatus: "APPROVED", reviewedById: input.userId, reviewedAt: new Date(), reviewNote: input.note.trim() },
       });
+
       await recordOrderEvent(tx, {
         entityType: "PurchaseOrder",
         entityId: po.id,
-        fromStatus: "ACKNOWLEDGEMENT_RECEIVED",
+        fromStatus: lock.status,
         toStatus: targetStatus,
         actorId: input.userId,
         actorLabel: input.actorLabel,
-        reason: input.note?.trim(),
+        reason: input.note.trim(),
         meta: {
           acknowledgementId: acknowledgement.id,
-          version: po.version + 1,
-          previousTotal: po.total.toFixed(4),
-          newTotal: money(subtotal.plus(taxAmount)).toFixed(4),
+          outcome: acknowledgement.outcome,
+          version: versionCreated ? nextVersion : po.version,
+          totalBefore: po.total.toFixed(4),
+          totalAfter: total.toFixed(4),
+          linesBefore: beforeLines,
+          linesAfter: afterLines,
+          changeSummary: diffLines(beforeLines, afterLines),
         },
       });
-    } else {
-      await transitionPurchaseOrder(tx, {
-        purchaseOrderId: po.id,
-        toStatus: targetStatus,
-        actorId: input.userId,
-        actorLabel: input.actorLabel,
-        reason: input.note?.trim(),
-        meta: { acknowledgementId: acknowledgement.id },
+      await tx.auditLog.create({
+        data: {
+          actorId: input.userId,
+          actorLabel: input.actorLabel,
+          action: "purchase_order.acknowledgement_approved",
+          entityType: "PurchaseOrder",
+          entityId: po.id,
+          metaJson: stringifyJson({
+            acknowledgementId: acknowledgement.id,
+            outcome: acknowledgement.outcome,
+            note: input.note.trim(),
+            targetStatus,
+            version: versionCreated ? nextVersion : po.version,
+            totalBefore: po.total.toFixed(4),
+            totalAfter: total.toFixed(4),
+          }),
+        },
       });
-    }
-    return true;
-  });
-  if (!applied) return { ok: false, error: "This supplier reply was already reviewed." };
 
-  await writeAudit({
-    actorId: input.userId,
-    actorLabel: input.actorLabel,
-    action: "purchase_order.acknowledgement_approved",
-    entityType: "PurchaseOrder",
-    entityId: po.id,
-    meta: { acknowledgementId: acknowledgement.id, outcome: acknowledgement.outcome, note: input.note, targetStatus },
-  });
-  return { ok: true, purchaseOrderStatus: targetStatus };
+      return {
+        ok: true as const,
+        purchaseOrderStatus: targetStatus,
+        version: versionCreated ? nextVersion : po.version,
+      };
+    });
+    return result;
+  } catch (error) {
+    if (error instanceof OrderLockError) return { ok: false, error: error.message };
+    throw error;
+  }
 }
 
 /** Refreshes the sales-order status after procurement changes. */
@@ -1055,6 +1456,19 @@ export async function purchaseOrdersForOrder(salesOrderId: string) {
       acknowledgements: { orderBy: { createdAt: "desc" } },
       receipts: { orderBy: { receivedAt: "desc" }, include: { lines: true } },
       supplierBills: true,
+      versions: {
+        orderBy: { version: "desc" },
+        select: {
+          id: true,
+          version: true,
+          status: true,
+          reason: true,
+          source: true,
+          approvedById: true,
+          changeSummaryJson: true,
+          createdAt: true,
+        },
+      },
     },
   });
 }

@@ -39,6 +39,7 @@ type LineDraft = {
   supplierOfferId: string | null;
   leadTimeDays: number | null;
   deliveryTerms: string | null;
+  deliveryLocation: string | null;
   validityDate: Date | null;
 };
 
@@ -71,6 +72,9 @@ export async function createQuotationDraft(input: {
   userId: string;
   actorLabel: string;
   notes?: string | null;
+  paymentTerms?: string | null;
+  deliveryTerms?: string | null;
+  deliveryAddress?: string | null;
 }): Promise<{ ok: true; quotationId: string; unpriced: string[]; complianceWarnings: string[] } | { ok: false; error: string }> {
   const enquiry = await db.enquiry.findUnique({
     where: { id: input.enquiryId },
@@ -185,7 +189,9 @@ export async function createQuotationDraft(input: {
       costIncomplete: costStatus !== "COMPLETE" || offer == null,
       supplierOfferId: offer?.id ?? null,
       leadTimeDays: offer?.leadTimeDays ?? null,
-      deliveryTerms: offer?.deliveryLocation ?? null,
+      // A supplier's named delivery place is not an Incoterm. Keep it separate.
+      deliveryTerms: null,
+      deliveryLocation: offer?.deliveryLocation ?? null,
       validityDate: offer?.validityDate ?? null,
     });
   }
@@ -235,6 +241,9 @@ export async function createQuotationDraft(input: {
       internalCostTotal: internalCost,
       internalCostComplete,
       terms: buildQuoteTerms(org),
+      paymentTerms: input.paymentTerms?.trim() || null,
+      deliveryTerms: input.deliveryTerms?.trim() || null,
+      deliveryAddress: input.deliveryAddress?.trim() || null,
       // Only text the owner explicitly enters as customer-facing notes is printed.
       // Internal pricing warnings stay in the approval payload and audit trail.
       notes: input.notes?.trim() || null,
@@ -337,6 +346,42 @@ export async function updateQuotationLineTechnical(input: {
     entityType: "CustomerQuotationItem",
     entityId: input.itemId,
     meta: { quotationId: input.quotationId },
+  });
+  return { ok: true };
+}
+
+export async function updateQuotationCommercialTerms(input: {
+  quotationId: string;
+  paymentTerms?: string | null;
+  deliveryTerms?: string | null;
+  deliveryAddress?: string | null;
+  userId: string;
+  actorLabel: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const quotation = await db.customerQuotation.findUnique({ where: { id: input.quotationId } });
+  if (!quotation) return { ok: false, error: "Quotation not found." };
+  if (quotation.status !== "DRAFT" && quotation.status !== "AWAITING_APPROVAL") {
+    return { ok: false, error: "Commercial terms can only be changed before approval. Create a new revision instead." };
+  }
+  await db.customerQuotation.update({
+    where: { id: quotation.id },
+    data: {
+      paymentTerms: input.paymentTerms?.trim() || null,
+      deliveryTerms: input.deliveryTerms?.trim() || null,
+      deliveryAddress: input.deliveryAddress?.trim() || null,
+    },
+  });
+  await writeAudit({
+    actorId: input.userId,
+    actorLabel: input.actorLabel,
+    action: "quotation.commercial_terms_updated",
+    entityType: "CustomerQuotation",
+    entityId: quotation.id,
+    meta: {
+      paymentTerms: input.paymentTerms?.trim() || null,
+      deliveryTerms: input.deliveryTerms?.trim() || null,
+      deliveryAddress: input.deliveryAddress?.trim() || null,
+    },
   });
   return { ok: true };
 }
@@ -540,6 +585,9 @@ export async function generateAndStoreQuotationPdf(
       taxAmount: quotation.taxAmount,
       total: quotation.total,
       terms: quotation.terms,
+      paymentTerms: quotation.paymentTerms,
+      deliveryTerms: quotation.deliveryTerms,
+      deliveryAddress: quotation.deliveryAddress,
       notes: quotation.notes,
       items: quotation.items.map((item) => ({
         description: item.description,
@@ -552,6 +600,7 @@ export async function generateAndStoreQuotationPdf(
         certification: item.certification,
         leadTimeDays: item.leadTimeDays,
         deliveryTerms: item.deliveryTerms,
+        deliveryLocation: item.deliveryLocation,
         validityDate: item.validityDate,
         technicalNotes: item.technicalNotes,
       })),

@@ -60,6 +60,7 @@ export type DiscrepancyCode =
   | "TAX"
   | "PAYMENT_TERMS"
   | "DELIVERY_TERMS"
+  | "NOT_COMPARABLE"
   | "DELIVERY_DATE"
   | "VALIDITY"
   | "CONDITIONS"
@@ -101,6 +102,9 @@ export type QuotationSnapshot = {
   taxAmount: number;
   total: number;
   terms: string | null;
+  paymentTerms: string | null;
+  deliveryTerms: string | null;
+  deliveryAddress: string | null;
   validityDate: Date | null;
   customerName: string;
   items: QuotationLine[];
@@ -191,30 +195,76 @@ export function compareAcceptanceToQuotation(
   }
 
   const requestedPaymentTerms = text(input.paymentTerms);
-  if (requestedPaymentTerms && quotation.terms && normalize(requestedPaymentTerms) !== normalize(quotation.terms)) {
-    found.push({
-      code: "PAYMENT_TERMS",
-      severity: "WARNING",
-      quotationItemId: null,
-      description: "Payment terms",
-      field: "paymentTerms",
-      quoted: quotation.terms,
-      requested: requestedPaymentTerms,
-      message: "The customer's payment terms differ from the quotation terms.",
-    });
+  if (requestedPaymentTerms) {
+    const quotedPaymentTerms = text(quotation.paymentTerms);
+    if (!quotedPaymentTerms) {
+      // Legacy quotations only hold generic legal boilerplate. Comparing a real
+      // customer term against that text would create a false mismatch.
+      found.push({
+        code: "NOT_COMPARABLE",
+        severity: "WARNING",
+        quotationItemId: null,
+        description: "Payment terms",
+        field: "paymentTerms",
+        quoted: null,
+        requested: requestedPaymentTerms,
+        message:
+          "The original quotation did not record structured payment terms, so the customer's terms cannot be compared automatically. Confirm them directly before accepting the order.",
+      });
+    } else if (normalize(requestedPaymentTerms) !== normalize(quotedPaymentTerms)) {
+      found.push({
+        code: "PAYMENT_TERMS",
+        severity: "WARNING",
+        quotationItemId: null,
+        description: "Payment terms",
+        field: "paymentTerms",
+        quoted: quotedPaymentTerms,
+        requested: requestedPaymentTerms,
+        message: "The customer's payment terms differ from the quoted payment terms.",
+      });
+    }
   }
 
   const requestedDeliveryTerms = text(input.deliveryTerms);
-  if (requestedDeliveryTerms && normalize(requestedDeliveryTerms) !== normalize(quotation.terms)) {
+  if (requestedDeliveryTerms) {
+    const quotedDeliveryTerms = text(quotation.deliveryTerms);
+    if (!quotedDeliveryTerms) {
+      found.push({
+        code: "NOT_COMPARABLE",
+        severity: "WARNING",
+        quotationItemId: null,
+        description: "Delivery terms",
+        field: "deliveryTerms",
+        quoted: null,
+        requested: requestedDeliveryTerms,
+        message:
+          "The original quotation did not record structured delivery terms, so the customer's terms cannot be compared automatically. Confirm Incoterms and freight responsibility directly.",
+      });
+    } else if (normalize(requestedDeliveryTerms) !== normalize(quotedDeliveryTerms)) {
+      found.push({
+        code: "DELIVERY_TERMS",
+        severity: "WARNING",
+        quotationItemId: null,
+        description: "Delivery terms",
+        field: "deliveryTerms",
+        quoted: quotedDeliveryTerms,
+        requested: requestedDeliveryTerms,
+        message: "The customer's delivery terms differ from the quoted structured delivery terms. Confirm freight and delivery responsibility.",
+      });
+    }
+  }
+
+  const requestedDeliveryAddress = text(input.deliveryAddress);
+  if (requestedDeliveryAddress && quotation.deliveryAddress && normalize(requestedDeliveryAddress) !== normalize(quotation.deliveryAddress)) {
     found.push({
       code: "DELIVERY_TERMS",
       severity: "WARNING",
       quotationItemId: null,
-      description: "Delivery terms",
-      field: "deliveryTerms",
-      quoted: quotation.terms,
-      requested: requestedDeliveryTerms,
-      message: "The customer's delivery terms differ from the quotation. Confirm freight and delivery responsibility.",
+      description: "Delivery address",
+      field: "deliveryAddress",
+      quoted: quotation.deliveryAddress,
+      requested: requestedDeliveryAddress,
+      message: "The customer's delivery address differs from the quoted delivery address.",
     });
   }
 
@@ -496,6 +546,9 @@ async function loadQuotationSnapshot(quotationId: string): Promise<QuotationSnap
     taxAmount: quotation.taxAmount,
     total: quotation.total,
     terms: quotation.terms,
+    paymentTerms: quotation.paymentTerms,
+    deliveryTerms: quotation.deliveryTerms,
+    deliveryAddress: quotation.deliveryAddress,
     validityDate: quotation.validityDate,
     customerName: quotation.customerName,
     items: quotation.items.map((item) => ({
@@ -675,9 +728,11 @@ export async function createSalesOrderFromAcceptance(
           subtotal,
           taxAmount,
           total,
-          paymentTerms: text(input.paymentTerms) ?? quotation.terms,
-          deliveryTerms: text(input.deliveryTerms),
-          deliveryAddress: text(input.deliveryAddress),
+          // Structured quoted terms only. Generic legal boilerplate is never
+          // copied into a sales order as if it were an agreed payment term.
+          paymentTerms: text(input.paymentTerms) ?? quotation.paymentTerms,
+          deliveryTerms: text(input.deliveryTerms) ?? quotation.deliveryTerms,
+          deliveryAddress: text(input.deliveryAddress) ?? quotation.deliveryAddress,
           agreedDeliveryDate: deliveryDate && !Number.isNaN(deliveryDate.getTime()) ? deliveryDate : null,
           notes: text(input.notes),
           lines: {

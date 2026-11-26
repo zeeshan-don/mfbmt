@@ -7,6 +7,7 @@ import { nextNumber } from "../workflow/sequences";
 import { dec, money, qty, sum } from "./money";
 import { recordOrderEvent, transitionPurchaseOrder } from "./events";
 import { refreshSalesOrderStatus } from "./state";
+import { lockPurchaseOrder, lockSalesOrder, OrderLockError } from "./locks";
 
 /**
  * Goods receipt.
@@ -277,7 +278,10 @@ export async function recordGoodsReceipt(input: RecordGoodsReceiptInput): Promis
       // Serialize receipts for one purchase order. The remaining quantity is
       // re-read under the lock, so two simultaneous deliveries cannot both
       // accept stock against the same ordered quantity.
-      await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${po.id} FOR UPDATE`;
+      // Same order -> PO lock order as closure, procurement and dispatch.
+      await lockSalesOrder(tx, po.salesOrderId);
+      const lockedPo = await lockPurchaseOrder(tx, po.id);
+      if (!lockedPo) throw new Error("Purchase order not found.");
       const acceptedNow = new Map<string, ReturnType<typeof qty>>();
       const posted = await tx.goodsReceiptLine.findMany({
         where: { purchaseOrderLine: { purchaseOrderId: po.id } },
@@ -434,6 +438,7 @@ export async function recordGoodsReceipt(input: RecordGoodsReceiptInput): Promis
     }
     return { ok: true, receiptId: created.id, receiptNumber: created.receiptNumber, duplicate: false, discrepancies };
   } catch (error) {
+    if (error instanceof OrderLockError) return { ok: false, error: error.message };
     if (typeof error === "object" && error && (error as { code?: string }).code === "P2002") {
       const raced = await db.goodsReceipt.findUnique({
         where: { organizationId_idempotencyKey: { organizationId: po.organizationId, idempotencyKey } },

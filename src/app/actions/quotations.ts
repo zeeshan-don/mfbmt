@@ -4,6 +4,7 @@ import { revalidateOrgPath } from "@/lib/revalidate";
 import { redirect } from "next/navigation";
 import { authorizeOwner } from "@/lib/auth";
 import {
+  updateQuotationCommercialTerms,
   updateQuotationLinePrice,
   updateQuotationLineTechnical,
   setQuotationOutcome,
@@ -58,6 +59,23 @@ export async function updateQuotationTechnicalAction(formData: FormData) {
   });
   revalidateOrgPath(user.organizationId, `/quotations/${quotationId}`);
   if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not update technical terms")}`);
+  redirect(`/quotations/${quotationId}?saved=1`);
+}
+
+export async function updateQuotationTermsAction(formData: FormData) {
+  const user = await authorizeOwner();
+  if (!user) redirect("/login");
+  const quotationId = String(formData.get("quotationId") ?? "");
+  const result = await updateQuotationCommercialTerms({
+    quotationId,
+    paymentTerms: String(formData.get("paymentTerms") ?? ""),
+    deliveryTerms: String(formData.get("deliveryTerms") ?? ""),
+    deliveryAddress: String(formData.get("deliveryAddress") ?? ""),
+    userId: user.id,
+    actorLabel: user.name,
+  });
+  revalidateOrgPath(user.organizationId, `/quotations/${quotationId}`);
+  if (!result.ok) redirect(`/quotations/${quotationId}?error=${encodeURIComponent(result.error ?? "Could not update commercial terms")}`);
   redirect(`/quotations/${quotationId}?saved=1`);
 }
 

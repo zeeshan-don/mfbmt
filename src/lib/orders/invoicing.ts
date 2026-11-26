@@ -7,6 +7,7 @@ import { dec, lineTotals, money, qty, sum, toMoneyString } from "./money";
 import { orderMetrics } from "./metrics";
 import { recordOrderEvent } from "./events";
 import { refreshSalesOrderStatus } from "./state";
+import { lockSalesOrder, OrderLockError } from "./locks";
 
 /**
  * Customer invoicing.
@@ -84,6 +85,9 @@ export async function issueCustomerInvoice(input: IssueInvoiceInput): Promise<Is
 
   try {
     const created = await db.$transaction(async (tx) => {
+      // Serialize invoicing with closure and other invoice attempts, then
+      // recompute delivered/uninvoiced quantity under the lock.
+      await lockSalesOrder(tx, order.id);
       const metrics = await orderMetrics(tx, order.id);
       const targets: Array<{ lineId: string; description: string; unit: string; quantity: ReturnType<typeof qty>; unitPrice: ReturnType<typeof money>; discountPct: ReturnType<typeof dec>; taxRatePct: ReturnType<typeof dec> }> = [];
 
@@ -208,6 +212,7 @@ export async function issueCustomerInvoice(input: IssueInvoiceInput): Promise<Is
     });
     return { ok: true, invoiceId: created.id, invoiceNumber: created.invoiceNumber, total: toMoneyString(created.total), duplicate: false };
   } catch (error) {
+    if (error instanceof OrderLockError) return { ok: false, error: error.message };
     if (typeof error === "object" && error && (error as { code?: string }).code === "P2002") {
       const raced = await db.customerInvoice.findUnique({
         where: { organizationId_idempotencyKey: { organizationId: order.organizationId, idempotencyKey } },

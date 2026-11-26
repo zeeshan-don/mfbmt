@@ -5,6 +5,15 @@ import { dec, money, qty, sum, toNumber, type Dec } from "./money";
  * Per-line fulfilment and financial metrics, derived from durable records only.
  * Nothing here is a cached counter that can drift: receipt, delivery and invoice
  * lines are aggregated on every read.
+ *
+ * Supplier commitment rules:
+ *  - accepted receipts count as received stock regardless of the PO's later
+ *    status, so cancelling/rejecting a PO never erases goods already accepted;
+ *  - REJECTED/CANCELLED release only the unreceived part of the commitment;
+ *  - an approved acknowledgement (including PARTIALLY_ACKNOWLEDGED) commits the
+ *    quantity the supplier actually confirmed, never the full ordered quantity;
+ *  - a SENT/ACKNOWLEDGEMENT_RECEIVED PO without owner approval is shown as a
+ *    provisional commitment, not a confirmed one.
  */
 export type LineMetrics = {
   id: string;
@@ -17,6 +26,9 @@ export type LineMetrics = {
   stockQuantity: Dec;
   procureQuantity: Dec;
   orderedFromSuppliers: Dec;
+  provisionalSupplierQty: Dec;
+  acknowledgedSupplierQty: Dec;
+  releasedSupplierQty: Dec;
   receivedAccepted: Dec;
   openSupplierCommitment: Dec;
   dispatched: Dec;
@@ -24,8 +36,10 @@ export type LineMetrics = {
   invoiced: Dec;
   availableToDispatch: Dec;
   remainingToReceive: Dec;
+  remainingToProcure: Dec;
   remainingToDeliver: Dec;
   remainingToInvoice: Dec;
+  unbilledValue: Dec;
 };
 
 export type OrderMetrics = {
@@ -37,6 +51,10 @@ export type OrderMetrics = {
   unbilledValue: Dec;
   openSupplierQty: Dec;
   openSupplierValue: Dec;
+  provisionalSupplierQty: Dec;
+  acknowledgedSupplierQty: Dec;
+  releasedSupplierQty: Dec;
+  remainingToProcureQty: Dec;
   allDelivered: boolean;
   allReceivedOrStock: boolean;
   anyDelivered: boolean;
@@ -50,6 +68,7 @@ type LineRow = Prisma.SalesOrderLineGetPayload<{
         id: true;
         quantity: true;
         unitPrice: true;
+        acknowledgedQuantity: true;
         purchaseOrder: { select: { status: true } };
         receiptLines: { select: { quantityAccepted: true } };
       };
@@ -59,7 +78,43 @@ type LineRow = Prisma.SalesOrderLineGetPayload<{
   };
 }>;
 
-const CANCELLED = new Set(["CANCELLED"]);
+export type PurchaseOrderLineCoverage = {
+  ordered: Dec;
+  accepted: Dec;
+  committed: Dec;
+  open: Dec;
+  provisional: Dec;
+  acknowledged: Dec;
+  released: Dec;
+};
+
+const RELEASED_STATUSES = new Set(["REJECTED", "CANCELLED"]);
+const PROVISIONAL_STATUSES = new Set(["SENT", "ACKNOWLEDGEMENT_RECEIVED"]);
+
+/**
+ * Coverage contributed by one PO line. `accepted` is always counted; only the
+ * still-open part of a live commitment is added so receipts are not double
+ * counted. A rejected/cancelled line contributes its receipts but releases the
+ * unreceived remainder.
+ */
+export function coverageForPurchaseOrderLine(line: {
+  quantity: Prisma.Decimal.Value;
+  acknowledgedQuantity: Prisma.Decimal.Value | null;
+  purchaseOrder: { status: string };
+  receiptLines: Array<{ quantityAccepted: Prisma.Decimal.Value }>;
+}): PurchaseOrderLineCoverage {
+  const ordered = qty(line.quantity);
+  const accepted = qty(sum(line.receiptLines.map((receipt) => receipt.quantityAccepted)));
+  const released = RELEASED_STATUSES.has(line.purchaseOrder.status);
+  const committed = released ? qty(0) : qty(line.acknowledgedQuantity ?? ordered);
+  const open = committed.minus(accepted).gt(0) ? qty(committed.minus(accepted)) : qty(0);
+  const provisional = !released && line.acknowledgedQuantity == null && PROVISIONAL_STATUSES.has(line.purchaseOrder.status)
+    ? open
+    : qty(0);
+  const acknowledged = !released && line.acknowledgedQuantity != null ? committed : qty(0);
+  const releasedQty = released && ordered.minus(accepted).gt(0) ? qty(ordered.minus(accepted)) : qty(0);
+  return { ordered, accepted, committed, open, provisional, acknowledged, released: releasedQty };
+}
 
 export async function loadOrderLines(tx: Prisma.TransactionClient, salesOrderId: string): Promise<LineRow[]> {
   return tx.salesOrderLine.findMany({
@@ -71,6 +126,7 @@ export async function loadOrderLines(tx: Prisma.TransactionClient, salesOrderId:
           id: true,
           quantity: true,
           unitPrice: true,
+          acknowledgedQuantity: true,
           purchaseOrder: { select: { status: true } },
           receiptLines: { select: { quantityAccepted: true } },
         },
@@ -89,17 +145,19 @@ export async function orderMetrics(tx: Prisma.TransactionClient, salesOrderId: s
     let orderedFromSuppliers = dec(0);
     let openSupplierCommitment = dec(0);
     let openSupplierValue = dec(0);
+    let provisionalSupplierQty = dec(0);
+    let acknowledgedSupplierQty = dec(0);
+    let releasedSupplierQty = dec(0);
+
     for (const poLine of row.purchaseOrderLines) {
-      if (CANCELLED.has(poLine.purchaseOrder.status)) continue;
-      const ordered = qty(poLine.quantity);
-      const accepted = qty(sum(poLine.receiptLines.map((line) => line.quantityAccepted)));
-      orderedFromSuppliers = orderedFromSuppliers.plus(ordered);
-      receivedAccepted = receivedAccepted.plus(accepted);
-      const open = qty(ordered.minus(accepted));
-      if (open.gt(0)) {
-        openSupplierCommitment = openSupplierCommitment.plus(open);
-        openSupplierValue = openSupplierValue.plus(money(open.times(poLine.unitPrice)));
-      }
+      const coverage = coverageForPurchaseOrderLine(poLine);
+      receivedAccepted = receivedAccepted.plus(coverage.accepted);
+      orderedFromSuppliers = orderedFromSuppliers.plus(coverage.committed);
+      openSupplierCommitment = openSupplierCommitment.plus(coverage.open);
+      openSupplierValue = openSupplierValue.plus(money(coverage.open.times(poLine.unitPrice)));
+      provisionalSupplierQty = provisionalSupplierQty.plus(coverage.provisional);
+      acknowledgedSupplierQty = acknowledgedSupplierQty.plus(coverage.acknowledged);
+      releasedSupplierQty = releasedSupplierQty.plus(coverage.released);
     }
 
     const dispatched = qty(
@@ -128,7 +186,12 @@ export async function orderMetrics(tx: Prisma.TransactionClient, salesOrderId: s
     const stockQuantity = qty(row.stockQuantity);
     const procureQuantity = qty(row.procureQuantity);
     const availableToDispatch = qty(stockQuantity.plus(receivedAccepted).minus(dispatched));
-    const remainingToReceive = qty(procureQuantity.minus(receivedAccepted));
+    const remainingToReceive = qty(procureQuantity.minus(receivedAccepted).lt(0) ? dec(0) : procureQuantity.minus(receivedAccepted));
+    const remainingToProcure = qty(
+      procureQuantity.minus(receivedAccepted).minus(openSupplierCommitment).lt(0)
+        ? dec(0)
+        : procureQuantity.minus(receivedAccepted).minus(openSupplierCommitment),
+    );
 
     const remainingToInvoiceQty = qty(delivered.minus(invoiced));
     const unitNet = money(row.unitPrice);
@@ -152,6 +215,9 @@ export async function orderMetrics(tx: Prisma.TransactionClient, salesOrderId: s
       stockQuantity,
       procureQuantity,
       orderedFromSuppliers,
+      provisionalSupplierQty,
+      acknowledgedSupplierQty,
+      releasedSupplierQty,
       receivedAccepted,
       openSupplierCommitment,
       dispatched,
@@ -159,10 +225,11 @@ export async function orderMetrics(tx: Prisma.TransactionClient, salesOrderId: s
       invoiced,
       availableToDispatch,
       remainingToReceive,
+      remainingToProcure,
       remainingToDeliver: qty(quantity.minus(delivered)),
       remainingToInvoice: remainingToInvoiceQty,
       unbilledValue: unbilled,
-    } as LineMetrics & { unbilledValue: Dec };
+    };
   });
 
   const deliveredValue = money(
@@ -172,7 +239,7 @@ export async function orderMetrics(tx: Prisma.TransactionClient, salesOrderId: s
       return total.plus(money(orderValue.times(ratio)).times(dec(1).plus(line.taxRatePct.div(100))));
     }, dec(0)),
   );
-  const unbilledValue = money(lines.reduce((total, line) => total.plus((line as LineMetrics & { unbilledValue: Dec }).unbilledValue), dec(0)));
+  const unbilledValue = money(lines.reduce((total, line) => total.plus(line.unbilledValue), dec(0)));
 
   return {
     lines,
@@ -185,6 +252,10 @@ export async function orderMetrics(tx: Prisma.TransactionClient, salesOrderId: s
     openSupplierValue: money(
       lines.reduce((total, line) => total.plus(money(line.openSupplierCommitment.times(line.unitPrice))), dec(0)),
     ),
+    provisionalSupplierQty: qty(sum(lines.map((line) => line.provisionalSupplierQty))),
+    acknowledgedSupplierQty: qty(sum(lines.map((line) => line.acknowledgedSupplierQty))),
+    releasedSupplierQty: qty(sum(lines.map((line) => line.releasedSupplierQty))),
+    remainingToProcureQty: qty(sum(lines.map((line) => line.remainingToProcure))),
     allDelivered: lines.length > 0 && lines.every((line) => line.remainingToDeliver.lte(0)),
     allReceivedOrStock: lines.length > 0 && lines.every((line) => line.remainingToReceive.lte(0)),
     anyDelivered: lines.some((line) => line.delivered.gt(0)),

@@ -115,6 +115,7 @@ model Organization {
   salesOrderLines          SalesOrderLine[]
   purchaseOrders           PurchaseOrder[]
   purchaseOrderLines       PurchaseOrderLine[]
+  purchaseOrderVersions    PurchaseOrderVersion[]
   supplierAcknowledgements SupplierAcknowledgement[]
   goodsReceipts            GoodsReceipt[]
   goodsReceiptLines        GoodsReceiptLine[]
@@ -1194,7 +1195,13 @@ model CustomerQuotation {
   total                  Float                   @default(0)
   internalCostTotal      Float?
   internalCostComplete   Boolean                 @default(false)
+  /// Generic legal/commercial quotation boilerplate only. Never used as a
+  /// payment-term or delivery-term baseline.
   terms                  String?
+  /// Structured commercial terms recorded explicitly by the owner.
+  paymentTerms           String?
+  deliveryTerms          String?
+  deliveryAddress        String?
   notes                  String?
   validityDate           DateTime?
   status                 String                  @default("DRAFT") // DRAFT | AWAITING_APPROVAL | APPROVED | SENT | VOID
@@ -1258,6 +1265,8 @@ model CustomerQuotationItem {
   certification   String?
   leadTimeDays    Int?
   deliveryTerms   String?
+  /// Named delivery place (for example "Dubai"). Distinct from Incoterms.
+  deliveryLocation String?
   validityDate    DateTime?
   technicalNotes  String?
   pricingSource   String? // RULE | MANUAL | OWNER_OVERRIDE
@@ -1765,6 +1774,7 @@ model PurchaseOrder {
   receipts             GoodsReceipt[]
   supplierBills        SupplierBill[]
   emailReplies         SupplierEmailReply[]
+  versions             PurchaseOrderVersion[]
 
   @@unique([organizationId, poNumber])
   @@unique([organizationId, idempotencyKey])
@@ -1792,6 +1802,10 @@ model PurchaseOrderLine {
   taxRatePct       Decimal            @default(0) @db.Decimal(9, 4)
   taxAmount        Decimal            @default(0) @db.Decimal(18, 4)
   lineTotal        Decimal            @default(0) @db.Decimal(18, 4)
+  /// Quantity the supplier actually committed, once the owner approved the
+  /// acknowledgement. Null means no approved acknowledgement (the ordered
+  /// quantity is still a provisional commitment).
+  acknowledgedQuantity Decimal?        @db.Decimal(18, 4)
   moq              Decimal?           @db.Decimal(18, 4)
   leadTimeDays     Int?
   createdAt        DateTime           @default(now())
@@ -1828,6 +1842,30 @@ model SupplierAcknowledgement {
 
   @@index([organizationId, reviewStatus])
   @@index([purchaseOrderId, createdAt])
+}
+
+/// Immutable snapshot of a purchase order at one issued/revision version.
+/// The live rows may move on; a snapshot is never updated or deleted by the app.
+model PurchaseOrderVersion {
+  id                String        @id @default(cuid())
+  organizationId    String        @default("__unset__")
+  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  purchaseOrderId   String
+  purchaseOrder     PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  version           Int
+  status            String
+  reason            String?
+  source            String        @default("MANUAL")
+  acknowledgementId String?
+  approvedById      String?
+  /// Complete header, line, total, term and send references at this version.
+  snapshotJson      String
+  /// Per-line before/after values for the UI diff, where a previous version exists.
+  changeSummaryJson String        @default("{}")
+  createdAt         DateTime      @default(now())
+
+  @@unique([purchaseOrderId, version])
+  @@index([organizationId, purchaseOrderId])
 }
 
 model GoodsReceipt {

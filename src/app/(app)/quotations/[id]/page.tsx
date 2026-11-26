@@ -5,7 +5,7 @@ import { requirePermission } from "@/lib/auth";
 import { marginPct } from "@/lib/pricing/rules";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { Badge, Button, ButtonLink, Card, CardHeader, Notice, PageHeader, inputClass, statusTone } from "@/components/ui";
-import { generateQuotationPdfAction, sendQuotationAction, setQuotationOutcomeAction, updateQuotationPriceAction, updateQuotationTechnicalAction } from "@/app/actions/quotations";
+import { generateQuotationPdfAction, sendQuotationAction, setQuotationOutcomeAction, updateQuotationPriceAction, updateQuotationTechnicalAction, updateQuotationTermsAction } from "@/app/actions/quotations";
 
 export const dynamic = "force-dynamic";
 
@@ -180,6 +180,32 @@ export default async function QuotationPage({
                 </tfoot>
               </table>
             </div>
+            {canPrice ? (
+              <details className="border-t border-line">
+                <summary className="cursor-pointer list-none px-4 py-2.5 text-xs font-medium text-soft hover:text-ink">
+                  Payment terms, delivery terms and delivery address
+                </summary>
+                <form action={updateQuotationTermsAction} className="grid gap-2 border-t border-line px-4 py-3 sm:grid-cols-3">
+                  <input type="hidden" name="quotationId" value={quotation.id} />
+                  <label className="block text-[11px] text-soft">
+                    Payment terms
+                    <input name="paymentTerms" defaultValue={quotation.paymentTerms ?? ""} className={`${inputClass} mt-1`} placeholder="30 days from invoice" />
+                  </label>
+                  <label className="block text-[11px] text-soft">
+                    Delivery terms / Incoterm
+                    <input name="deliveryTerms" defaultValue={quotation.deliveryTerms ?? ""} className={`${inputClass} mt-1`} placeholder="DAP" />
+                  </label>
+                  <label className="block text-[11px] text-soft">
+                    Delivery address / place
+                    <input name="deliveryAddress" defaultValue={quotation.deliveryAddress ?? ""} className={`${inputClass} mt-1`} placeholder="Jebel Ali, Dubai" />
+                  </label>
+                  <div className="sm:col-span-3">
+                    <Button size="sm">Save commercial terms</Button>
+                    <span className="ml-2 text-[11px] text-muted">Generic legal boilerplate and these structured terms are kept separate.</span>
+                  </div>
+                </form>
+              </details>
+            ) : null}
             <details className="border-t border-line">
               <summary className="cursor-pointer list-none px-4 py-2.5 text-xs font-medium text-soft hover:text-ink">
                 Per-line technical terms, origin, certification and delivery

@@ -7,6 +7,7 @@ import { dec, qty, sum } from "./money";
 import { orderMetrics } from "./metrics";
 import { recordOrderEvent } from "./events";
 import { refreshSalesOrderStatus } from "./state";
+import { lockSalesOrder, lockStockForProduct, OrderLockError } from "./locks";
 
 /**
  * Customer dispatch and delivery.
@@ -46,18 +47,17 @@ async function consumeStock(
   input: { productId: string; quantity: ReturnType<typeof qty>; deliveryId: string; userId: string },
 ): Promise<void> {
   let remaining = input.quantity;
-  const rows = await tx.inventoryStock.findMany({
-    where: { productId: input.productId, quantityOnHand: { gt: 0 } },
-    orderBy: { quantityOnHand: "desc" },
-  });
+  // Lock the stock rows in deterministic location/id order, then decrement with
+  // a conditional update that cannot take on-hand stock below zero.
+  const rows = await lockStockForProduct(tx, input.productId);
   for (const row of rows) {
     if (remaining.lte(0)) break;
     const onHand = qty(row.quantityOnHand);
     const take = qty(remaining.lte(onHand) ? remaining : onHand);
     if (take.lte(0)) continue;
     const reserved = qty(row.quantityReserved);
-    await tx.inventoryStock.update({
-      where: { id: row.id },
+    const updated = await tx.inventoryStock.updateMany({
+      where: { id: row.id, quantityOnHand: { gte: Number(take) } },
       data: {
         quantityOnHand: { decrement: Number(take) },
         // The quotation hold becomes a real dispatch; release the hold with the
@@ -66,6 +66,9 @@ async function consumeStock(
         lastUpdatedAt: new Date(),
       },
     });
+    if (updated.count === 0) {
+      throw new DeliveryStockError(`Stock for the line changed while dispatching; reload and try again.`);
+    }
     await tx.inventoryMovement.create({
       data: {
         productId: input.productId,
@@ -111,7 +114,6 @@ export async function recordDelivery(input: RecordDeliveryInput): Promise<Record
   });
   if (existing) return { ok: true, deliveryId: existing.id, deliveryNumber: existing.deliveryNumber, duplicate: true };
 
-  const metrics = await db.$transaction((tx) => orderMetrics(tx, order.id));
   const prepared: Array<{
     salesOrderLineId: string;
     quantity: ReturnType<typeof qty>;
@@ -122,16 +124,8 @@ export async function recordDelivery(input: RecordDeliveryInput): Promise<Record
   for (const line of input.lines) {
     const orderLine = order.lines.find((candidate) => candidate.id === line.salesOrderLineId);
     if (!orderLine) return { ok: false, error: "A delivery line does not belong to this sales order." };
-    const metric = metrics.lines.find((candidate) => candidate.id === orderLine.id);
-    if (!metric) return { ok: false, error: `Fulfilment state for "${orderLine.description}" is unavailable.` };
     const requested = qty(line.quantity);
     if (requested.lte(0)) return { ok: false, error: `Delivery quantity for "${orderLine.description}" must be positive.` };
-    if (requested.gt(metric.availableToDispatch)) {
-      return {
-        ok: false,
-        error: `Only ${metric.availableToDispatch.toFixed(4)} ${orderLine.unit} of "${orderLine.description}" is available to dispatch (accepted stock and inspected receipts minus what already left).`,
-      };
-    }
     // Accepted supplier receipts are posted to inventory, so the whole
     // dispatched quantity is consumed from stock, not only the part that came
     // from the order's opening stock position.
@@ -149,6 +143,21 @@ export async function recordDelivery(input: RecordDeliveryInput): Promise<Record
 
   try {
     const created = await db.$transaction(async (tx) => {
+      // Serialize dispatch with closure, receipts and other dispatches. The
+      // availability calculation is repeated inside the lock, never trusted from
+      // the stale read above.
+      const lockedOrder = await lockSalesOrder(tx, order.id);
+      const metrics = await orderMetrics(tx, lockedOrder.id);
+      for (const line of prepared) {
+        const metric = metrics.lines.find((candidate) => candidate.id === line.salesOrderLineId);
+        if (!metric) throw new DeliveryStockError("Fulfilment state for a delivery line is unavailable.");
+        if (line.quantity.gt(metric.availableToDispatch)) {
+          throw new DeliveryStockError(
+            `Only ${metric.availableToDispatch.toFixed(4)} ${metric.unit} of "${metric.description}" is available to dispatch (accepted stock and inspected receipts minus what already left).`,
+          );
+        }
+      }
+
       const delivery = await tx.delivery.create({
         data: {
           deliveryNumber,
@@ -211,6 +220,7 @@ export async function recordDelivery(input: RecordDeliveryInput): Promise<Record
     return { ok: true, deliveryId: created.id, deliveryNumber: created.deliveryNumber, duplicate: false };
   } catch (error) {
     if (error instanceof DeliveryStockError) return { ok: false, error: error.message };
+    if (error instanceof OrderLockError) return { ok: false, error: error.message };
     if (typeof error === "object" && error && (error as { code?: string }).code === "P2002") {
       const raced = await db.delivery.findUnique({
         where: { organizationId_idempotencyKey: { organizationId: order.organizationId, idempotencyKey } },
@@ -240,6 +250,7 @@ export async function recordProofOfDelivery(input: {
   const deliveredAt = Number.isNaN(deliveredAtRaw.getTime()) ? new Date() : deliveredAtRaw;
 
   const applied = await db.$transaction(async (tx) => {
+    await lockSalesOrder(tx, delivery.salesOrderId);
     const claimed = await tx.delivery.updateMany({
       where: { id: delivery.id, status: "DISPATCHED" },
       data: {

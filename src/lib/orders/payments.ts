@@ -6,6 +6,7 @@ import { sha256 } from "../crypto";
 import { nextNumber } from "../workflow/sequences";
 import { dec, money, qty, sum, toMoneyString } from "./money";
 import { refreshSalesOrderStatus } from "./state";
+import { lockCustomerInvoice, lockPurchaseOrder, lockSalesOrder, lockSupplierBill, OrderLockError } from "./locks";
 
 /**
  * Customer receipts, supplier bills and supplier payments.
@@ -126,11 +127,18 @@ export async function recordCustomerPayment(input: RecordCustomerPaymentInput): 
       let currency: string | null = input.currency?.trim().toUpperCase() || null;
       let customerId = input.customerId?.trim() || null;
 
-      // Serialize concurrent receipts that touch the same invoices. Without the
-      // row lock, two transactions could each see the same pre-payment balance
-      // and both allocate the full amount.
-      for (const invoiceId of [...new Set(allocationsRequested.map((allocation) => allocation.invoiceId))].sort()) {
-        await tx.$queryRaw`SELECT id FROM "CustomerInvoice" WHERE id = ${invoiceId} FOR UPDATE`;
+      // Serialize concurrent receipts and closure. The parent sales order is
+      // locked first (sorted, deterministic), then the invoices.
+      const allocationInvoiceIds = [...new Set(allocationsRequested.map((allocation) => allocation.invoiceId))].sort();
+      const invoiceOrders = await tx.customerInvoice.findMany({
+        where: { id: { in: allocationInvoiceIds } },
+        select: { id: true, salesOrderId: true },
+      });
+      for (const salesOrderId of [...new Set(invoiceOrders.map((invoice) => invoice.salesOrderId))].sort()) {
+        await lockSalesOrder(tx, salesOrderId);
+      }
+      for (const invoiceId of allocationInvoiceIds) {
+        await lockCustomerInvoice(tx, invoiceId);
       }
 
       for (const allocation of allocationsRequested) {
@@ -217,6 +225,7 @@ export async function recordCustomerPayment(input: RecordCustomerPaymentInput): 
       duplicate: false,
     };
   } catch (error) {
+    if (error instanceof OrderLockError) return { ok: false, error: error.message };
     if (error instanceof CurrencyMismatchError) return { ok: false, code: "CURRENCY_MISMATCH", error: error.message };
     if (typeof error === "object" && error && (error as { code?: string }).code === "P2002") {
       const raced = await db.customerPayment.findUnique({
@@ -248,6 +257,19 @@ export async function reverseCustomerPayment(input: {
   if (payment.status === "REVERSED") return { ok: false, error: "This payment was already reversed." };
 
   const applied = await db.$transaction(async (tx) => {
+    // Same lock order as normal payment allocation: sales order, then invoices,
+    // then the payment row. Recompute each invoice from confirmed allocations.
+    const invoiceRows = await tx.customerInvoice.findMany({
+      where: { id: { in: [...new Set(payment.allocations.map((allocation) => allocation.invoiceId))] } },
+      select: { id: true, salesOrderId: true },
+    });
+    for (const salesOrderId of [...new Set(invoiceRows.map((invoice) => invoice.salesOrderId))].sort()) {
+      await lockSalesOrder(tx, salesOrderId);
+    }
+    for (const invoiceId of [...new Set(invoiceRows.map((invoice) => invoice.id))].sort()) {
+      await lockCustomerInvoice(tx, invoiceId);
+    }
+    await tx.$queryRaw`SELECT id FROM "CustomerPayment" WHERE id = ${payment.id} AND "organizationId" = ${await tenantId()} FOR UPDATE`;
     const claimed = await tx.customerPayment.updateMany({
       where: { id: payment.id, status: "CONFIRMED" },
       data: {
@@ -319,6 +341,23 @@ export async function recordSupplierBill(input: {
   if (input.purchaseOrderId && !po) return { ok: false, error: "Purchase order not found." };
   if (po && po.supplierId !== supplier.id) return { ok: false, error: "The purchase order belongs to a different supplier." };
 
+  // A browser-supplied receipt id is never trusted: the receipt must belong to
+  // this supplier and, when supplied, to this exact purchase order.
+  const receipt = input.goodsReceiptId
+    ? await db.goodsReceipt.findUnique({
+        where: { id: input.goodsReceiptId },
+        select: { id: true, purchaseOrderId: true, supplierId: true },
+      })
+    : null;
+  if (input.goodsReceiptId && !receipt) return { ok: false, error: "Goods receipt not found." };
+  if (receipt && receipt.supplierId !== supplier.id) {
+    return { ok: false, error: "The goods receipt belongs to a different supplier." };
+  }
+  if (receipt && po && receipt.purchaseOrderId !== po.id) {
+    return { ok: false, error: "The goods receipt belongs to a different purchase order." };
+  }
+  if (receipt && !po) return { ok: false, error: "A goods receipt can only be billed against its purchase order." };
+
   const currency = (input.currency?.trim() || po?.currency || "AED").toUpperCase();
   if (po && po.currency !== currency) return { ok: false, error: `The purchase order is in ${po.currency}; the bill is in ${currency}.` };
   const taxAmount = money(input.taxAmount ?? 0);
@@ -327,46 +366,97 @@ export async function recordSupplierBill(input: {
     input.idempotencyKey?.trim() ||
     `bill:${supplier.id}:${sha256(JSON.stringify({ ref: input.supplierInvoiceRef ?? null, amount: amount.toFixed(4), total: total.toFixed(4), po: po?.id ?? null })).slice(0, 32)}`;
 
+  const organizationId = await tenantId();
   const existing = await db.supplierBill.findUnique({
-    where: { organizationId_idempotencyKey: { organizationId: await tenantId(), idempotencyKey } },
+    where: { organizationId_idempotencyKey: { organizationId, idempotencyKey } },
   });
   if (existing) return { ok: true, billId: existing.id, billNumber: existing.billNumber, duplicate: true };
+
+  // An external invoice reference is a real duplicate signal per supplier.
+  const supplierInvoiceRef = input.supplierInvoiceRef?.trim() || null;
+  if (supplierInvoiceRef) {
+    const duplicate = await db.supplierBill.findFirst({
+      where: { supplierId: supplier.id, supplierInvoiceRef, status: { not: "VOID" } },
+      select: { billNumber: true },
+    });
+    if (duplicate) {
+      return {
+        ok: false,
+        error: `Supplier invoice ${supplierInvoiceRef} was already recorded as ${duplicate.billNumber}. Duplicate bills are not accepted.`,
+      };
+    }
+  }
 
   const billNumber = await nextNumber("SB");
   const receivedAtRaw = input.receivedAt ? new Date(input.receivedAt) : new Date();
   const dueDateRaw = input.dueDate ? new Date(input.dueDate) : null;
 
-  const created = await db.supplierBill.create({
-    data: {
-      billNumber,
-      idempotencyKey,
-      supplierId: supplier.id,
-      purchaseOrderId: po?.id ?? null,
-      goodsReceiptId: input.goodsReceiptId ?? null,
-      supplierInvoiceRef: input.supplierInvoiceRef?.trim() || null,
-      status: "OPEN",
-      currency,
-      amount,
-      taxAmount,
-      total,
-      paidAmount: dec(0),
-      dueDate: dueDateRaw && !Number.isNaN(dueDateRaw.getTime()) ? dueDateRaw : null,
-      paymentTerms: input.paymentTerms?.trim() || null,
-      receivedAt: Number.isNaN(receivedAtRaw.getTime()) ? new Date() : receivedAtRaw,
-      notes: input.notes?.trim() || null,
-      recordedById: input.userId,
-    },
-  });
+  try {
+    const created = await db.$transaction(async (tx) => {
+      // Re-validate the PO/receipt relationship under the order lock so a
+      // concurrent change cannot attach the bill to a different obligation.
+      if (po) {
+        await lockSalesOrder(tx, po.salesOrderId);
+        await lockPurchaseOrder(tx, po.id);
+      }
+      if (input.goodsReceiptId) {
+        const receiptNow = await tx.goodsReceipt.findUnique({
+          where: { id: input.goodsReceiptId },
+          select: { purchaseOrderId: true, supplierId: true },
+        });
+        if (!receiptNow) throw new Error("Goods receipt not found.");
+        if (receiptNow.supplierId !== supplier.id) throw new Error("The goods receipt belongs to a different supplier.");
+        if (!po || receiptNow.purchaseOrderId !== po.id) {
+          throw new Error("The goods receipt belongs to a different purchase order.");
+        }
+      }
 
-  await writeAudit({
-    actorId: input.userId,
-    actorLabel: input.actorLabel,
-    action: "supplier_bill.recorded",
-    entityType: "SupplierBill",
-    entityId: created.id,
-    meta: { billNumber, supplierId: supplier.id, currency, total: total.toFixed(4), purchaseOrderId: po?.id ?? null },
-  });
-  return { ok: true, billId: created.id, billNumber, duplicate: false };
+      const bill = await tx.supplierBill.create({
+        data: {
+          billNumber,
+          idempotencyKey,
+          supplierId: supplier.id,
+          purchaseOrderId: po?.id ?? null,
+          goodsReceiptId: input.goodsReceiptId ?? null,
+          supplierInvoiceRef,
+          status: "OPEN",
+          currency,
+          amount,
+          taxAmount,
+          total,
+          paidAmount: dec(0),
+          dueDate: dueDateRaw && !Number.isNaN(dueDateRaw.getTime()) ? dueDateRaw : null,
+          paymentTerms: input.paymentTerms?.trim() || null,
+          receivedAt: Number.isNaN(receivedAtRaw.getTime()) ? new Date() : receivedAtRaw,
+          notes: input.notes?.trim() || null,
+          recordedById: input.userId,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: input.userId,
+          actorLabel: input.actorLabel,
+          action: "supplier_bill.recorded",
+          entityType: "SupplierBill",
+          entityId: bill.id,
+          metaJson: stringifyJson({
+            billNumber,
+            supplierId: supplier.id,
+            currency,
+            total: total.toFixed(4),
+            purchaseOrderId: po?.id ?? null,
+            goodsReceiptId: input.goodsReceiptId ?? null,
+          }),
+        },
+      });
+      return bill;
+    });
+    return { ok: true, billId: created.id, billNumber, duplicate: false };
+  } catch (error) {
+    if (error instanceof OrderLockError) return { ok: false, error: error.message };
+    if (error instanceof Error) return { ok: false, error: error.message };
+    throw error;
+  }
 }
 
 export async function recordSupplierPayment(input: {
@@ -381,7 +471,10 @@ export async function recordSupplierPayment(input: {
   userId: string;
   actorLabel: string;
 }): Promise<{ ok: true; paymentNumber: string; duplicate: boolean } | { ok: false; error: string }> {
-  const bill = await db.supplierBill.findUnique({ where: { id: input.supplierBillId } });
+  const bill = await db.supplierBill.findUnique({
+    where: { id: input.supplierBillId },
+    include: { purchaseOrder: { select: { salesOrderId: true } } },
+  });
   if (!bill) return { ok: false, error: "Supplier bill not found." };
   if (bill.status === "PAID") return { ok: false, error: "This supplier bill is already paid." };
   const amount = money(input.amount);
@@ -402,7 +495,11 @@ export async function recordSupplierPayment(input: {
   const paymentNumber = await nextNumber("SPY");
   const paidAtRaw = input.paidAt ? new Date(input.paidAt) : new Date();
   const created = await db.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "SupplierBill" WHERE id = ${bill.id} FOR UPDATE`;
+    if (bill.purchaseOrder?.salesOrderId) {
+      await lockSalesOrder(tx, bill.purchaseOrder.salesOrderId);
+    }
+    const locked = await lockSupplierBill(tx, bill.id);
+    if (!locked) throw new Error("Supplier bill not found.");
     const lockedBill = await tx.supplierBill.findUnique({ where: { id: bill.id } });
     if (!lockedBill) throw new Error("Supplier bill not found.");
     if (lockedBill.status === "PAID") throw new Error("This supplier bill is already paid.");
@@ -461,27 +558,54 @@ export async function reverseSupplierPayment(input: {
   actorLabel: string;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!input.reason.trim()) return { ok: false, error: "Record why the payment is being reversed." };
-  const payment = await db.supplierPayment.findUnique({ where: { id: input.paymentId }, include: { supplierBill: true } });
+  const payment = await db.supplierPayment.findUnique({
+    where: { id: input.paymentId },
+    include: { supplierBill: { include: { purchaseOrder: { select: { salesOrderId: true } } } } },
+  });
   if (!payment) return { ok: false, error: "Supplier payment not found." };
   if (payment.status === "REVERSED") return { ok: false, error: "This payment was already reversed." };
 
-  const applied = await db.$transaction(async (tx) => {
-    const claimed = await tx.supplierPayment.updateMany({
-      where: { id: payment.id, status: "CONFIRMED" },
-      data: { status: "REVERSED", reversedById: input.userId, reversedAt: new Date(), reversalReason: input.reason.trim() },
+  try {
+    const applied = await db.$transaction(async (tx) => {
+      if (payment.supplierBill.purchaseOrder?.salesOrderId) {
+        await lockSalesOrder(tx, payment.supplierBill.purchaseOrder.salesOrderId);
+      }
+      const lockedBill = await lockSupplierBill(tx, payment.supplierBillId);
+      if (!lockedBill) throw new Error("Supplier bill not found.");
+      await tx.$queryRaw`SELECT id FROM "SupplierPayment" WHERE id = ${payment.id} AND "organizationId" = ${await tenantId()} FOR UPDATE`;
+      const claimed = await tx.supplierPayment.updateMany({
+        where: { id: payment.id, status: "CONFIRMED" },
+        data: { status: "REVERSED", reversedById: input.userId, reversedAt: new Date(), reversalReason: input.reason.trim() },
+      });
+      if (claimed.count === 0) return false;
+
+      // Recompute the balance from all currently confirmed, non-reversed
+      // payments. A stale pre-transaction paidAmount is never used.
+      const confirmed = await tx.supplierPayment.aggregate({
+        where: { supplierBillId: payment.supplierBillId, status: "CONFIRMED" },
+        _sum: { amount: true },
+      });
+      const paid = money(sum([confirmed._sum.amount ?? 0]));
+      await tx.supplierBill.update({
+        where: { id: payment.supplierBillId },
+        data: {
+          paidAmount: paid,
+          status: paid.lte(0) ? "OPEN" : paid.gte(money(payment.supplierBill.total)) ? "PAID" : "PARTIALLY_PAID",
+        },
+      });
+      if (payment.supplierBill.purchaseOrder?.salesOrderId) {
+        await refreshSalesOrderStatus(tx, payment.supplierBill.purchaseOrder.salesOrderId, {
+          id: input.userId,
+          label: input.actorLabel,
+        });
+      }
+      return true;
     });
-    if (claimed.count === 0) return false;
-    const paid = money(dec(payment.supplierBill.paidAmount).minus(dec(payment.amount)));
-    await tx.supplierBill.update({
-      where: { id: payment.supplierBillId },
-      data: {
-        paidAmount: paid,
-        status: paid.lte(0) ? "OPEN" : paid.gte(money(payment.supplierBill.total)) ? "PAID" : "PARTIALLY_PAID",
-      },
-    });
-    return true;
-  });
-  if (!applied) return { ok: false, error: "This payment was already reversed." };
+    if (!applied) return { ok: false, error: "This payment was already reversed." };
+  } catch (error) {
+    if (error instanceof OrderLockError) return { ok: false, error: error.message };
+    throw error;
+  }
 
   await writeAudit({
     actorId: input.userId,

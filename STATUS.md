@@ -1,5 +1,28 @@
 # STATUS — OGS production readiness
 
+Last updated: 26 November 2026 (order financial hardening)
+
+## Order financial hardening — 26 November 2026
+
+Implemented and locally verified:
+
+- Supplier PO revisions now rebuild subtotal, tax and total from **all** PO lines, never only changed lines; partial acknowledgements keep quantity and price revisions as separate approved facts.
+- Every issued/revised PO stores an immutable `PurchaseOrderVersion` snapshot; the order screen shows version history and per-line changes.
+- Procurement coverage is status-aware: rejected/cancelled POs release the unreceived remainder, accepted receipts always count, approved partial acknowledgements commit only the confirmed quantity, and unapproved sent POs remain provisional.
+- A shared tenant-scoped `lockSalesOrder()` protocol is used by closure, procurement, receipts, dispatch, invoicing and payments. Closure recalculates its obligations inside the locking transaction; stock decrements are conditional and cannot go negative.
+- Invoice creation rechecks delivered/uninvoiced quantity under the order lock; concurrent attempts cannot invoice the same delivered quantity twice.
+- Supplier payment reversals recompute the bill balance from confirmed non-reversed payments; customer reversals use the same order/invoice lock order.
+- Quotation payment/delivery terms are structured fields; generic `terms` boilerplate is never used as a comparison baseline. Legacy quotations report `NOT_COMPARABLE` instead of a false mismatch. Delivery location is separate from Incoterms.
+- Closure supplier obligations are grouped by currency and never added across currencies.
+
+Verification: `npx prisma validate` PASS, `npx tsc --noEmit` PASS, `npm test` PASS (68 files / 514 tests), `npm run lint` PASS (0 errors, 23 existing warnings), `npm run build` PASS. Concurrency tests run against the isolated local PostgreSQL `mfbmt_test`.
+
+Still not implemented in this pass: supplier-invoice document extraction and line-level three-way matching; customer-invoice/delivery-note PDF generation and guarded email sending; supplier bill line model; per-action idempotency keys in the forms. These remain explicit limitations and must not be described as live.
+
+---
+
+## Previous status
+
 Last updated: 22 November 2026 (engineering hardening)
 Working tree: critical-defect fixes and regression suites. No production env, database, credentials or deployment was touched.
 

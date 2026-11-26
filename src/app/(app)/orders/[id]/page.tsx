@@ -264,6 +264,7 @@ export default async function SalesOrderPage({
                       <tr>
                         <Th>Product</Th>
                         <Th align="right">Ordered</Th>
+                        <Th align="right">Supplier confirmed</Th>
                         <Th align="right">Accepted</Th>
                         <Th align="right">Unit price</Th>
                         <Th align="right">Line total</Th>
@@ -274,6 +275,9 @@ export default async function SalesOrderPage({
                         <tr key={line.id}>
                           <Td>{line.description}</Td>
                           <Td align="right">{Number(line.quantity).toFixed(4)} {line.unit}</Td>
+                          <Td align="right">
+                            {line.acknowledgedQuantity == null ? "Not confirmed" : `${Number(line.acknowledgedQuantity).toFixed(4)} ${line.unit}`}
+                          </Td>
                           <Td align="right">{(accepted.get(line.id) ?? 0).toFixed(4)}</Td>
                           <Td align="right">{toMoneyString(line.unitPrice)}</Td>
                           <Td align="right">{order.currency} {toMoneyString(line.lineTotal)}</Td>
@@ -372,6 +376,42 @@ export default async function SalesOrderPage({
                         Record supplier reply
                       </Button>
                     </form>
+                  ) : null}
+
+                  {po.versions.length > 0 ? (
+                    <details className="rounded-card border border-line/70 p-3 text-[12px]">
+                      <summary className="cursor-pointer font-medium text-ink">
+                        Version history ({po.versions.length}) — the issued and approved documents are immutable
+                      </summary>
+                      <ul className="mt-2 space-y-3">
+                        {po.versions.map((version) => {
+                          const diff = parseJson<
+                            Array<{ lineId: string; description: string; changes: Record<string, { before: string | null; after: string | null }> }>
+                          >(version.changeSummaryJson, []);
+                          return (
+                            <li key={version.id} className="rounded border border-line/70 px-2 py-1.5">
+                              <p className="text-ink">
+                                v{version.version} · {version.status.replaceAll("_", " ").toLowerCase()} · {formatDateTime(version.createdAt)}
+                                {version.source === "SENT" ? " · issued to supplier" : version.source === "SUPPLIER_ACKNOWLEDGEMENT" ? " · approved supplier revision" : ""}
+                              </p>
+                              {version.reason ? <p className="text-muted">{version.reason}</p> : null}
+                              {diff.length > 0 ? (
+                                <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[11px] text-soft">
+                                  {diff.map((entry) => (
+                                    <li key={entry.lineId}>
+                                      {entry.description}:{" "}
+                                      {Object.entries(entry.changes)
+                                        .map(([field, change]) => `${field} ${change.before ?? "—"} → ${change.after ?? "—"}`)
+                                        .join("; ")}
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </details>
                   ) : null}
 
                   {po.receipts.length > 0 ? (

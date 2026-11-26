@@ -1146,6 +1146,9 @@ describe("pure acceptance comparison", () => {
       taxAmount: 5,
       total: 105,
       terms: "Net 30",
+      paymentTerms: "Net 30",
+      deliveryTerms: null,
+      deliveryAddress: null,
       validityDate: new Date(Date.now() + 86_400_000),
       customerName: "Buyer",
       items: [

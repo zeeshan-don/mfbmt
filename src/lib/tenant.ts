@@ -96,6 +96,7 @@ export const TENANT_MODELS = new Set([
   "SalesOrderLine",
   "PurchaseOrder",
   "PurchaseOrderLine",
+  "PurchaseOrderVersion",
   "SupplierAcknowledgement",
   "GoodsReceipt",
   "GoodsReceiptLine",
