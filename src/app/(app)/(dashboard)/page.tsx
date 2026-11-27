@@ -7,7 +7,8 @@ import { ENQUIRY_STATUS_LABELS, label } from "@/lib/constants";
 import { queueStats, workerLiveness } from "@/lib/workflow/jobs";
 import { getMonthlyUsage } from "@/lib/usage";
 import { getOrgLimits, aiBudgetStatus } from "@/lib/limits";
-import { ownerOperationsBoard } from "@/lib/orders/dashboard";
+import { ownerDashboardSummary } from "@/lib/orders/dashboard";
+import { getOwnerWorkQueue, type OwnerWorkItem } from "@/lib/workflow/ownerWorkQueue";
 import { Badge, Card, CardHeader, DataTable, EmptyState, PageHeader, Td, Th, statusTone } from "@/components/ui";
 import { AlertTriangle, BadgeCheck, Boxes, Inbox, MessageSquare, Radar } from "lucide-react";
 
@@ -16,41 +17,52 @@ export const dynamic = "force-dynamic";
 export default async function OverviewPage() {
   const user = await requireUser();
 
-  const [needsReview, pendingSourcingApprovals, clarificationItems, quoteResponses, recentEnquiries, recentSessions, pendingQuoteRequests, pendingQuoteApprovals, shortLines, overdueResponses, queue, worker] =
-    await Promise.all([
-      db.enquiry.count({ where: { status: "NEEDS_REVIEW" } }),
-      db.approval.count({ where: { status: "PENDING", type: "SOURCING" } }),
-      db.enquiryItem.count({ where: { reviewStatus: "NEEDS_CLARIFICATION" } }),
-      db.supplierQuote.count({ where: { status: "RESPONDED" } }),
-      db.enquiry.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 6,
-        include: {
-          items: { select: { id: true, inventoryStatus: true, sourcingStatus: true } },
-          Message: { select: { receivedAt: true } },
-        },
-      }),
-      db.searchSession.findMany({
-        orderBy: { startedAt: "desc" },
-        take: 5,
-        include: { enquiryItem: { select: { description: true, enquiryId: true } } },
-      }),
-      db.supplierQuote.findMany({
-        where: { status: { in: ["AWAITING_APPROVAL", "SENT"] } },
-        orderBy: { createdAt: "desc" },
-        take: 5,
-        include: { supplier: { select: { name: true } }, enquiryItem: { select: { description: true } } },
-      }),
-      db.approval.count({ where: { status: "PENDING", type: "CUSTOMER_QUOTATION" } }),
-      db.enquiryItem.count({ where: { sourcingStatus: { in: ["NOT_STARTED", "QUEUED", "SEARCHING", "NO_RESULTS"] }, quantityToSource: { gt: 0 } } }),
-      db.supplierQuote.count({
-        where: { status: "SENT", sentAt: { lt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } },
-      }),
-      queueStats(),
-      workerLiveness(),
-    ]);
+  const owner = user.role === "OWNER";
+  const attentionStatsPromise = owner
+    ? Promise.resolve({ needsReview: 0, pendingSourcingApprovals: 0, clarificationItems: 0, quoteResponses: 0, pendingQuoteApprovals: 0, shortLines: 0, overdueResponses: 0 })
+    : Promise.all([
+        db.enquiry.count({ where: { status: "NEEDS_REVIEW" } }),
+        db.approval.count({ where: { status: "PENDING", type: "SOURCING" } }),
+        db.enquiryItem.count({ where: { reviewStatus: "NEEDS_CLARIFICATION" } }),
+        db.supplierQuote.count({ where: { status: "RESPONDED" } }),
+        db.approval.count({ where: { status: "PENDING", type: "CUSTOMER_QUOTATION" } }),
+        db.enquiryItem.count({ where: { sourcingStatus: { in: ["NOT_STARTED", "QUEUED", "SEARCHING", "NO_RESULTS"] }, quantityToSource: { gt: 0 } } }),
+        db.supplierQuote.count({ where: { status: "SENT", sentAt: { lt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } } }),
+      ]).then(([needsReview, pendingSourcingApprovals, clarificationItems, quoteResponses, pendingQuoteApprovals, shortLines, overdueResponses]) => ({
+        needsReview, pendingSourcingApprovals, clarificationItems, quoteResponses, pendingQuoteApprovals, shortLines, overdueResponses,
+      }));
 
-  const orderBoard = user.role === "OWNER" ? await ownerOperationsBoard() : null;
+  const [attentionStats, recentEnquiries, recentSessions, pendingQuoteRequests, queue, worker] = await Promise.all([
+    attentionStatsPromise,
+    db.enquiry.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 6,
+      include: {
+        items: { select: { id: true, inventoryStatus: true, sourcingStatus: true } },
+        Message: { select: { receivedAt: true } },
+      },
+    }),
+    db.searchSession.findMany({
+      orderBy: { startedAt: "desc" },
+      take: 5,
+      include: { enquiryItem: { select: { description: true, enquiryId: true } } },
+    }),
+    owner
+      ? Promise.resolve([])
+      : db.supplierQuote.findMany({
+          where: { status: { in: ["AWAITING_APPROVAL", "SENT"] } },
+          orderBy: { createdAt: "desc" },
+          take: 5,
+          include: { supplier: { select: { name: true } }, enquiryItem: { select: { description: true } } },
+        }),
+    queueStats(),
+    workerLiveness(),
+  ]);
+  const { needsReview, pendingSourcingApprovals, clarificationItems, quoteResponses, pendingQuoteApprovals, shortLines, overdueResponses } = attentionStats;
+  const [orderBoard, ownerQueue] = user.role === "OWNER"
+    ? await Promise.all([ownerDashboardSummary(), getOwnerWorkQueue({ limit: 12 })])
+    : [null, { items: [] as OwnerWorkItem[], total: 0 }];
+  const ownerActions = ownerQueue.items;
 
   const attention = [
     {
@@ -141,49 +153,100 @@ export default async function OverviewPage() {
       <PageHeader
         eyebrow={`${new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}`}
         title={`Good day, ${user.name.split(" ")[0]}`}
-        description="Here is what needs your attention today. Numbers are live from your enquiries, inventory and sourcing."
+        description={user.role === "OWNER"
+          ? "Start with the next actions below. Each enquiry or order appears once, with its most important outstanding step."
+          : "Here is what needs your attention today. Numbers are live from your enquiries, inventory and sourcing."}
       />
 
-      <section aria-labelledby="attention-heading">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 id="attention-heading" className="text-sm font-semibold text-ink">
-            Needs your attention
-          </h2>
-          <span className="text-[11px] text-muted">Live from the database</span>
-        </div>
-        <Card>
-          {attention.length === 0 ? (
-            <EmptyState
-              icon={<BadgeCheck size={18} aria-hidden />}
-              title="Nothing is waiting for you"
-              description="New enquiries and sourcing results will appear here as they arrive."
-            />
-          ) : (
-            <ul className="divide-y divide-line">
-              {attention.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <li key={item.title}>
-                    <Link
-                      href={item.href}
-                      className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated"
-                    >
-                      <span className="rounded-full border border-warn/30 bg-warn/10 p-1.5 text-warn">
-                        <Icon size={14} aria-hidden />
+      {user.role === "OWNER" ? (
+        <section aria-labelledby="next-actions-heading">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 id="next-actions-heading" className="text-sm font-semibold text-ink">
+              Your next actions
+            </h2>
+            <span className="text-[11px] text-muted">Live from enquiries, approvals and orders</span>
+          </div>
+          <Card>
+            {ownerActions.length === 0 ? (
+              <EmptyState
+                icon={<BadgeCheck size={18} aria-hidden />}
+                title="You're up to date"
+                description="There are no outstanding decisions or overdue actions. New enquiries, supplier replies and order issues will appear here."
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {ownerActions.map((item) => (
+                  <li key={item.id}>
+                    <div className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-elevated/50">
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-ink">{item.title}</span>
+                          <Badge tone={item.priority === "urgent" ? "danger" : item.priority === "high" ? "warn" : "neutral"}>
+                            {item.priority === "urgent" ? "Urgent" : item.priority === "high" ? "Needs attention" : "Ready"}
+                          </Badge>
+                        </span>
+                        <span className="mt-1 block text-xs text-muted">{item.detail}</span>
                       </span>
-                      <span className="min-w-0 flex-1 text-sm text-ink">
-                        <span className="font-semibold tabular">{item.count}</span> {item.title}
-                        <span className="block text-xs text-muted">{item.detail}</span>
-                      </span>
-                      <span className="text-xs text-accent">Review</span>
-                    </Link>
+                      <Link
+                        href={item.href}
+                        className="inline-flex shrink-0 items-center rounded-control border border-accent/30 bg-accent/5 px-3 py-2 text-xs font-medium text-accent hover:bg-accent/10"
+                      >
+                        {item.action} <span className="ml-1" aria-hidden>→</span>
+                      </Link>
+                    </div>
                   </li>
-                );
-              })}
-            </ul>
-          )}
-        </Card>
-      </section>
+                ))}
+              </ul>
+            )}
+            {ownerActions.length > 0 ? (
+              <div className="border-t border-line px-4 py-2 text-[11px] text-muted">
+                Showing {ownerActions.length} of {ownerQueue.total} active deal{ownerQueue.total === 1 ? "" : "s"}. One primary action is shown per deal; resolve it to reveal the next outstanding step.
+              </div>
+            ) : null}
+          </Card>
+        </section>
+      ) : (
+        <section aria-labelledby="attention-heading">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 id="attention-heading" className="text-sm font-semibold text-ink">
+              Needs your attention
+            </h2>
+            <span className="text-[11px] text-muted">Live from the database</span>
+          </div>
+          <Card>
+            {attention.length === 0 ? (
+              <EmptyState
+                icon={<BadgeCheck size={18} aria-hidden />}
+                title="Nothing is waiting for you"
+                description="New enquiries and sourcing results will appear here as they arrive."
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {attention.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <li key={item.title}>
+                      <Link
+                        href={item.href}
+                        className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-elevated"
+                      >
+                        <span className="rounded-full border border-warn/30 bg-warn/10 p-1.5 text-warn">
+                          <Icon size={14} aria-hidden />
+                        </span>
+                        <span className="min-w-0 flex-1 text-sm text-ink">
+                          <span className="font-semibold tabular">{item.count}</span> {item.title}
+                          <span className="block text-xs text-muted">{item.detail}</span>
+                        </span>
+                        <span className="text-xs text-accent">Review</span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+        </section>
+      )}
 
       <section aria-labelledby="metrics-heading">
         <div className="mb-2 flex items-center justify-between">
@@ -284,23 +347,6 @@ export default async function OverviewPage() {
                 <p className="mt-1 text-[11px] text-muted">{orderBoard.overview.quotationsOutstanding} quotations outstanding</p>
               </div>
             </div>
-            {orderBoard.attention.length > 0 ? (
-              <ul className="divide-y divide-line border-t border-line">
-                {orderBoard.attention.slice(0, 6).map((entry) => (
-                  <li key={entry.code}>
-                    <Link href={entry.href} className="flex items-center justify-between gap-3 px-4 py-2 text-[12px] hover:bg-elevated/60">
-                      <span className="text-soft">
-                        <span className="mr-2 inline-flex min-w-5 justify-center rounded-full bg-warn/10 px-1.5 py-0.5 text-[11px] font-semibold text-warn tabular">
-                          {entry.count}
-                        </span>
-                        {entry.title}
-                      </span>
-                      <span className="text-accent">Review</span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
           </Card>
         </section>
       ) : null}
@@ -411,7 +457,7 @@ export default async function OverviewPage() {
             )}
           </Card>
 
-          <Card>
+          {!owner ? <Card>
             <CardHeader title="Supplier quotations" description="Requests waiting for a reply." />
             {pendingQuoteRequests.length === 0 ? (
               <EmptyState
@@ -432,7 +478,7 @@ export default async function OverviewPage() {
                 ))}
               </ul>
             )}
-          </Card>
+          </Card> : null}
 
           <Card>
             <div className="flex items-center justify-between px-4 py-3">

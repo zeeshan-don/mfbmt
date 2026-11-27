@@ -220,3 +220,38 @@ export async function salesOrderList() {
     deliveredCount: order.deliveries.filter((delivery) => delivery.status === "DELIVERED").length,
   }));
 }
+
+/**
+ * Small snapshot for the home page. The detailed /orders page still uses the
+ * full ownerOperationsBoard (including every attention count); the dashboard
+ * needs only the commercial totals so it does not repeat those count queries
+ * alongside the itemised next-action queue.
+ */
+export async function ownerDashboardSummary() {
+  const [openSalesOrders, openSupplierPos, ordersInProcurement, ordersInFulfilment, quotationsOutstanding, settledDeals, confirmedOrderValue, receivables, payables] = await Promise.all([
+    db.salesOrder.count({ where: { status: { notIn: ["CLOSED", "CANCELLED"] } } }),
+    db.purchaseOrder.count({ where: { status: { notIn: ["RECEIVED", "COMPLETED", "CANCELLED", "REJECTED"] } } }),
+    db.salesOrder.count({ where: { status: { in: ["ORDER_CONFIRMED", "PROCUREMENT_IN_PROGRESS", "PARTIALLY_RECEIVED"] } } }),
+    db.salesOrder.count({ where: { status: { in: ["READY_TO_DISPATCH", "PARTIALLY_DELIVERED", "DELIVERED", "PARTIALLY_INVOICED"] } } }),
+    db.customerQuotation.count({ where: { status: "SENT", outcome: null } }),
+    db.customerQuotation.count({ where: { outcome: "WON", salesOrders: { some: { status: "CLOSED" } } } }),
+    totalsByCurrency(
+      () => db.salesOrder.groupBy({ by: ["currency"], where: { status: { notIn: ["CLOSED", "CANCELLED"] } }, _sum: { total: true } }) as never,
+      "total",
+    ),
+    receivablesByCurrency(),
+    payablesByCurrency(),
+  ]);
+
+  return {
+    overview: {
+      openSalesOrders,
+      openSupplierPos,
+      ordersInProcurement,
+      ordersInFulfilment,
+      quotationsOutstanding,
+      settledDeals,
+    },
+    money: { confirmedOrderValue, receivables, payables },
+  };
+}
